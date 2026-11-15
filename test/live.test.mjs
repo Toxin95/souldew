@@ -150,6 +150,32 @@ test('Gen 3 Emerald in German, French, Italian and Spanish: its own table entry,
   assert.deepEqual(r.party.map((x) => [x.species, x.nickname, x.level, x.hp, x.maxHp, x.metLocation]), [[1, 'BULBASAUR', 5, 20, 21, 16]]);
 });
 
+test('Gen 3 Ruby/Sapphire in French, Italian and Spanish: their own table entry, the German layout', () => {
+  const maps = L('maps.json');
+  for (const [game, c] of [['ruby', 'AXV'], ['sapphire', 'AXP']]) {
+    const de = findEntry(TABLE, { platform: 'gba', code: `${c}D` });
+    assert.equal(de.id, `${game}_de`);
+    for (const l of ['F', 'I', 'S']) {
+      const e = findEntry(TABLE, { platform: 'gba', code: c + l });
+      assert.equal(e?.id, `${game}_eu`, c + l);
+      // the team 0x10 further on than in the English game, like the German one (the Italian Ruby's literal pools)
+      for (const k of ['partyCountAddr', 'partyAddr', 'enemyPartyAddr', 'battleTypeFlagsAddr']) assert.equal(e[k], de[k], k);
+      assert.equal(e.inBattle.addr, de.inBattle.addr);
+      assert.deepEqual(e.liveBattleHp.battleMonsAddr, de.liveBattleHp.battleMonsAddr);
+    }
+    for (const k of ['mapHeaderAddr', 'musicAddr', 'musicSize', 'kind']) assert.equal(maps.games[`${game}_eu`][k], maps.games[`${game}_de`][k], k);
+  }
+  assert.equal(findEntry(TABLE, { platform: 'gba', code: 'AXVE' }).id, 'ruby_us');
+  // the issue's ROM (Versione Rubino, AXVI): the party at 0x03004370, its count at 0x03004360
+  const it = findEntry(TABLE, { platform: 'gba', code: 'AXVI' });
+  assert.deepEqual([it.partyCountAddr, it.partyAddr], ['0x03004360', '0x03004370']);
+  const m = memory();
+  m.write(0x03004360, [1]);
+  m.write(0x03004370, pk3({ pid: 0x0badf00d, otId: 0xbeefcafe, internal: 1, nick: 'BULBASAUR', level: 5, hp: 20, maxHp: 21, met: 16 }));
+  const r = readLiveParty(it, m.read, T);
+  assert.deepEqual(r.party.map((x) => [x.species, x.nickname, x.level, x.hp, x.maxHp, x.metLocation]), [[1, 'BULBASAUR', 5, 20, 21, 16]]);
+});
+
 test('the catalog knows the Italian, French and Spanish Gen 3 games as retail games, not as unknown ROMs', () => {
   const catalog = L('catalog.json');
   // the issue's file: "Pokemon - Versione Smeraldo (Italy).gba", BPEI, CRC32 A0AEC80A

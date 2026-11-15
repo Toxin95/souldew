@@ -675,6 +675,130 @@
    "verified": "pret symbols branch .sym"
   },
   {
+   "id": "ruby_eu",
+   "name": "Pokémon Ruby (France, Italy, Spain: Rubis, Rubino, Rubí) rev 0/1",
+   "gen": 3,
+   "platform": "gba",
+   "language": "fr/it/es",
+   "match": {
+    "gameCode": [
+     "AXVF",
+     "AXVI",
+     "AXVS"
+    ],
+    "gameCodeOffset": "0xAC",
+    "softwareVersionOffset": "0xBC",
+    "softwareVersion": [
+     0,
+     1
+    ]
+   },
+   "memory": {
+    "note": "Absolute GBA bus addresses. EWRAM 0x02000000 (256 KiB), IWRAM 0x03000000 (32 KiB). Offset into the region array = addr & 0xFFFFFF."
+   },
+   "partyCountAddr": "0x03004360",
+   "partyCountRegion": "IWRAM",
+   "partyCountType": "u8",
+   "partyAddr": "0x03004370",
+   "partyRegion": "IWRAM",
+   "structSize": 100,
+   "maxParty": 6,
+   "otNamesAddr": null,
+   "nicknamesAddr": null,
+   "namesInline": {
+    "nickname": "struct+0x08 (10 bytes)",
+    "otName": "struct+0x14 (7 bytes)"
+   },
+   "charset": "charset_gen3.json",
+   "speciesTable": "gen3_index_to_dex.json",
+   "enemyPartyAddr": "0x030045D0",
+   "inBattle": {
+    "addr": "0x03001BAD",
+    "type": "u8",
+    "mask": "0x02",
+    "meaning": "gMain.inBattle bitfield (bit 1 of the byte after gMain.state)",
+    "source": "pokeruby_de.sym:526 (gMain) + include/main.h struct Main offset 0x43D"
+   },
+   "battleTypeFlagsAddr": "0x020239F8",
+   "liveBattleHp": {
+    "battleMonsAddr": "0x02024A80",
+    "battleMonSize": "0x58",
+    "hpOffset": "0x28",
+    "maxHpOffset": "0x2C",
+    "battlerPartyIndexesAddr": "0x02024A6A",
+    "note": "Player battler 0 (and 2 in doubles); gBattlerPartyIndexes is u16[4]. gPlayerParty HP is also written live (Cmd_datahpupdate -> REQUEST_HP_BATTLE).",
+    "source": "pokeruby_de.sym:37, pokeruby_de.sym:31"
+   },
+   "sources": {
+    "partyCountAddr": "as in ruby_de (pokeruby_de.sym:615)",
+    "partyAddr": "as in ruby_de (pokeruby_de.sym:616)",
+    "evidence": "The German game's RAM (pokeruby_de.sym), address for address: the team 0x10 further on than in the English game, everything else where the English game keeps it. The retail Italian Ruby (AXVI rev 1, CRC32 9305E793) loads these addresses from its literal pools: gMain 0x03001770 694 times, gPlayerParty 0x03004370 691, gBattleMons 363, gEnemyParty 0x030045D0 358 (the English 0x030045C0 never), gSaveBlock1 339, gBattlerPartyIndexes 255, gBattleTypeFlags 245, gSaveBlock2 196, gMapHeader 99, gPlayerPartyCount 0x03004360 56, sCurrentMapMusic 11. Sapphire and the French and Spanish games are taken to share it (Ruby and Sapphire share their layout in English and in German; pret builds no French, Italian or Spanish ROM): not checked against those ROMs."
+   },
+   "verified": "the literal pools of the Italian Ruby (the German layout of pokeruby_de.sym)"
+  },
+  {
+   "id": "sapphire_eu",
+   "name": "Pokémon Sapphire (France, Italy, Spain: Saphir, Zaffiro, Zafiro) rev 0/1",
+   "gen": 3,
+   "platform": "gba",
+   "language": "fr/it/es",
+   "match": {
+    "gameCode": [
+     "AXPF",
+     "AXPI",
+     "AXPS"
+    ],
+    "gameCodeOffset": "0xAC",
+    "softwareVersionOffset": "0xBC",
+    "softwareVersion": [
+     0,
+     1
+    ]
+   },
+   "memory": {
+    "note": "Absolute GBA bus addresses. EWRAM 0x02000000 (256 KiB), IWRAM 0x03000000 (32 KiB). Offset into the region array = addr & 0xFFFFFF."
+   },
+   "partyCountAddr": "0x03004360",
+   "partyCountRegion": "IWRAM",
+   "partyCountType": "u8",
+   "partyAddr": "0x03004370",
+   "partyRegion": "IWRAM",
+   "structSize": 100,
+   "maxParty": 6,
+   "otNamesAddr": null,
+   "nicknamesAddr": null,
+   "namesInline": {
+    "nickname": "struct+0x08 (10 bytes)",
+    "otName": "struct+0x14 (7 bytes)"
+   },
+   "charset": "charset_gen3.json",
+   "speciesTable": "gen3_index_to_dex.json",
+   "enemyPartyAddr": "0x030045D0",
+   "inBattle": {
+    "addr": "0x03001BAD",
+    "type": "u8",
+    "mask": "0x02",
+    "meaning": "gMain.inBattle bitfield (bit 1 of the byte after gMain.state)",
+    "source": "pokesapphire_de.sym:526 (gMain) + include/main.h struct Main offset 0x43D"
+   },
+   "battleTypeFlagsAddr": "0x020239F8",
+   "liveBattleHp": {
+    "battleMonsAddr": "0x02024A80",
+    "battleMonSize": "0x58",
+    "hpOffset": "0x28",
+    "maxHpOffset": "0x2C",
+    "battlerPartyIndexesAddr": "0x02024A6A",
+    "note": "Player battler 0 (and 2 in doubles); gBattlerPartyIndexes is u16[4]. gPlayerParty HP is also written live (Cmd_datahpupdate -> REQUEST_HP_BATTLE).",
+    "source": "pokesapphire_de.sym:37, pokesapphire_de.sym:31"
+   },
+   "sources": {
+    "partyCountAddr": "as in sapphire_de (pokesapphire_de.sym:615)",
+    "partyAddr": "as in sapphire_de (pokesapphire_de.sym:616)",
+    "evidence": "The German game's RAM (pokeruby_de.sym), address for address: the team 0x10 further on than in the English game, everything else where the English game keeps it. The retail Italian Ruby (AXVI rev 1, CRC32 9305E793) loads these addresses from its literal pools: gMain 0x03001770 694 times, gPlayerParty 0x03004370 691, gBattleMons 363, gEnemyParty 0x030045D0 358 (the English 0x030045C0 never), gSaveBlock1 339, gBattlerPartyIndexes 255, gBattleTypeFlags 245, gSaveBlock2 196, gMapHeader 99, gPlayerPartyCount 0x03004360 56, sCurrentMapMusic 11. Sapphire and the French and Spanish games are taken to share it (Ruby and Sapphire share their layout in English and in German; pret builds no French, Italian or Spanish ROM): not checked against those ROMs."
+   },
+   "verified": "the literal pools of the Italian Ruby (the German layout of pokeruby_de.sym)"
+  },
+  {
    "id": "emerald_us",
    "name": "Pokémon Emerald (USA/Europe)",
    "gen": 3,
