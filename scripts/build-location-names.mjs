@@ -13,7 +13,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DATA = join(dirname(fileURLToPath(import.meta.url)), '..', 'shared', 'data');
-const BASE = 'https://raw.githubusercontent.com/kwsch/PKHeX/master/PKHeX.Core/Resources/text/locations';
+// Pinned to a PKHeX commit (master of 2026-11-16) so a re-run gives the same files; move it on purpose to take upstream fixes.
+const BASE = 'https://raw.githubusercontent.com/kwsch/PKHeX/6c9583883c7551ac74a4b74180cead249d4277b8/PKHeX.Core/Resources/text/locations';
 const LANGS = ['de', 'es', 'fr', 'it'];
 const local = process.argv[2] || null;
 
