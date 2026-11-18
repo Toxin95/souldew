@@ -49,14 +49,17 @@ test('private GETs (run pack, files, spoiler log, webhook, stream token, folders
   const own = [{ 'x-soullink': '1' }, { 'sec-fetch-site': 'same-origin' }, { 'sec-fetch-site': 'same-origin', 'x-soullink': '1' }];
   const notOwn = [{}, { 'sec-fetch-site': 'none' }, { 'x-soullink': '0' }, { 'sec-fetch-site': 'same-site' }];
   const privatePaths = ['/api/runs/c0ffee01', '/api/runs/c0ffee01/download', '/api/runs/c0ffee01/file', '/api/runs/c0ffee01/log/p2',
-    '/api/runs/c0ffee01/data/p1', '/api/runs/c0ffee01/doc', '/api/runs/c0ffee01/discord', '/api/stream', '/api/status'];
+    '/api/runs/c0ffee01/data/p1', '/api/runs/c0ffee01/doc', '/api/runs/c0ffee01/discord', '/api/runs/c0ffee01/save/p1',
+    '/api/library/rom', '/api/library/patched', '/api/library/download',
+    '/api/saves/solo', '/api/saves/solo/download', '/api/saves/states', '/api/saves/state', '/api/saves/state/thumb',
+    '/api/stream', '/api/status', '/api/events', '/live/soullink.lua'];
   for (const path of privatePaths) {
     for (const h of own) assert.equal(privateRequestError(get(h), path), null, `${path} ${JSON.stringify(h)}`);
     for (const h of notOwn) assert.ok(privateRequestError(get(h), path), `${path} ${JSON.stringify(h)}`);
     assert.ok(privateRequestError(req('HEAD', {}), path), `HEAD ${path}`);
   }
   // what OBS and the overlays read stays as it was (the general gate still applies)
-  for (const path of ['/api/runs/c0ffee01/overlay', '/api/runs/current/overlay/events', '/api/library', '/api/catalog', '/api/runs/c0ffee01/save/p1']) {
+  for (const path of ['/api/runs/c0ffee01/overlay', '/api/runs/current/overlay/events', '/api/library', '/api/catalog']) {
     assert.equal(privateRequestError(get({}), path), null, path);
   }
   // other methods are the general gate's (they need the app header there)

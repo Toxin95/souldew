@@ -5,7 +5,7 @@
 /** Words of a name, lower case without accents: "Pokémon Emerald_Kaizo v2.gba" → ['emerald', 'kaizo', 'v2']. */
 export function nameWords(s) {
   return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-    .replace(/\.(gba|gbc|gb|nds|zip|bin)$/i, '')
+    .replace(/\.(gba|gbc|gb|sgb|nds|zip|bin)$/i, '')
     .split(/[^a-z0-9]+/)
     .filter((w) => w && w !== 'pokemon');
 }

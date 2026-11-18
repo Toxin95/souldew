@@ -7,7 +7,7 @@ import { startServer } from './app.mjs';
 const port = Number(process.env.PORT || 7373);
 try {
   const { url } = await startServer({ port });
-  console.log(`\n  souldew läuft auf ${url}\n  (Strg+C beendet den Server)\n`);
+  console.log(`\n  souldew is running at ${url}\n  (Ctrl+C stops the server)\n`);
   if (!process.env.NO_OPEN) {
     const opener = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
     try {
@@ -18,7 +18,7 @@ try {
   }
 } catch (e) {
   if (e.code === 'EADDRINUSE') {
-    console.log(`Port ${port} ist belegt – läuft souldew schon? Öffne http://localhost:${port}`);
+    console.log(`Port ${port} is taken – is souldew already running? Open http://localhost:${port}`);
     process.exit(1);
   }
   throw e;

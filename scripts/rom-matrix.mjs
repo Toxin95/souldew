@@ -11,7 +11,7 @@
 //   node scripts/rom-matrix.mjs <rom-dir> [more dirs or files] [--live] [--randomize] [--only <text>] [--out <dir>] [--tools <dir>] [--show] [--keep]
 //   npm run matrix -- <rom-dir> [more]     (= --live: every plan for every ROM found – the release check)
 //
-//   <rom-dir>     ROMs (.gb .gbc .gba .nds, also inside .zip) and patches (.ips .bps .ups .xdelta/.vcdiff), any
+//   <rom-dir>     ROMs (.gb .gbc .sgb .gba .nds, also inside .zip) and patches (.ips .bps .ups .xdelta/.vcdiff), any
 //                 subfolders. A patch is paired with its base ROM by the checksum in the patch (BPS/UPS/xdelta) or,
 //                 for IPS, by the catalog's hack name in the file name. .rar/.7z archives: unpack them first.
 //   --live        also play every game that has a plan (GB ~20–60 s, GBA ~2 min, DS 10–25 min per game)
@@ -85,7 +85,7 @@ const catalog = json('catalog.json');
 const addresses = json('addresses.json');
 const SHARED = join(root, 'shared');
 
-const ROM_EXT = ['.gb', '.gbc', '.gba', '.nds'];
+const ROM_EXT = ['.gb', '.gbc', '.sgb', '.gba', '.nds'];
 const PATCH_EXT = ['.ips', '.bps', '.ups', '.xdelta', '.vcdiff', '.xdelta3'];
 const log = (...a) => console.log(...a);
 

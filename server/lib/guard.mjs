@@ -35,13 +35,18 @@ export function apiRequestError(req, port) {
 
 /**
  * GETs that hand out secrets or private paths: a run with its invite pack (room key and secret), a run's files (ROM,
- * save, spoiler log, the pack itself), the randomizer data and spoiler log, the run doc (device ids), the Discord
- * webhook, the stream API token and the status (library and emulator folders). The OBS overlays never ask for these.
+ * save, spoiler log, the pack itself), library ROM / patch downloads, solo and state saves, the app event stream
+ * (paths and live hints), the mGBA live-bridge Lua (embeds the bridge token), the randomizer data and spoiler log,
+ * the run doc (device ids), the Discord webhook, the stream API token and the status (library and emulator folders).
+ * The OBS overlays never ask for these.
  */
 export const PRIVATE_GETS = [
   /^\/api\/runs\/[a-f0-9]{8}$/,
-  /^\/api\/runs\/[a-f0-9]{8}\/(download|file|doc|discord|log\/p[1-4]|data\/p[1-4])$/,
-  /^\/api\/(stream|status)$/,
+  /^\/api\/runs\/[a-f0-9]{8}\/(download|file|doc|discord|log\/p[1-4]|data\/p[1-4]|save\/p[1-4])$/,
+  /^\/api\/library\/(rom|patched|download)$/,
+  /^\/api\/saves\/(solo|solo\/download|states|state|state\/thumb)$/,
+  /^\/api\/(stream|status|events)$/,
+  /^\/live\/soullink\.lua$/,
 ];
 
 /**

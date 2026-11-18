@@ -186,6 +186,10 @@ img.pixel, .sprite img { image-rendering: pixelated; }
 .btn:active { transform: translateY(2px); box-shadow: 0 0 0 #000, inset 0 1px 2px #0006; }
 .btn[disabled] { opacity: 0.4; cursor: not-allowed; transform: none; }
 .btn svg { width: 16px; height: 16px; }
+/* an icon next to a label: the pixel icons' ink sits 1 px above the label's cap-height centre (measured on 2× screenshots,
+   e.g. "Save diagnostics", "Report a bug") – lowered so both share one centre line. Icon-only buttons (.icon, or a
+   button named by aria-label) stay centred in their circle. */
+.btn:not(.icon):not([aria-label]) > svg { position: relative; top: 1px; }
 .btn.primary { background: var(--ink); color: #1b1a1f; font-weight: 600; }
 .btn.primary:hover { background: #fff8ea; }
 .btn.go { background: #3f6b5d; color: #f0fbf6; }
@@ -214,7 +218,20 @@ label.check input { margin-top: 3px; accent-color: var(--tri); width: 16px; heig
 label.check .hint { display: block; font-size: 12.5px; color: var(--ink-3); }
 label.check.locked { cursor: default; }
 label.check .hint.host-only { margin-top: 3px; color: var(--warn-ink); }
+/* "Start from my intro save" (views/introsave.mjs): the option, its note and "Remove" on the same line */
+.intro-opt { align-items: flex-start; }
+.intro-opt > .btn { flex: none; margin-top: 2px; }
+label.check .hint.warn { margin-top: 3px; color: var(--warn-ink); }
 .rule-sep { border-top: 1px solid #ffffff0d; padding-top: 8px; }
+/* A SoulLink's rules on another player's computer: shown, not changeable (only the host sets them – lib/hostrules.mjs) */
+.seg.locked button { cursor: default; }
+.seg.locked button:not(.on) { opacity: .55; }
+label.check.locked input { cursor: default; }
+/* The rules of a run in a few lines (join page – views/nuzrules.mjs RulesSummary) */
+.rule-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 6px 18px; margin: 0; }
+.rule-summary > div { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid #ffffff0d; font-size: 13px; }
+.rule-summary dt { color: var(--ink-2); }
+.rule-summary dd { margin: 0; color: var(--ink); text-align: right; }
 /* One row of options. When the space runs out (a narrow sheet, long German labels) the options get narrower and
    their text wraps inside the button – the control keeps its shape instead of breaking into a second pill row. */
 .seg { align-self: flex-start; display: inline-grid; grid-auto-flow: column; grid-auto-columns: minmax(0, auto); max-width: 100%;
@@ -817,6 +834,13 @@ details.group details.group { margin: 0 14px 8px; }
 button.ctl-key { cursor: pointer; min-width: 110px; padding: 2px 8px; line-height: 1.6; }
 button.ctl-key:hover { background: var(--shell-3); }
 button.ctl-key.on { outline: 2px solid var(--crs); outline-offset: 2px; color: var(--crs); }
+/* the four slot keys of a row (save / load slot 1–4) – each its own key cap, together as wide as two */
+.ctl-slots { display: inline-flex; flex-wrap: wrap; gap: 6px; vertical-align: middle; }
+button.ctl-key.ctl-slot { min-width: 52px; }
+button.ctl-key.ctl-none:not(.on) { color: var(--ink-3); } /* no key: "none", quieter than a key */
+table.data tr:has(> td > .ctl-slots) > td { vertical-align: middle; }
+/* the note under a row (a key taken over, "press a key"): part of that row */
+table.data tr.ctl-note > td { border-top: 0; padding-top: 0; }
 
 /* runs */
 .entry-choices .entry { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; padding: 22px 24px; }
@@ -1457,6 +1481,20 @@ dialog.nag[open] { animation: nag-in .16s steps(3, end); }
 .live-runs .live-code { width: 11ch; font-family: var(--font-mono); font-size: 16px; letter-spacing: .12em; text-transform: uppercase; }
 .live-runs .live-linked { gap: 8px 12px; align-items: center; }
 .modal-foot > .btn.live-share, .modal-foot > .live-share-done { margin-right: auto; }
+/* "Post to the Hall of Fame" after a won run: the card's gold, quiet until hovered */
+.btn.hof-btn { color: #f5dca2; border-color: #6b5426; background: linear-gradient(#4a3a1c, #382c15); }
+.btn.hof-btn:hover:not(:disabled) { background: linear-gradient(#5a4622, #44351a); border-color: #8a6c30; }
+.btn.hof-btn.done { color: var(--ok-ink); border-color: #2f4a3f; background: #1d2a25; opacity: 1; }
+.btn.hof-btn svg { flex: none; }
+.hof-offer { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 14px; padding: 12px; border-radius: var(--r-l);
+  background: linear-gradient(180deg, rgba(225, 176, 90, .08), rgba(225, 176, 90, .02)); border: 1px solid rgba(225, 176, 90, .22); text-align: left; }
+.hof-preview { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: var(--r-m); border: 1px solid #0d0c10; background: #121116; }
+.hof-preview.placeholder { display: grid; place-items: center; color: #6b5426; }
+.hof-copy { display: grid; gap: 6px; }
+.hof-copy > b { display: inline-flex; align-items: center; gap: 6px; color: #f5dca2; }
+.hof-copy p { margin: 0; }
+.hof-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 8px; }
+.hof-inline .tiny { max-width: 52ch; }
 
 /* Controller navigation (web/lib/padnav.mjs): a clear ring around the focused control – only while the controller
    was the last input; the mouse or a key takes it away again. Focused controls keep clear of the page edges. */

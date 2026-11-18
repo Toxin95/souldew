@@ -37,8 +37,9 @@ function helper() {
     // a Game Boy hack with moved RAM variables: the shifted addresses, as the play view uses them
     const wram = found?.gen <= 2 ? romloc?.wram || null : null;
     // an expanded GBA engine: the team searched for, the place through SaveBlock1 (as web/views/play.mjs does)
-    const expanded = found?.gen === 3 && romloc?.species?.engine === 'expanded';
-    const entry = wram ? { ...romwram.shiftEntry(found, wram), wram } : expanded ? parse.expandedEntry(found, romloc?.data?.maps3) : found;
+    // (or a decomp hack whose RAM moved: romloc.mjs gen3RamMoved)
+    const expanded = found?.gen === 3 && (romloc?.species?.engine === 'expanded' || !!romloc?.data?.maps3?.moved);
+    const entry = wram ? { ...romwram.shiftEntry(found, wram), wram } : expanded ? parse.expandedEntry(found, romloc?.data?.maps3, romloc?.items?.names) : found;
     const species = romloc?.species || null;
     // what the play view does (web/views/play.mjs): a GBA ROM's own species table – for an expanded engine also its own
     // item names and move numbers (server/lib/romloc.mjs ownTables3)
@@ -83,7 +84,7 @@ function helper() {
   function place() {
     const { location, maps, entry, rom, state, tables } = ctx;
     if (ctx.hack) return null;
-    const r = location.readLocation(maps, entry, e.read, { rom, state });
+    const r = location.readLocation(maps, entry, e.read, { rom, state, gbMaps: ctx.romloc?.gbMaps || null });
     if (!r) return null;
     const table = location.locationLabel(r.gen, r.id, tables, 'en');
     const shown = location.placeName ? location.placeName(r, { rom, table, lang: 'en' }) : (rom?.lang === 'en' && r.romName) || table || r.romName;
@@ -113,7 +114,7 @@ function helper() {
       party: parse.withBattleHp(res.party, fight).map((m) => ({ species: m.species, name: name(m.species), nickname: m.nickname, level: m.level, hp: m.hp, maxHp: m.maxHp, status: m.status, metLocation: m.metLocation ?? null, metLevel: m.metLevel ?? null, isEgg: !!m.isEgg, key: m.key, item: m.item || 0, ...(m.itemName ? { itemName: m.itemName } : {}), itemLabel: m.item ? (m.itemOwn ? m.itemName || '' : ctx.data?.itemName?.(m.item, entry.gen) || '') : '', moves: m.moves || [] })),
       boxes: Array.isArray(res.boxes) ? res.boxes.length : null,
       badges: res.badges ?? null,
-      battle: fight ? { kind: fight.kind, enemy: fight.enemy ? { species: fight.enemy.species, name: name(fight.enemy.species), level: fight.enemy.level, hp: fight.enemy.hp, maxHp: fight.enemy.maxHp, moves: fight.enemy.moves || [], ...(fight.enemy.types ? { types: fight.enemy.types } : {}) } : null, active: fight.active || null } : null,
+      battle: fight ? { kind: fight.kind, enemy: fight.enemy ? { species: fight.enemy.species, name: name(fight.enemy.species), level: fight.enemy.level, hp: fight.enemy.hp, maxHp: fight.enemy.maxHp, moves: fight.enemy.moves || [], ...(fight.enemy.types ? { types: fight.enemy.types } : {}), ...(fight.enemy.status !== undefined ? { status: fight.enemy.status } : {}), ...(fight.enemy.catchRate ? { catchRate: fight.enemy.catchRate } : {}) } : null, active: fight.active || null, ...(fight.balls ? { balls: fight.balls } : {}) } : null,
     };
   }
 

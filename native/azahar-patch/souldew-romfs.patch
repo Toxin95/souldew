@@ -1,0 +1,320 @@
+diff --git a/src/citra_libretro/citra_libretro.cpp b/src/citra_libretro/citra_libretro.cpp
+index a070477..6dff945 100644
+--- a/src/citra_libretro/citra_libretro.cpp
++++ b/src/citra_libretro/citra_libretro.cpp
+@@ -45,6 +45,7 @@
+ #include "core/frontend/applets/default_applets.h"
+ #include "core/frontend/image_interface.h"
+ #include "core/hle/kernel/kernel.h"
++#include "core/file_sys/ivfc_archive.h"
+ #include "core/hle/kernel/memory.h"
+ #include "core/hle/kernel/process.h"
+ #include "core/loader/loader.h"
+@@ -743,6 +744,53 @@ void* retro_get_memory_data(unsigned id) {
+     return NULL;
+ }
+ 
++extern "C" {
++
++// ---- souldew: the game's RomFS reads (souldew's "music from the ROM") ---------------------------------------------
++// Every read the game makes from a RomFS (core/file_sys/ivfc_archive.cpp, IVFCFile::Read) is noted in a small
++// lock-free ring; souldew drains it between frames to see which music stream the game reads and how far it got. The
++// RomFS itself (its tables, the stream's header and data) is read through the same reader the game reads – the game's
++// own RomFS, its update's, a LayeredFS mod's – so what souldew finds is what the game plays.
++
++/// Up to `max` reads since the last call into `out`, 3 × u64 each: serial (0, 1, 2 …; a gap = reads lost because
++/// nobody drained them in time), offset (from the start of the RomFS' level 3), length | tag << 32 (which RomFS). The
++/// number of reads is returned. Any thread may read the RomFS meanwhile; call this from one thread only.
++RETRO_API uint32_t souldew_romfs_reads(uint64_t* out, uint32_t max) {
++    if (!out || !max)
++        return 0;
++    FileSys::Souldew::RomFSRead tmp[64];
++    uint32_t n = 0;
++    while (n < max) {
++        const uint32_t got = FileSys::Souldew::DrainReads(tmp, std::min<uint32_t>(64, max - n));
++        for (uint32_t i = 0; i < got; i++) {
++            out[3 * (n + i)] = tmp[i].serial;
++            out[3 * (n + i) + 1] = tmp[i].offset;
++            out[3 * (n + i) + 2] = static_cast<uint64_t>(tmp[i].length) | (static_cast<uint64_t>(tmp[i].tag) << 32);
++        }
++        n += got;
++        if (got < 64)
++            break;
++    }
++    return n;
++}
++
++/// Reads `size` bytes of the RomFS `tag` at `offset` (its level 3) into `out` – between two retro_run()s. Returns the
++/// bytes read: 0 when that RomFS is gone, fewer at its end. Not noted as a read of the game.
++RETRO_API uint32_t souldew_romfs_read(uint32_t tag, uint64_t offset, void* out, uint32_t size) {
++    if (!emu_instance || !emu_instance->game_loaded || !out || !size)
++        return 0;
++    return FileSys::Souldew::ReadRomFS(tag, offset, static_cast<uint8_t*>(out), size);
++}
++
++/// The size of the RomFS `tag` (its level 3), 0 when it is gone.
++RETRO_API uint64_t souldew_romfs_size(uint32_t tag) {
++    if (!emu_instance || !emu_instance->game_loaded)
++        return 0;
++    return FileSys::Souldew::RomFSSize(tag);
++}
++
++} // extern "C"
++
+ size_t retro_get_memory_size(unsigned id) {
+     return 0;
+ }
+diff --git a/src/citra_libretro/libretro.osx.def b/src/citra_libretro/libretro.osx.def
+index 0d43acd..36101ff 100644
+--- a/src/citra_libretro/libretro.osx.def
++++ b/src/citra_libretro/libretro.osx.def
+@@ -19,6 +19,9 @@ _retro_serialize
+ _retro_unserialize
+ _retro_cheat_reset
+ _retro_cheat_set
++_souldew_romfs_read
++_souldew_romfs_reads
++_souldew_romfs_size
+ _retro_load_game
+ _retro_load_game_special
+ _retro_unload_game
+diff --git a/src/core/file_sys/ivfc_archive.cpp b/src/core/file_sys/ivfc_archive.cpp
+index 046d9ad..0a17380 100644
+--- a/src/core/file_sys/ivfc_archive.cpp
++++ b/src/core/file_sys/ivfc_archive.cpp
+@@ -2,13 +2,16 @@
+ // Licensed under GPLv2 or any later version
+ // Refer to the license.txt file included.
+ 
++#include <algorithm>
+ #include <cstring>
+ #include <memory>
++#include <mutex>
+ #include <utility>
+ #include "common/archives.h"
+ #include "common/common_types.h"
+ #include "common/logging/log.h"
+ #include "core/file_sys/ivfc_archive.h"
++#include "core/file_sys/souldew_romfs_ring.h"
+ 
+ SERIALIZE_EXPORT_IMPL(FileSys::IVFCFile)
+ SERIALIZE_EXPORT_IMPL(FileSys::IVFCFileInMemory)
+@@ -18,6 +21,87 @@ SERIALIZE_EXPORT_IMPL(FileSys::ExeFSDelayGenerator)
+ 
+ namespace FileSys {
+ 
++// ---- souldew: the game's RomFS reads ------------------------------------------------------------------------------
++namespace Souldew {
++namespace {
++SouldewRomfs::Ring<256> ring;
++// The readers seen so far, by their control block (owner_before: an expired weak_ptr still holds it, so a new reader
++// can never be taken for an old one). A few live at a time – the game's RomFS, its update's, system archives.
++struct Known {
++    std::weak_ptr<RomFSReader> reader;
++    u32 tag = 0;
++};
++constexpr std::size_t KNOWN = 16;
++std::mutex known_lock;
++Known known[KNOWN];
++u32 next_tag = 1;
++thread_local bool own_read = false; // ReadRomFS's own reads aren't the game's
++
++u32 TagOf(const std::shared_ptr<RomFSReader>& r) {
++    std::scoped_lock lock(known_lock);
++    Known* free_slot = nullptr;
++    for (auto& k : known) {
++        if (k.tag && !k.reader.owner_before(r) && !r.owner_before(k.reader))
++            return k.tag;
++        if (!free_slot && (!k.tag || k.reader.expired()))
++            free_slot = &k;
++    }
++    if (!free_slot)
++        free_slot = &known[next_tag % KNOWN]; // (more than KNOWN live readers: the oldest tag goes)
++    free_slot->reader = r;
++    free_slot->tag = next_tag++;
++    return free_slot->tag;
++}
++
++std::shared_ptr<RomFSReader> ReaderOf(u32 tag) {
++    std::scoped_lock lock(known_lock);
++    for (auto& k : known)
++        if (tag && k.tag == tag)
++            return k.reader.lock();
++    return nullptr;
++}
++
++void Note(const std::shared_ptr<RomFSReader>& r, u64 offset, std::size_t length) {
++    if (own_read || !r || !length)
++        return;
++    ring.Push(offset, static_cast<u32>(std::min<std::size_t>(length, 0xFFFFFFFFu)), TagOf(r));
++}
++} // namespace
++
++u32 DrainReads(RomFSRead* out, u32 max) {
++    SouldewRomfs::Read tmp[64];
++    u32 n = 0;
++    while (n < max) {
++        const u32 got = ring.Drain(tmp, std::min<u32>(64, max - n));
++        for (u32 i = 0; i < got; i++)
++            out[n + i] = {tmp[i].serial, tmp[i].offset, tmp[i].length, tmp[i].tag};
++        n += got;
++        if (got < 64)
++            break;
++    }
++    return n;
++}
++
++u64 RomFSSize(u32 tag) {
++    const auto r = ReaderOf(tag);
++    return r ? r->GetSize() : 0;
++}
++
++u32 ReadRomFS(u32 tag, u64 offset, u8* buffer, u32 length) {
++    const auto r = ReaderOf(tag);
++    if (!r || !buffer || !length)
++        return 0;
++    const u64 size = r->GetSize();
++    if (offset >= size)
++        return 0;
++    length = static_cast<u32>(std::min<u64>(length, size - offset));
++    own_read = true;
++    const std::size_t got = r->ReadFile(static_cast<std::size_t>(offset), length, buffer);
++    own_read = false;
++    return static_cast<u32>(std::min<std::size_t>(got, length));
++}
++} // namespace Souldew
++
+ IVFCArchive::IVFCArchive(std::shared_ptr<RomFSReader> file,
+                          std::unique_ptr<DelayGenerator> delay_generator_)
+     : romfs_file(std::move(file)) {
+@@ -98,6 +182,7 @@ IVFCFile::IVFCFile(std::shared_ptr<RomFSReader> file,
+ ResultVal<std::size_t> IVFCFile::Read(const u64 offset, const std::size_t length,
+                                       u8* buffer) const {
+     LOG_TRACE(Service_FS, "called offset={}, length={}", offset, length);
++    Souldew::Note(romfs_file, offset, length); // (souldew)
+     return romfs_file->ReadFile(offset, length, buffer);
+ }
+ 
+diff --git a/src/core/file_sys/ivfc_archive.h b/src/core/file_sys/ivfc_archive.h
+index 34e6c74..5f81b96 100644
+--- a/src/core/file_sys/ivfc_archive.h
++++ b/src/core/file_sys/ivfc_archive.h
+@@ -20,6 +20,25 @@
+ 
+ namespace FileSys {
+ 
++// souldew: the game's RomFS reads for souldew's "music from the ROM" (see souldew_romfs_ring.h and the souldew_romfs_*
++// calls in citra_libretro.cpp). IVFCFile::Read notes every read the game makes; the frontend drains them between
++// frames. Each RomFS reader (the game's own RomFS, its update's, LayeredFS, another title's) gets its own tag.
++namespace Souldew {
++struct RomFSRead {
++    u64 serial;
++    u64 offset;
++    u32 length;
++    u32 tag;
++};
++/// Up to `max` reads noted since the last call, oldest first; returns how many.
++u32 DrainReads(RomFSRead* out, u32 max);
++/// The size of the RomFS with this tag, 0 when it is gone (or never was).
++u64 RomFSSize(u32 tag);
++/// Reads the RomFS with this tag (its level 3, as the game sees it) – not noted as a read of the game. Returns the
++/// bytes read (0: no such RomFS any more).
++u32 ReadRomFS(u32 tag, u64 offset, u8* buffer, u32 length);
++} // namespace Souldew
++
+ class IVFCDelayGenerator : public DelayGenerator {
+     u64 GetReadDelayNs(std::size_t length) override {
+         // This is the delay measured for a romfs read.
+diff --git a/src/core/file_sys/souldew_romfs_ring.h b/src/core/file_sys/souldew_romfs_ring.h
+new file mode 100644
+index 0000000..05109f7
+--- /dev/null
++++ b/src/core/file_sys/souldew_romfs_ring.h
+@@ -0,0 +1,87 @@
++// souldew: a log of the game's RomFS reads (offset, length, which RomFS) for souldew's "music from the ROM" – the
++// host drains it between frames and tells souldew which stream file the game reads and how far it got.
++//
++// Bounded, lock-free, many writers / one reader. A writer takes the next serial (one fetch_add) and fills its slot
++// under a per-slot sequence number (odd while it writes, even when done – a seqlock); the reader takes slots in serial
++// order and checks the sequence before and after copying. When the reader falls more than N reads behind, the oldest
++// are overwritten: the reader skips them (the serials it hands out show the gap). Writers never wait and never take a
++// lock – a read of the game costs a few atomic operations more, nothing that touches emulation or its timing.
++// Header-only and free of Azahar's own types: test/rommusic.test.mjs compiles it on its own.
++#pragma once
++
++#include <atomic>
++#include <cstdint>
++
++namespace SouldewRomfs {
++
++struct Read {
++    uint64_t serial; // 0, 1, 2 … in the order the reads came (a gap: reads that were overwritten before draining)
++    uint64_t offset; // from the start of the RomFS' level 3 (where the game's own RomFS tables begin)
++    uint32_t length;
++    uint32_t tag; // which RomFS (1, 2 … per reader in the order they were first read)
++};
++
++template <uint32_t N = 256>
++class Ring {
++    static_assert(N && (N & (N - 1)) == 0, "N must be a power of two");
++
++    struct Slot {
++        std::atomic<uint64_t> seq{0}; // 2·serial + 1 while written, 2·serial + 2 once complete
++        std::atomic<uint64_t> offset{0};
++        std::atomic<uint32_t> length{0};
++        std::atomic<uint32_t> tag{0};
++    };
++    Slot slots[N];
++    std::atomic<uint64_t> head{0}; // the next serial a writer takes
++    uint64_t tail = 0;             // the next serial the reader wants (reader only)
++
++public:
++    /// Any thread: note one read.
++    void Push(uint64_t offset, uint32_t length, uint32_t tag) {
++        const uint64_t s = head.fetch_add(1, std::memory_order_relaxed);
++        Slot& x = slots[s & (N - 1)];
++        x.seq.store(2 * s + 1, std::memory_order_relaxed);
++        std::atomic_thread_fence(std::memory_order_release);
++        x.offset.store(offset, std::memory_order_relaxed);
++        x.length.store(length, std::memory_order_relaxed);
++        x.tag.store(tag, std::memory_order_relaxed);
++        x.seq.store(2 * s + 2, std::memory_order_release);
++    }
++
++    /// The reader (one thread): up to `max` reads in serial order into `out`, the number returned. Stops at a read
++    /// still being written (it comes with the next drain).
++    uint32_t Drain(Read* out, uint32_t max) {
++        uint32_t n = 0;
++        const uint64_t end = head.load(std::memory_order_acquire);
++        if (end - tail > N)
++            tail = end - N; // overwritten before we got here
++        while (n < max && tail < end) {
++            const uint64_t s = tail;
++            Slot& x = slots[s & (N - 1)];
++            const uint64_t a = x.seq.load(std::memory_order_acquire);
++            if (a < 2 * s + 2)
++                break; // its writer isn't done yet (or hasn't started)
++            if (a > 2 * s + 2) {
++                tail++; // a newer read took the slot: this one is lost
++                continue;
++            }
++            Read r{s, x.offset.load(std::memory_order_relaxed), x.length.load(std::memory_order_relaxed),
++                   x.tag.load(std::memory_order_relaxed)};
++            std::atomic_thread_fence(std::memory_order_acquire);
++            if (x.seq.load(std::memory_order_relaxed) != a) {
++                tail++; // overwritten while we copied it
++                continue;
++            }
++            out[n++] = r;
++            tail++;
++        }
++        return n;
++    }
++
++    /// Reads ever noted (diagnostics).
++    uint64_t Count() const {
++        return head.load(std::memory_order_relaxed);
++    }
++};
++
++} // namespace SouldewRomfs

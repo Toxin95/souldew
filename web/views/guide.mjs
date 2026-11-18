@@ -1,30 +1,74 @@
 import { html, useState } from '/vendor/htm-preact.mjs';
-import { useApp, saveDiagnostics } from '../lib/ui.mjs';
+import { useApp, saveDiagnostics, openExternal } from '../lib/ui.mjs';
 import { Icon } from '../lib/icons.mjs';
-import { t } from '../lib/i18n.mjs';
-import { resolve as resolveControls, keyLabel } from '../lib/controls.mjs';
-import { shortcut } from '../lib/platform.mjs';
+import { t, currentLang } from '../lib/i18n.mjs';
+import { LINKS } from '../lib/links.mjs';
+import { resolve as resolveControls, resolveHotkeys, keyLabel, HOTKEY_ROWS } from '../lib/controls.mjs';
+import { shortcut, IS_MAC } from '../lib/platform.mjs';
 
-export const SHORTCUTS = () => [
-  ['Tab', t('keys.turboHold', 'Hold for fast forward')],
-  ['T', t('keys.turboToggle', 'Toggle turbo (2× → 3× → 4×)')],
-  ['P', t('keys.pause', 'Pause / resume')],
-  ['F5', t('keys.quicksaveSel', 'Quick save state (selected slot)')],
-  ['F8', t('keys.quickloadSel', 'Quick load state (selected slot)')],
-  [shortcut('Shift+1–4', { space: true }), t('keys.saveSlot', 'Save to slot 1–4')],
-  ['1–4', t('keys.loadSlot', 'Load slot 1–4')],
-  ['F12', t('keys.screenshot', 'Screenshot')],
-  ['M', t('keys.mute', 'Sound on/off')],
-  ['+ / –', t('keys.volume', 'Louder / quieter')],
-  ['F', t('keys.fullscreen', 'Fullscreen game')],
-  ['R', t('keys.reset', 'Reset the game (asks first)')],
-  // menu accelerators (electron/main.mjs) – only exist in the desktop app; ⌘ on a Mac, Ctrl on Windows
-  ...(window.sls?.native ? [
-    [shortcut('Mod+1–5', { space: true }), t('keys.sectionsNavStream', 'Library · SoulLink · Nuzlocke · Connection · Stream')],
-    [shortcut('Mod+O', { space: true }), t('keys.add', 'Add games')],
-    [shortcut('Mod+B', { space: true }), t('keys.sidebar', 'Show / hide the sidebar')],
-  ] : []),
-];
+/**
+ * A key binding for display, with its modifiers: "Tab", "⇧ Tab" / "⌘+" on a Mac, "Shift+Tab" / "Ctrl+R" elsewhere – "–"
+ * for none. A list of keys (a shortcut's) shows its first.
+ */
+export function comboLabel(b, key = null) {
+  if (Array.isArray(b)) b = b[0];
+  if (!b) return '–';
+  const mods = [b.ctrl && 'Ctrl', b.alt && 'Alt', b.shift && 'Shift', b.meta && (IS_MAC ? 'Cmd' : 'Meta')].filter(Boolean);
+  const k = key ?? keyLabel(b);
+  // (the key's own name may hold a "+": Num +)
+  return mods.length ? shortcut([...mods, 'K'].join('+'), { space: true }).replace(/K$/, k) : k;
+}
+
+/** " (P)" after a button's name in the play bar – nothing when the shortcut has no key. */
+export const hotkeyHint = (keys) => (keys?.length ? ` (${comboLabel(keys[0])})` : '');
+
+/** The shortcuts' names (lib/controls.mjs HOTKEYS) – Settings › Controls and › Controller, Help. */
+export function hotkeyLabel(id) {
+  const n = /^(save|load)(\d)$/.exec(id);
+  if (n) return n[1] === 'save' ? t('keys.saveSlotN', 'Save to slot {n}', { n: n[2] }) : t('keys.loadSlotN', 'Load slot {n}', { n: n[2] });
+  return {
+    ffHold: t('ctl.ffHold', 'Fast-forward (hold)'),
+    ffToggle: t('ctl.ffToggle', 'Fast-forward on / off'),
+    turbo: t('keys.turboToggle', 'Toggle turbo (2× → 3× → 4×)'),
+    faster: t('play.faster', 'Faster'),
+    slower: t('play.slower', 'Slower'),
+    pause: t('keys.pause', 'Pause / resume'),
+    reset: t('keys.reset', 'Reset the game (asks first)'),
+    quicksave: t('keys.quicksaveSel', 'Quick save state (selected slot)'),
+    quickload: t('keys.quickloadSel', 'Quick load state (selected slot)'),
+    screenshot: t('keys.screenshot', 'Screenshot'),
+    mute: t('keys.mute', 'Sound on/off'),
+    louder: t('play.louder', 'Louder'),
+    quieter: t('play.quieter', 'Quieter'),
+    fullscreen: t('keys.fullscreen', 'Fullscreen game'),
+  }[id] || id;
+}
+
+/**
+ * The four slot keys of "save" or "load" for display: "⇧ 1–4" / "1–4" while they are the digits 1 to 4 (with the same
+ * modifiers), else each one ("1 2 J 4", "–" for none).
+ */
+export function slotKeys(prefix, hot) {
+  const first = [1, 2, 3, 4].map((n) => hot?.[`${prefix}${n}`]?.[0] || null);
+  const row = first.every((c, i) => c && c.keyCode === 49 + i && ['shift', 'ctrl', 'alt', 'meta'].every((m) => !!c[m] === !!first[0][m]));
+  return row ? comboLabel(first[0], '1–4') : first.map((c) => comboLabel(c)).join(' ');
+}
+
+/** The shortcuts while playing for Help, with the keys in use: [[keys, what it does], …]. controls: config.controls. */
+export const SHORTCUTS = (controls = null) => {
+  const hot = resolveHotkeys(controls);
+  return [
+    // (the rows of Settings › Controls)
+    ...HOTKEY_ROWS.map((r) => (r.id === 'save' ? [slotKeys('save', hot), t('keys.saveSlot', 'Save to slot 1–4')]
+      : r.id === 'load' ? [slotKeys('load', hot), t('keys.loadSlot', 'Load slot 1–4')] : [comboLabel(hot[r.id]), hotkeyLabel(r.id)])),
+    // menu accelerators (electron/main.mjs) – only exist in the desktop app; ⌘ on a Mac, Ctrl on Windows
+    ...(window.sls?.native ? [
+      [shortcut('Mod+1–5', { space: true }), t('keys.sectionsNavStream', 'Library · SoulLink · Nuzlocke · Connection · Stream')],
+      [shortcut('Mod+O', { space: true }), t('keys.add', 'Add games')],
+      [shortcut('Mod+B', { space: true }), t('keys.sidebar', 'Show / hide the sidebar')],
+    ] : []),
+  ];
+};
 
 export const buttonLabel = (id) => ({
   up: t('ctl.up', 'D-Pad up'), down: t('ctl.down', 'D-Pad down'), left: t('ctl.left', 'D-Pad left'), right: t('ctl.right', 'D-Pad right'),
@@ -65,7 +109,7 @@ export function ConnectionText({ group = false } = {}) {
 }
 
 export function GuideView() {
-  const { route } = useApp();
+  const { route, status } = useApp();
   const [tab, setTab] = useState(route.params.tab || 'start');
   return html`<div class="stack-l">
     <div class="topbar"><h1>${t('guide.title', 'Help')}</h1></div>
@@ -84,7 +128,7 @@ export function GuideView() {
     </section>`}
     ${tab === 'keys' && html`<div class="grid-2">
       <section class="panel stack"><h2>${t('guide.shortcuts', 'Shortcuts while playing')}</h2>
-        <div class="keys">${SHORTCUTS().map(([k, l]) => html`<span class="kbd">${k}</span><span>${l}</span>`)}</div></section>
+        <div class="keys">${SHORTCUTS(status?.config?.controls).map(([k, l]) => html`<span class="kbd">${k}</span><span>${l}</span>`)}</div></section>
       <section class="panel stack"><h2>${t('guide.controls', 'Game controls')}</h2><${ControlsTable} />
         <p class="small faint">${t('guide.gamepad', 'Game controllers work too – just plug them in.')} ${t('guide.changeKeys', 'You can change the keys in Settings › Controls.')}</p></section>
     </div>`}
@@ -100,6 +144,10 @@ export function GuideView() {
       <details><summary>${t('faq.q7', 'Something doesn’t work right (music, live tracking)?')}</summary><div class="stack" style="margin-top:8px">
         <p class="prose small muted">${t('faq.a7', 'Right after it happens, save the diagnostics and send the file along with what you did. It holds what souldew read from the game and decided this session (song numbers, levels, what the turbo sound played) – no ROM, save file or invite.')}</p>
         <div class="row"><button class="btn small" onClick=${() => saveDiagnostics()}><${Icon} name="save" size=${14} />${t('play.diag', 'Save diagnostics')}</button></div></div></details>
+      <details><summary>${t('faq.q8', 'Does souldew send anything about me?')}</summary><div class="stack" style="margin-top:8px">
+        <div class="prose small muted"><p>${t('faq.a8a', 'No account, no analytics. The only thing souldew reports by itself is an anonymous “playing now” heartbeat for the player count on the souldew Discord: while a game runs, once a minute, the system (GB, GBA, DS, 3DS), solo / Nuzlocke / SoulLink, the app version and a random id that is new for every game. No name, no game title, no run, no ROM – and the IP address isn’t stored.')}</p>
+          <p>${t('faq.a8b', 'Don’t want to be counted? Switch off “Count me in ‘playing now’” in Settings › General – it stops right away.')}</p></div>
+        <div class="row"><button class="btn small" onClick=${() => openExternal(currentLang() === 'de' ? LINKS.privacy : LINKS.privacyDocs)}><${Icon} name="external" size=${14} />${t('set.presenceMore', 'What exactly is sent')}</button></div></div></details>
     </section>`}
   </div>`;
 }

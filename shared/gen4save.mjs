@@ -165,7 +165,7 @@ function parseMon(raw, data, { party }) {
     metDate: d[0x7b] ? `20${String(d[0x7b]).padStart(2, '0')}-${String(d[0x7c]).padStart(2, '0')}-${String(d[0x7d]).padStart(2, '0')}` : null,
     ball: Math.max(d[0x86], d[0x83]),
     originGame: d[0x5f],
-    shiny: (((pid >>> 16) ^ (pid & 0xffff) ^ tid ^ sid) >>> 0) < 8,
+    shiny: (((pid >>> 16) ^ (pid & 0xffff) ^ tid ^ sid) >>> 0) < (data?.shinyOdds ?? 8), // (a run's own rate: shared/shiny.mjs)
     checksumOk,
   };
   if (party && raw.length >= PK_PARTY) {
@@ -195,13 +195,16 @@ function pickPartition(u8) {
   return { general: gens[0].p, storage: stor.length ? stor[0].p + STORAGE_START : null, counter: gens[0].g.count, coherent: false };
 }
 
+/** An error about the save file: `code` (+ `vars`) is what the app shows in the player's language (web/lib/errors.mjs). */
+const saveError = (code, message, vars) => Object.assign(new Error(message), { code, ...(vars ? { vars } : {}) });
+
 /**
  * Parse a HGSS save.
  * @param {Uint8Array} file  raw .sav/.dsv contents
  * @param {object} data      shared/data/gen4.json (names, char table, exp tables)
  */
 export function parseHgssSave(file, data) {
-  if (file.length < 0x40000) throw new Error(`Save zu klein (${file.length} Bytes) – erwartet 512 KB`);
+  if (file.length < 0x40000) throw saveError('saveTooSmall', `Save file too small (${file.length} bytes) – expected 512 KB`, { size: file.length });
   // DeSmuME (and older souldew builds) keep a save only up to the last byte the game wrote: a fresh game has just the
   // first half (256 KB + 1). The rest of the 512 KB flash is erased – 0xFF – and the first partition holds the save.
   let u8 = file.length === 0x80000 ? file : file.subarray(0, 0x80000);
@@ -211,7 +214,7 @@ export function parseHgssSave(file, data) {
     u8 = full;
   }
   const pick = pickPartition(u8);
-  if (!pick) throw new Error('Kein gültiger Spielstand gefunden (noch nie im Spiel gespeichert?)');
+  if (!pick) throw saveError('saveNotFound', 'No valid save found (never saved in the game yet?)');
   const g = pick.general;
   const chars = data?.chars || {};
   const johto = u8[g + 0x7e];
@@ -259,8 +262,8 @@ export function parseHgssSave(file, data) {
 }
 
 export function locationName(id, data) {
-  if (id >= 2000) return data?.locationsSpecial?.[String(id)] || `Ort ${id}`;
-  return data?.locations?.[id] || `Ort ${id}`;
+  if (id >= 2000) return data?.locationsSpecial?.[String(id)] || `Location ${id}`;
+  return data?.locations?.[id] || `Location ${id}`;
 }
 
 function monKey(raw) {
@@ -281,7 +284,7 @@ export function moveToGraveyard(file, keys, { box = BOX_COUNT - 1 } = {}) {
   if (file.length < 0x80000) out.set(file);
   const u8 = out.length === 0x80000 ? out : out.subarray(0, 0x80000);
   const pick = pickPartition(u8);
-  if (!pick || !pick.coherent) throw new Error('Spielstand ist nicht eindeutig – bitte einmal im Spiel speichern und erneut versuchen.');
+  if (!pick || !pick.coherent) throw saveError('saveAmbiguous', 'The save file is ambiguous – save once in the game and try again.');
   const g = pick.general;
   const s = pick.storage;
   const count = Math.min(6, u32(u8, g + PARTY_COUNT));
@@ -299,7 +302,7 @@ export function moveToGraveyard(file, keys, { box = BOX_COUNT - 1 } = {}) {
     else keep.push(raw);
   }
   if (!moving.length) return { file: out, moved: [], box };
-  if (!keep.length) throw new Error('Das Team darf nicht leer werden – mindestens ein Pokémon muss im Team bleiben.');
+  if (!keep.length) throw saveError('teamEmpty', 'The team can’t become empty – at least one Pokémon has to stay in the team.');
 
   // Free slots, starting with the graveyard box and walking backwards through the boxes.
   const free = [];
@@ -311,7 +314,7 @@ export function moveToGraveyard(file, keys, { box = BOX_COUNT - 1 } = {}) {
       if (empty) free.push({ off, b });
     }
   }
-  if (free.length < moving.length) throw new Error('Keine freien Box-Plätze mehr.');
+  if (free.length < moving.length) throw saveError('boxesFull', 'No free box slots left.');
 
   const touchedBoxes = new Set();
   moving.forEach((m, i) => {

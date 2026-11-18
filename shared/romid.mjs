@@ -15,15 +15,19 @@ const ascii = (u8, a, b) => {
 };
 
 export const SYSTEMS = {
-  gb: { name: 'Game Boy', ext: ['gb'] },
+  gb: { name: 'Game Boy', ext: ['gb', 'sgb'] },
   gbc: { name: 'Game Boy Color', ext: ['gbc'] },
   gba: { name: 'Game Boy Advance', ext: ['gba'] },
   nds: { name: 'Nintendo DS', ext: ['nds'] },
   '3ds': { name: 'Nintendo 3DS', ext: CTR_EXTENSIONS },
 };
 
-/** ROMs the library reads whole (CRC32, inside .zip files too) – 3DS files are CTR_EXTENSIONS. */
-export const ROM_EXTENSIONS = ['gb', 'gbc', 'gba', 'nds'];
+/**
+ * ROMs the library reads whole (CRC32, inside .zip files too) – 3DS files are CTR_EXTENSIONS. A .sgb file (what some
+ * cartridge readers name a Game Boy game that supports the Super Game Boy, Red and Blue for example) is a plain Game
+ * Boy ROM and is handled like a .gb file everywhere.
+ */
+export const ROM_EXTENSIONS = ['gb', 'gbc', 'sgb', 'gba', 'nds'];
 /** Is this file extension (lower case, no dot) a 3DS game file? */
 export const isCtrExt = (ext) => CTR_EXTENSIONS.includes(String(ext || '').toLowerCase());
 export const PATCH_EXTENSIONS = ['xdelta', 'vcdiff', 'xdelta3', 'bps', 'ips', 'ups'];

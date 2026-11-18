@@ -78,7 +78,7 @@ export function joinGameId(m, rom, rootOf) {
 export const baseName = (name) => String(name || '').replace(/\s+#\d+$/, '').trim();
 
 /**
- * Body for POST /api/runs/build that restarts `old` (a full run manifest).
+ * Body for POST /api/runs/build that restarts `old` (a full run manifest) – its shiny rate too.
  * library: { roms, patches } from /api/library · runs: existing runs (for the "#n" name) ·
  * rules: the old run's current rules (doc `rules`; falls back to manifest.rules) ·
  * mySlot: which player of the old run is on this computer – slots (all 1–4 of them) stay as they were.
@@ -121,6 +121,9 @@ export function restartRequest(old, { library, runs, rules, mySlot = 'p1', gameT
     hackId,
     name: numberedName(baseName(old.name) || defaultRunName(players, mode), runs),
     rules: rules ?? old.rules ?? null,
+    ...(old.shiny ? { shiny: old.shiny } : {}),
+    // whoever starts the new attempt creates it – the host of the new run, who signs its rules (shared/hostrules.mjs)
+    ...(mode === 'soullink' ? { host: slots.includes(mySlot) ? mySlot : slots[0] } : {}),
   };
 }
 

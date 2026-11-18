@@ -104,6 +104,10 @@ export function gen3Trainers(rom, table) {
   for (let o = 0; o + 40 * 100 < rom.length; o += 4) {
     // trainer 0 (TRAINER_NONE): no party, an empty name with its terminator
     if (rom[o + 0x20] || rom[o + 0x21] || rom[o + 0x24] || rom[o + 0x27] || text3(rom, o + 4, 12, table) === null || !rec(o)) continue;
+    // (text right in front of the table can pass for an empty trainer – Modern Emerald's "…mid King" before gTrainers,
+    // which numbered every trainer one too high: Roxanne got Brawly's script. When the next entry is the real trainer 0,
+    // empty name and no party, the table starts there)
+    if (rom[o + 4] !== 0xff && rom[o + 44] === 0xff && !rom[o + 40 + 0x20] && rec(o + 40)?.name === '') continue;
     const list = [];
     let full = 0;
     for (let i = 0; i < 4096; i++) {

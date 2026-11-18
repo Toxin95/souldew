@@ -49,9 +49,9 @@ public class SysConstants {
     public static final String nnamesFile = "nicknames.txt";
 
     private static String getRootPath() {
-        // souldew: a 3DS build gets its own working folder (-Dsouldew.upr.root=…). UPR keeps the game files it reads in
-        // ROOT_PATH/tmp_<name>/ – next to the jar, i.e. inside the installed app, and shared by two builds of the same
-        // game. Without the property (every Gen 1–5 build) nothing changes.
+        // souldew: every bridge run gets its own working folder (-Dsouldew.upr.root=…). UPR keeps the game files it reads
+        // in ROOT_PATH/tmp_<name>/ – next to the jar, i.e. inside the installed app, and shared by two runs on the same
+        // game. Without the property (UPR on its own) nothing changes.
         String own = System.getProperty("souldew.upr.root");
         if (own != null && !own.isEmpty()) {
             return new File(own).getAbsolutePath() + File.separator;

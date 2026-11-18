@@ -1,17 +1,18 @@
 // SoulLink companion inside the game session: the level cap, what may still be caught, the linked groups
 // side by side (one column per player; a solo Nuzlocke gets its team list instead), a battle helper (opponent,
-// type matchups, catch rules), the shiny/legendary encounter effect and the prominent "pair died" alert.
+// type matchups, catch rules, catch chance), the shiny/legendary encounter effect and the prominent "pair died" alert.
 import { html, useState, useEffect, useRef } from '/vendor/htm-preact.mjs';
 import { useApp, Sprite, Types, HpBar, Modal, useFocusTrap } from '../lib/ui.mjs';
 import { Icon } from '../lib/icons.mjs';
-import { t } from '../lib/i18n.mjs';
-import { speciesName, typeLabel, moveName, romTypesNow } from '../lib/data.mjs';
+import { t, currentLang } from '../lib/i18n.mjs';
+import { speciesName, typeLabel, moveName, romTypesNow, pokeapi } from '../lib/data.mjs';
 import {
   party as partyAreas, live, pairState, encounter, levelCap, rules as getRules, dupeOf, players as getPlayers,
-  areaName, causeText, slotsOf, othersOf, openAreas, isNuzlocke, pairTypeClash, typeHelpOn,
+  areaName, causeText, slotsOf, othersOf, openAreas, isNuzlocke, pairTypeClash, typeHelpOn, lives as getLives, livesFor,
 } from '../lib/run.mjs';
 import { statusOf, statusLabel, shownLevel } from './party.mjs';
 import { effectiveness, defenseChart, moveInfo, matchup } from '/shared/typechart.mjs';
+import { catchRow, chanceText, holdFoeStatus } from '/shared/catchrate.mjs';
 import { isLegendary } from '/shared/legendaries.mjs';
 import { RestartModal } from './restart.mjs';
 import { ShareButton } from './liveshare.mjs';
@@ -77,6 +78,11 @@ export function RunStrip({ mine, onRules }) {
   const state = !cap || !top ? 'ok' : top > cap ? 'over' : top >= cap - 2 ? 'near' : 'ok';
   const blocked = blockedTypes(doc, runData, me, manifest);
   const open = solo ? openAreas(doc, manifest, me).length : null;
+  // the lives rule: what is left of the pool this player spends from (shared, or their own)
+  const rule = getLives(doc, manifest);
+  const lv = rule && livesFor(doc, manifest, me);
+  const livesLabel = solo || rule?.pool === 'player' ? t('session.lives', 'life left|lives left', { count: lv?.left })
+    : t('session.livesShared', 'shared life left|shared lives left', { count: lv?.left });
   return html`<section class="run-strip">
     <div class="rs-row">
       ${cap ? html`<div class=${`cap ${state}`} title=${vanilla ? t('cap.vanillaHint', 'Ace level of the next boss in the unmodified game') : ''}>
@@ -89,8 +95,10 @@ export function RunStrip({ mine, onRules }) {
     </div>
     ${state === 'near' && html`<p class="rs-warn near">${top === cap ? t('cap.at', 'At the cap – don’t level further before {boss}.', { boss: boss?.name || '' }) : t('cap.near', 'Close to the cap: {n} level left.|Close to the cap: {n} levels left.', { n: cap - top, count: cap - top })}</p>`}
     ${state === 'over' && html`<p class="rs-warn over">${t('cap.over', 'Over the cap! Level {lv} > {cap} – box or swap before the next boss.', { lv: top, cap })}</p>`}
-    ${solo && html`<div class="rs-chips">
-      <span class="rs-chip open" title=${t('session.openHint', 'Areas without an encounter yet')}><b class="num">${open}</b> ${t('session.openAreas', 'open area|open areas', { count: open })}</span>
+    ${(solo || lv) && html`<div class="rs-chips">
+      ${solo && html`<span class="rs-chip open" title=${t('session.openHint', 'Areas without an encounter yet')}><b class="num">${open}</b> ${t('session.openAreas', 'open area|open areas', { count: open })}</span>`}
+      ${lv && html`<span class=${`rs-chip lives ${lv.low ? 'low' : ''}`} title=${t('session.livesHint', '{left} of {total} lives left – every death costs one.', { left: lv.left, total: rule.total })}>
+        <${Icon} name="heart" size=${10} /><b class="num">${lv.left}</b> ${livesLabel}</span>`}
       ${r.noBattleItems && html`<span class="rs-chip honour" title=${t('nz.honourHint', 'The app can’t check this – it only reminds you. Keep it yourself.')}>${t('session.noItems', 'No bag items in battle')}</span>`}
       ${r.setMode && html`<span class="rs-chip honour" title=${t('nz.honourHint', 'The app can’t check this – it only reminds you. Keep it yourself.')}>${t('session.setMode', 'Set mode')}</span>`}
       ${r.centerLimit > 0 && html`<${CenterCounter} limit=${r.centerLimit} />`}
@@ -119,8 +127,11 @@ function CenterCounter({ limit }) {
   </span>`;
 }
 
+// (a missed encounter may know the Pokémon that got away – it is no team member: shown as "missed")
+const caughtSpecies = (enc) => (enc?.outcome === 'caught' ? enc.species : null);
+
 function PairMon({ mon, enc, dead, gen, side }) {
-  const species = mon?.species || enc?.species;
+  const species = mon?.species || caughtSpecies(enc);
   if (!species) return html`<div class=${`pm empty ${side}`}><span>${enc?.outcome === 'missed' ? t('routes.failed', 'missed') : t('pairs.open', 'open')}</span></div>`;
   const boxed = !mon;
   const lv = shownLevel(mon?.level) || shownLevel(enc?.level);
@@ -201,7 +212,7 @@ export function LinkedPairs({ mine, gen, compact }) {
 
 /** One player's mon in a 3–4 player group row: sprite, level and HP – the name is in the tooltip (the column is narrow). */
 function GroupMon({ slot, name, mon, enc, dead, gen }) {
-  const species = mon?.species || enc?.species;
+  const species = mon?.species || caughtSpecies(enc);
   const nick = species ? mon?.nick || enc?.nickname || speciesName(species) : '';
   const label = `${name}: ${species ? nick : enc?.outcome === 'missed' ? t('routes.failed', 'missed') : t('pairs.open', 'open')}`;
   if (!species) return html`<div class="gm empty" style=${`--acc:var(--${slot})`} title=${label}><span>${enc?.outcome === 'missed' ? '✕' : '·'}</span></div>`;
@@ -248,18 +259,20 @@ function TeamList({ mine, gen, compact }) {
 }
 
 // The battle helper's place, per player on this computer: next to the game on the left (default) or on the right,
-// and folded in to its head line. (A run whose host switched the matchup help off keeps it off either way.)
+// and folded in to its head line. (A run whose host switched the matchup help off keeps it off either way.) `hits`:
+// the opponent's moves ("What hits …") shown – folded in by default, they'd tell what the opponent knows before it
+// uses it.
 const PANEL_KEY = 'sl-battle-panel';
-const PANEL_DEFAULT = { side: 'left', collapsed: false };
+const PANEL_DEFAULT = { side: 'left', collapsed: false, hits: false };
 function readPanelPrefs() {
   try {
     const v = JSON.parse(localStorage.getItem(PANEL_KEY) || 'null');
-    return { side: v?.side === 'right' ? 'right' : 'left', collapsed: v?.collapsed === true };
+    return { side: v?.side === 'right' ? 'right' : 'left', collapsed: v?.collapsed === true, hits: v?.hits === true };
   } catch {
     return PANEL_DEFAULT;
   }
 }
-/** [prefs, update] – { side: 'left'|'right', collapsed } for the battle helper, remembered in this profile. */
+/** [prefs, update] – { side: 'left'|'right', collapsed, hits } for the battle helper, remembered in this profile. */
 export function useBattlePanelPrefs() {
   const [p, setP] = useState(readPanelPrefs);
   const update = (patch) => setP((prev) => {
@@ -279,9 +292,11 @@ const monName = (m) => (m ? m.nickname || speciesName(m.species) : '');
 
 /**
  * Battle helper: who is out there, how your moves land, what hits you, how the rest of your team would fare, and
- * whether you may catch it. `side` / `collapsed` / `onPrefs`: where the player put it (useBattlePanelPrefs).
+ * whether you may catch it – and how likely one ball does. `side` / `collapsed` / `hitsOpen` / `onPrefs`: where the
+ * player put it and what they unfolded (useBattlePanelPrefs). `game`: the running game's memory-table id (a formula
+ * quirk of Ruby/Sapphire).
  */
-export function BattlePanel({ battle, mine, gen, isRun, side = 'left', collapsed = false, onPrefs, noMoves = false }) {
+export function BattlePanel({ battle, mine, gen, game = '', isRun, side = 'left', collapsed = false, hitsOpen = false, onPrefs, noMoves = false }) {
   const { doc, manifest, me, runData } = useApp();
   const moves = useMoves();
   const foe = battle?.enemy;
@@ -291,9 +306,10 @@ export function BattlePanel({ battle, mine, gen, isRun, side = 'left', collapsed
   // the types a Pokémon has right now: the battle's own (a type change in battle – the reader has them where it can
   // tell, shared/live/parse.mjs), else the game's types of its species (read from the ROM, web/lib/data.mjs)
   const actives = battle.actives?.length ? battle.actives : [battle.active];
-  const typesOf = (id, mon = null) => {
+  // (`form`: a DS Pokémon's alternate form – Rotom's appliance, Wormadam's cloak … have types of their own)
+  const typesOf = (id, mon = null, form = mon?.form) => {
     const a = mon && actives.find((x) => x?.types?.length && team[x.index] === mon);
-    return a ? a.types : runData ? runData.types(id, slot) : [];
+    return a ? a.types : runData ? runData.types(id, slot, form) : [];
   };
   const fairy = !!runData?.fairy; // a hack that added the type
   // the game's own types (romtypes.mjs): a hack with types of its own needs its chart (else no matchups) and its moves'
@@ -303,7 +319,7 @@ export function BattlePanel({ battle, mine, gen, isRun, side = 'left', collapsed
   const moveGen = rt?.fairy && !rt.moves ? Math.max(gen, 6) : gen;
   // everyone the reader sees out there (a double battle: both), the one it follows first
   const foes = (battle.foes?.length ? battle.foes : [foe]).filter((f) => f?.species);
-  const foeTypesOf = (f) => (f.types?.length ? f.types : typesOf(f.species));
+  const foeTypesOf = (f) => (f.types?.length ? f.types : typesOf(f.species, null, f.form));
   const foeTypes = foeTypesOf(foe);
   // the player's Pokémon that are out – the reader's active slots (they follow a switch); unknown → the first one that
   // can fight, as the game sends it out
@@ -335,7 +351,9 @@ export function BattlePanel({ battle, mine, gen, isRun, side = 'left', collapsed
     else if (clash) rule = { ok: false, clash: true, text: clash.now
       ? t('battle.typePairNow', 'Type rule: {name} is fighting {mon} here right now – also {type}. Only one of you may catch theirs, or {type} is taken twice.', { name: names[clash.slot]?.name || '', mon: speciesName(clash.species), type: typeLabel(clash.type) })
       : t('battle.typePair', 'Type rule: {name} caught {mon} here – also {type}. You may not catch this one as well, or {type} is taken twice.', { name: names[clash.slot]?.name || '', mon: speciesName(clash.species), type: typeLabel(clash.type) }) };
-    else if (dupe && statics !== 'free') rule = { ok: false, text: solo ? t('battle.dupeSolo', 'Dupe – keep looking. It doesn’t count, flee freely ({area}).', { area: areaName(doc, manifest, dupe.area) }) : t('battle.dupe', 'Dupes clause: this evolution line is already caught ({area}).', { area: areaName(doc, manifest, dupe.area) }) };
+    else if (dupe && statics !== 'free') rule = { ok: false, text: solo ? t('battle.dupeSolo', 'Dupe – keep looking. It doesn’t count, flee freely ({area}).', { area: areaName(doc, manifest, dupe.area) })
+      : dupe.missed ? t('battle.dupeMissed', 'Dupes clause: this evolution line already got away once ({area}).', { area: areaName(doc, manifest, dupe.area) })
+        : t('battle.dupe', 'Dupes clause: this evolution line is already caught ({area}).', { area: areaName(doc, manifest, dupe.area) }) };
     else if (statics === 'free') rule = { ok: true, text: t('battle.staticFree', 'Legendary/static – a free catch, it doesn’t use up the area.') };
     else if (statics === 'area') rule = { ok: true, text: t('battle.staticArea', 'Legendary/static – counts as this area’s encounter.') };
     else if (solo) rule = { ok: true, text: t('battle.firstSolo', 'First encounter – catch it. (If this area is already used, it doesn’t count.)') };
@@ -355,7 +373,7 @@ export function BattlePanel({ battle, mine, gen, isRun, side = 'left', collapsed
   const moveLabel = other === 'left' ? t('battle.moveLeft', 'Show the battle helper left of the game') : t('battle.moveRight', 'Show the battle helper right of the game');
   const foldLabel = collapsed ? t('battle.expand', 'Show the battle helper in full') : t('battle.collapse', 'Fold the battle helper in');
   const head = html`<div class="bt-head">
-    ${collapsed ? html`<span class="bt-head-foes">${foes.map((f) => html`<span class="bt-head-foe" key=${`${f.species}:${f.level}`}><${Sprite} id=${f.species} shiny=${f.shiny} size=${30} gen=${gen} /><b>${speciesName(f.species)}</b><span class="num">${t('common.lv', 'Lv')} ${f.level}</span></span>`)}</span>`
+    ${collapsed ? html`<span class="bt-head-foes">${foes.map((f) => html`<span class="bt-head-foe" key=${`${f.species}:${f.level}`}><${Sprite} id=${f.species} form=${f.form} shiny=${f.shiny} size=${30} gen=${gen} /><b>${speciesName(f.species)}</b><span class="num">${t('common.lv', 'Lv')} ${f.level}</span></span>`)}</span>`
       : html`<span class="bt-title px">${t('battle.title', 'Battle')}</span>`}
     <span class="bt-kind">${kind}</span>
     ${onPrefs && html`<span class="bt-ctls">
@@ -378,30 +396,83 @@ export function BattlePanel({ battle, mine, gen, isRun, side = 'left', collapsed
     <${EncounterFx} battle=${battle} />
     ${head}
     ${foeData.map(({ f, types }) => html`<div class="bt-foe" key=${`${f.species}:${f.level}`}>
-      <${Sprite} id=${f.species} shiny=${f.shiny} size=${many ? 40 : 48} gen=${gen} />
+      <${Sprite} id=${f.species} form=${f.form} shiny=${f.shiny} size=${many ? 40 : 48} gen=${gen} />
       <div class="bt-foe-body">
         <div class="bt-name"><b>${speciesName(f.species)}</b><span class="num">${t('common.lv', 'Lv')} ${f.level}</span>
+          ${foeStatus(f) && html`<span class=${`pp-st ${foeStatus(f)}`}>${statusLabel(foeStatus(f))}</span>`}
           ${f.shiny && html`<span class="bt-tag shiny">✦ ${t('routes.bonusShiny', 'Shiny')}</span>`}${isLegendary(f.species) && html`<span class="bt-tag legend">${t('battle.legendary', 'Legendary')}</span>`}</div>
         <${Types} types=${types} />
         ${f.maxHp > 0 && html`<${HpBar} hp=${f.hp} max=${f.maxHp} />`}
       </div>
     </div>`)}
     ${ruleLine}
+    ${battle.kind === 'wild' && !(rule && !rule.ok) && html`<${CatchChance} foe=${foe} foes=${foes} types=${foeTypes} gen=${gen} game=${game} balls=${battle.balls} />`}
     ${notes.length > 0 && html`<div class="bt-notes">${notes.map((x) => html`<span class="rs-chip honour" title=${t('nz.honourHint', 'The app can’t check this – it only reminds you. Keep it yourself.')}>${x}</span>`)}</div>`}
     ${!help && html`<p class="tiny faint bt-nohelp">${t('battle.helpOff', 'Type matchup help is off in this run.')}</p>`}
     ${help && !matchups && html`<p class="tiny faint bt-nohelp">${t('battle.noChart', 'souldew couldn’t read this ROM hack’s type chart – it shows the types, but no matchups rather than wrong ones.')}</p>`}
-    ${help && matchups && outs.map((m) => html`<${OutHelp} key=${m.key || m.species} mon=${m} foes=${foeData} typesOf=${typesOf} movesOf=${movesOf} gen=${gen} />`)}
-    ${help && matchups && html`<${TeamCheck} team=${team} out=${new Set(outs)} foe=${foeData.find(({ f }) => !(f.maxHp > 0 && f.hp === 0)) || foeData[0]} typesOf=${typesOf} movesOf=${movesOf} gen=${gen} />`}
+    ${help && matchups && outs.map((m) => html`<${OutHelp} key=${m.key || m.species} mon=${m} foes=${foeData} typesOf=${typesOf} movesOf=${movesOf} gen=${gen}
+      hits=${onPrefs ? { open: hitsOpen, toggle: () => onPrefs({ hits: !hitsOpen }) } : null} />`)}
+    ${help && matchups && html`<${TeamCheck} team=${team} out=${new Set(outs)} foe=${foeData.find(({ f }) => !(f.maxHp > 0 && f.hp === 0)) || foeData[0]} typesOf=${typesOf} movesOf=${movesOf} gen=${gen} hideFoeMoves=${!!onPrefs && !hitsOpen} />`}
     ${help && matchups && foeData.map(({ f, types }) => types.length > 0 && html`<${TypeChart} key=${`c${f.species}`} title=${t('battle.chart', '{mon} against types', { mon: speciesName(f.species) })} chart=${defenseChart(types, gen, { fairy })} />`)}
     ${help && matchups && outs.map((m) => typesOf(m.species, m).length > 0 && html`<${TypeChart} key=${`m${m.key || m.species}`} title=${t('battle.myChart', 'Your {mon} against types', { mon: monName(m) })} chart=${defenseChart(typesOf(m.species, m), gen, { fairy })} mine />`)}
   </section>`;
 }
 
-/** One of your Pokémon that is out: how its moves land on every opponent, and what hits it. */
-function OutHelp({ mon, foes, typesOf, movesOf, gen }) {
+// a status condition the reader saw on an opponent (not "fainted" – its HP bar says that)
+const foeStatus = (f) => (f.status ? statusOf({ status: f.status }) : '');
+
+const BALL_ITEMS = { poke: 'poke-ball', great: 'great-ball', ultra: 'ultra-ball', safari: 'safari-ball', net: 'net-ball', nest: 'nest-ball', beast: 'beast-ball' };
+/** A ball by the games' own name in the app's language (PokeAPI's item names). */
+function ballName(ball) {
+  const names = pokeapi()?.items?.names;
+  const key = BALL_ITEMS[ball];
+  return names?.[currentLang()]?.[key] || names?.en?.[key] || key;
+}
+// a chance coloured like the matchups: likely green, unlikely amber, the rest plain
+const chanceClass = (p) => (p >= 0.5 ? 'xhigh' : p < 0.1 ? 'xlow' : 'x1');
+
+/**
+ * The chance to catch the wild opponent with one ball (shared/catchrate.mjs), per the game's own formula: one compact
+ * row, what it assumes in its tooltip. Only where the catch rate is known (shared/live/parse.mjs readLiveBattle), not
+ * where no ball can be thrown (`balls` 'none': a tutorial, the Safari Zone of Gen 2–4, the Bug-Catching Contest) nor
+ * while two opponents stand in Gen 3/4 (the game doesn't let a ball be aimed then). Without a status condition from
+ * the reader (Gen 5–7) it counts none and says so.
+ */
+function CatchChance({ foe, foes, types, gen, game, balls }) {
+  // (held for the battle: a poll without the status – Gen 3/4 when the struct isn't found that frame – keeps the last)
+  const held = useRef(null);
+  held.current = holdFoeStatus(held.current, `${foe.species}:${foe.level}:${foe.maxHp}`, foe.status);
+  if (balls === 'none' || !foe.catchRate || (gen <= 4 && foes.filter((f) => f.hp > 0).length > 1)) return null;
+  const { read: statusRead, status } = held.current;
+  const row = catchRow({ gen, rate: foe.catchRate, hp: foe.hp, maxHp: foe.maxHp, level: foe.level, status, species: foe.species }, { game, types, safari: balls === 'safari' });
+  if (!row) return null;
+  const st = foeStatus({ status });
+  const tip = [
+    t('battle.catchTip', 'One ball, as this game calculates it: catch rate {rate}, {hp}/{max} HP, level {level}{status}.', {
+      rate: foe.catchRate, hp: foe.hp, max: foe.maxHp, level: foe.level, status: st ? `, ${statusLabel(st)}` : '',
+    }),
+    !statusRead && t('battle.catchNoStatusTip', 'souldew can’t read status conditions in this game – asleep, frozen, paralysed, poisoned or burned it’s easier to catch than shown.'),
+    gen >= 5 && t('battle.catchCrit', 'Critical captures aren’t counted – they only make a catch more likely.'),
+    gen === 5 && t('battle.catchDarkGrass', 'In dark grass it’s harder until you have caught many species.'),
+  ].filter(Boolean).join('\n');
+  return html`<div class="bt-block bt-catch" title=${tip}>
+    <h4>${t('battle.catch', 'Catch chance')}${!statusRead ? html` <span class="bt-vs">· ${t('battle.catchNoStatus', 'status not read')}</span>` : ''}</h4>
+    <ul class="bt-catch-row">${row.map(({ ball, p }) => html`<li key=${ball}><span class="bt-catch-ball">${ballName(ball)}</span><span class=${`mult ${chanceClass(p)}`}>${chanceText(p)}</span></li>`)}</ul>
+  </div>`;
+}
+
+/**
+ * One of your Pokémon that is out: how its moves land on every opponent, and what hits it. `hits` ({ open, toggle }):
+ * the opponents' moves fold in under their head line (the player's choice, remembered with the panel) – they'd tell
+ * what an opponent knows before it uses a move.
+ */
+function OutHelp({ mon, foes, typesOf, movesOf, gen, hits = null }) {
   const monTypes = typesOf(mon.species, mon);
   const myMoves = movesOf(mon.moves, false);
   const many = foes.length > 1;
+  const title = t('battle.danger', 'What hits {mon}', { mon: monName(mon) });
+  const open = !hits || hits.open;
+  const listId = `bt-hits-${String(mon.key ?? mon.species).replace(/[^\w-]/g, '')}`;
   // incoming: the opponents' known damaging moves, else what their own types would do (STAB)
   const incoming = foes.flatMap(({ f, types, moves: fm }) => (fm.length
     ? fm.map(({ id, info }) => ({ key: `${f.species}:${id}`, by: f, label: moveName(id), type: info.type, m: effectiveness(info.type, monTypes, gen) }))
@@ -414,10 +485,12 @@ function OutHelp({ mon, foes, typesOf, movesOf, gen }) {
           const vs = many ? t('battle.vsMon', 'against {mon}', { mon: speciesName(f.species) }) : undefined;
           return m === null ? html`<span class="mult x1" title=${vs}>${t('fx.status', 'status')}</span>` : html`<span class=${`mult ${multClass(m)}`} title=${vs}>${multText(m)}${many ? '' : ` ${multLabel(m)}`}</span>`;
         })}</span></li>`)}</ul></div>`}
-    <div class="bt-block">
-      <h4>${t('battle.danger', 'What hits {mon}', { mon: monName(mon) })}</h4>
-      <ul class="bt-moves">
-        ${incoming.map((x) => html`<li key=${x.key}><span class=${`type t-${x.type}`}>${many ? `${speciesName(x.by.species)}: ` : ''}${x.label}</span><span class=${`mult ${multClass(x.m)} foe`}>${multText(x.m)} ${multLabel(x.m)}</span></li>`)}
+    <div class=${`bt-block bt-hits ${open ? '' : 'folded'}`}>
+      ${hits ? html`<h4><button type="button" class="bt-fold" aria-expanded=${open} aria-controls=${listId} onClick=${hits.toggle}>
+          <span class="bt-fold-title">${title}</span><${Icon} name=${open ? 'chevUp' : 'chevDown'} size=${14} /></button></h4>`
+        : html`<h4>${title}</h4>`}
+      <ul class="bt-moves" id=${listId} hidden=${!open}>
+        ${open && incoming.map((x) => html`<li key=${x.key}><span class=${`type t-${x.type}`}>${many ? `${speciesName(x.by.species)}: ` : ''}${x.label}</span><span class=${`mult ${multClass(x.m)} foe`}>${multText(x.m)} ${multLabel(x.m)}</span></li>`)}
       </ul>
     </div>`;
 }
@@ -426,7 +499,7 @@ function OutHelp({ mon, foes, typesOf, movesOf, gen }) {
  * Switch-in check: every Pokémon of your team against the opponent – its best hit and the opponent's worst for it –
  * so you see at a glance who to send in. Shown from two Pokémon on.
  */
-function TeamCheck({ team, out, foe, typesOf, movesOf, gen }) {
+function TeamCheck({ team, out, foe, typesOf, movesOf, gen, hideFoeMoves = false }) {
   const list = team.filter((m) => m && !m.isEgg && m.species);
   if (list.length < 2 || !foe?.types?.length) return null;
   const foeSide = { types: foe.types, moves: foe.moves.map(({ id, info }) => ({ id, ...info })) };
@@ -439,7 +512,10 @@ function TeamCheck({ team, out, foe, typesOf, movesOf, gen }) {
       const down = fainted(m);
       const isOut = out.has(m);
       const dealsTip = mu.deals == null ? '' : t('battle.dealsTip', 'Best hit: {move} ({mult})', { move: label(mu.dealsBy), mult: multText(mu.deals) });
-      const takesTip = mu.takes == null ? '' : t('battle.takesTip', 'Hits it hardest: {move} ({mult})', { move: label(mu.takesBy), mult: multText(mu.takes) });
+      // with "What hits …" folded in, the foe's moves stay hidden here too: its hardest hit by type, not by name
+      const takesTip = mu.takes == null ? ''
+        : hideFoeMoves && typeof mu.takesBy === 'number' ? t('battle.takesTipHidden', 'Its hardest hit: {mult}', { mult: multText(mu.takes) })
+          : t('battle.takesTip', 'Hits it hardest: {move} ({mult})', { move: label(mu.takesBy), mult: multText(mu.takes) });
       // the one that is out: highlighted like the selected slot of a party menu (named for screen readers)
       return html`<li key=${m.key || m.species} class=${`${isOut ? 'out' : ''} ${down ? 'down' : ''}`} title=${isOut ? t('battle.out', 'in battle') : undefined}>
         <span class="bt-team-mon"><${Sprite} id=${m.species} shiny=${m.shiny} size=${30} gen=${gen} /><span class="bt-team-name">${monName(m)}</span>
@@ -526,16 +602,24 @@ export function DeathAlert({ alert, onClose }) {
   const st = pairState(doc, alert.area, slots);
   const gen = runData?.gen || 4;
   const byMe = alert.by === me;
-  const mineEnc = st.encs[me];
-  const by = st.encs[alert.by];
+  const caught = (e) => (caughtSpecies(e) ? e : null); // (a missed one that knows its species didn't die)
+  const mineEnc = caught(st.encs[me]);
+  const by = caught(st.encs[alert.by]);
   const cause = causeText(doc, manifest, st.pair?.cause);
   const n = slots.length;
   const sp = (e) => speciesName(e?.species);
+  // the lives rule: what this death left of the pool it came off (the one who fell – theirs, or everyone's)
+  const rule = getLives(doc, manifest);
+  const lives = rule && livesFor(doc, manifest, alert.by);
+  const lv = lives && { left: lives.left, total: rule.total };
+  const livesText = !lives ? '' : rule.pool !== 'player' ? t('death.livesLeft', '{left} of {total} lives left.', lv)
+    : alert.by === me ? t('death.livesMine', 'You have {left} of {total} lives left.', lv)
+      : t('death.livesOther', '{name} has {left} of {total} lives left.', { ...lv, name: names[alert.by]?.name || '' });
   let text;
   if (n === 1) text = t('death.alertSolo', 'Your {mon} fell. Rest in peace.', { mon: mineEnc?.nickname || sp(mineEnc) });
   else if (n === 2) {
     const partner = names[othersOf(me, manifest)[0]].name;
-    const theirs = st.encs[othersOf(me, manifest)[0]];
+    const theirs = caught(st.encs[othersOf(me, manifest)[0]]);
     text = byMe
       ? theirs?.species
         ? t('death.alertMine', 'Your {mon} fell – {partner}’s {pmon} goes with it.', { mon: sp(mineEnc), partner, pmon: sp(theirs) })
@@ -553,10 +637,11 @@ export function DeathAlert({ alert, onClose }) {
     footer=${html`<${ShareButton} event=${deathEvent(doc, manifest, alert.area)} /><button class="btn danger" onClick=${onClose}>${t('death.alertOk', 'Rest in peace')}</button>`}>
     <div class="death-alert">
       <div class=${`death-mons n${slots.length}`}>
-        ${slots.map((s) => st.encs[s]?.species && html`<div class="death-mon" style=${`--acc:var(--${s})`}><${Sprite} id=${st.encs[s].species} size=${72} gen=${gen} /><span>${st.encs[s].nickname || sp(st.encs[s])}</span></div>`)}
+        ${slots.map((s) => caught(st.encs[s]) && html`<div class="death-mon" style=${`--acc:var(--${s})`}><${Sprite} id=${st.encs[s].species} size=${72} gen=${gen} /><span>${st.encs[s].nickname || sp(st.encs[s])}</span></div>`)}
       </div>
       <p class="death-text">${text}</p>
       <p class="small muted">${areaName(doc, manifest, alert.area)}${cause ? ` · ${cause}` : ''}</p>
+      ${lives && !lives.out && html`<p class=${`small death-lives ${lives.low ? 'low' : ''}`}><${Icon} name="heart" size=${12} />${livesText}</p>`}
     </div>
   </${Modal}>`;
 }

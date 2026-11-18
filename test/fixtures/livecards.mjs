@@ -9,12 +9,12 @@ const mon = (key, area, species, nick, level, { hp = 30, maxHp = 30 } = {}) => (
 /** An encounter (enc:<area>:<slot>). */
 const enc = (species, nickname, level) => ({ outcome: 'caught', species, nickname, level, at: T - 3600e3, auto: true });
 
-function doc({ players, encs = {}, parties = {}, pairs = {}, areas = {}, badges = {}, extra = {} }) {
+function doc({ players, encs = {}, parties = {}, pairs = {}, areas = {}, badges = {}, playTime = {}, extra = {} }) {
   const e = {};
   for (const [slot, name] of Object.entries(players)) e[`player:${slot}`] = { name };
   for (const [k, a] of Object.entries(areas)) e[`area:${k}`] = { name: a, met: [], auto: true, order: 1 };
   for (const [area, bySlot] of Object.entries(encs)) for (const [slot, x] of Object.entries(bySlot)) e[`enc:${area}:${slot}`] = x;
-  for (const [slot, party] of Object.entries(parties)) e[`live:${slot}`] = { source: 'live', badges: badges[slot] ?? 0, party, at: T };
+  for (const [slot, party] of Object.entries(parties)) e[`live:${slot}`] = { source: 'live', badges: badges[slot] ?? 0, party, at: T, ...(playTime[slot] ? { playTime: playTime[slot] } : {}) };
   for (const [area, p] of Object.entries(pairs)) e[`pair:${area}`] = { state: 'dead', segment: null, cause: '', ...p };
   return { ...e, ...extra };
 }
@@ -133,6 +133,112 @@ const usum = {
   }),
 };
 
+// ---- won runs for the Hall of Fame (made-up demo players Lena, Tim, Mo, Ida, Kai) ----
+/** A linked group: area → { slot: [species, nick, level] }; returns encs + party entries for every slot. */
+function linked(groups, slots) {
+  const encs = {};
+  const parties = Object.fromEntries(slots.map((s) => [s, []]));
+  let k = 0;
+  for (const [area, bySlot] of Object.entries(groups)) {
+    encs[area] = {};
+    for (const s of slots) {
+      const [species, nick, level, alive = true] = bySlot[s];
+      encs[area][s] = enc(species, nick, Math.max(2, level - 30));
+      if (alive) parties[s].push(mon(`${s}${++k}`, area, species, nick, level, { hp: 120, maxHp: 140 }));
+    }
+  }
+  return { encs, parties };
+}
+const won = (by) => ({ 'run:status': { state: 'won', at: T + 30 * 86400e3, by, auto: false, note: null } });
+
+const ptSlots = ['p1', 'p2'];
+const pt = linked({
+  'm4-1': { p1: [392, 'Blaze', 62], p2: [395, 'Admiral', 61] },
+  'm4-2': { p1: [405, 'Volt', 58], p2: [398, 'Hawk', 59] },
+  'm4-3': { p1: [66, 'Brick', 21, false], p2: [77, 'Ember', 20, false] },
+  'm4-4': { p1: [407, 'Thorn', 57], p2: [423, 'Slug', 58] },
+  'm4-5': { p1: [94, '', 60], p2: [65, 'Spoon', 59] },
+  'm4-6': { p1: [418, 'Splash', 24, false], p2: [422, '', 23, false] },
+  'm4-7': { p1: [445, 'Chomp', 63], p2: [448, 'Aura', 62] },
+  'm4-8': { p1: [468, 'Halo', 59], p2: [461, 'Claw', 60] },
+}, ptSlots);
+const platinum = {
+  manifest: { id: '5e1a90bb', name: 'Lena & Tim', createdAt: new Date(T).toISOString(), game: { id: 'pokemon-platinum', code: 'CPUE', system: 'nds' }, players: { p1: { name: 'Lena' }, p2: { name: 'Tim' } } },
+  gen: 4,
+  entries: doc({
+    players: { p1: 'Lena', p2: 'Tim' },
+    areas: { 'm4-1': 'Twinleaf Town', 'm4-2': 'Route 202', 'm4-3': 'Route 203', 'm4-4': 'Route 204', 'm4-5': 'Eterna Forest', 'm4-6': 'Route 205', 'm4-7': 'Wayward Cave', 'm4-8': 'Route 210' },
+    ...pt,
+    badges: { p1: 8, p2: 8 },
+    playTime: { p1: { h: 31, m: 42 }, p2: { h: 33, m: 5 } },
+    pairs: { 'm4-3': { diedAt: T - 9e6, by: 'p1', level: 21 }, 'm4-6': { diedAt: T - 5e6, by: 'p2', level: 23 } },
+    extra: { ...won('p1'), rules: { levelCaps: true, dupes: 'both', typeClause: 'global' } },
+  }),
+};
+
+const emSolo = linked({
+  'm3-10': { p1: [260, 'Torrent', 58] }, 'm3-11': { p1: [282, 'Grace', 55] }, 'm3-12': { p1: [263, 'Dash', 9, false] },
+  'm3-13': { p1: [310, 'Spark', 54] }, 'm3-14': { p1: [286, '', 53] }, 'm3-15': { p1: [334, 'Cloud', 55] }, 'm3-16': { p1: [342, 'Pincer', 54] },
+}, ['p1']);
+const emerald = {
+  manifest: { id: '91bd3c55', name: 'Lena – Nuzlocke #2', mode: 'nuzlocke', attempt: 2, game: { id: 'pokemon-emerald', code: 'BPEE', system: 'gba' }, players: { p1: { name: 'Lena' } } },
+  gen: 3,
+  entries: doc({
+    players: { p1: 'Lena' },
+    areas: { 'm3-10': 'Littleroot Town', 'm3-11': 'Route 102', 'm3-12': 'Route 101', 'm3-13': 'Route 110', 'm3-14': 'Petalburg Woods', 'm3-15': 'Route 114', 'm3-16': 'Route 102 (water)' },
+    ...emSolo,
+    badges: { p1: 8 },
+    playTime: { p1: { h: 24, m: 18 } },
+    pairs: { 'm3-12': { diedAt: T - 9e6, by: 'p1', level: 9, killer: { species: 261, level: 8, kind: 'wild' } } },
+    extra: { ...won('p1'), rules: { levelCaps: 'strict', noBattleItems: true, setMode: true } },
+  }),
+};
+
+const b2Slots = ['p1', 'p2', 'p3', 'p4'];
+const b2 = linked({
+  'm5-1': { p1: [500, 'Ham', 56], p2: [503, 'Shell', 55], p3: [497, 'Leaf', 56], p4: [500, 'Bacon', 55] },
+  'm5-2': { p1: [612, 'Axe', 57], p2: [635, 'Hydra', 58], p3: [637, 'Moth', 56], p4: [609, 'Lamp', 57] },
+  'm5-3': { p1: [530, 'Drill', 54], p2: [534, 'Beams', 53], p3: [553, 'Croc', 55], p4: [571, 'Fox', 54] },
+  'm5-4': { p1: [584, 'Frost', 52], p2: [579, 'Blob', 53], p3: [598, 'Spike', 52], p4: [604, 'Eel', 53] },
+  'm5-5': { p1: [596, 'Web', 24, false], p2: [523, 'Zap', 25, false], p3: [526, 'Rock', 24, false], p4: [545, 'Wheel', 23, false] },
+  'm5-6': { p1: [625, 'Blade', 53], p2: [567, 'Fossil', 52], p3: [560, 'Hood', 53], p4: [628, 'Wing', 54] },
+}, b2Slots);
+const black2 = {
+  manifest: { id: '7c22e810', name: 'Unova Four', randomizer: { enabled: true }, game: { id: 'pokemon-black-2', code: 'IREO', system: 'nds' },
+    players: { p1: { name: 'Lena' }, p2: { name: 'Tim' }, p3: { name: 'Mo' }, p4: { name: 'Ida' } } },
+  gen: 5,
+  entries: doc({
+    players: { p1: 'Lena', p2: 'Tim', p3: 'Mo', p4: 'Ida' },
+    areas: { 'm5-1': 'Aspertia City', 'm5-2': 'Route 19', 'm5-3': 'Floccesy Ranch', 'm5-4': 'Virbank Complex', 'm5-5': 'Route 20', 'm5-6': 'Castelia Sewers' },
+    ...b2,
+    badges: { p1: 8, p2: 8, p3: 8, p4: 8 },
+    playTime: { p1: { h: 28, m: 10 }, p2: { h: 27, m: 55 }, p3: { h: 29, m: 3 }, p4: { h: 28, m: 41 } },
+    pairs: { 'm5-5': { diedAt: T - 5e6, by: 'p3', level: 24 } },
+    extra: won('p2'),
+  }),
+};
+
+const usSlots = ['p1', 'p2', 'p3'];
+const us = linked({
+  'm7-6': { p1: [724, 'Hoot', 61], p2: [727, 'Mittens', 62], p3: [730, 'Splash', 60] },
+  'm7-10': { p1: [733, 'Pecks', 58], p2: [735, 'Gumshoe', 57], p3: [738, 'Volty', 59] },
+  'm7-18': { p1: [745, 'Tango', 59], p2: [784, 'Scales', 63], p3: [740, 'Crabby', 58] },
+  'm7-22': { p1: [778, 'Mimi', 60], p2: [763, 'Kicks', 58], p3: [800, '', 64] },
+  'm7-30': { p1: [752, 'Bubble', 56], p2: [758, 'Toxi', 57], p3: [748, 'Spike', 56] },
+}, usSlots);
+const ultrasun = {
+  manifest: { id: 'e4a19d02', name: 'Alola Trio', createdAt: new Date(T).toISOString(), game: { id: 'pokemon-ultra-sun', code: 'AUS', system: '3ds' },
+    players: { p1: { name: 'Lena' }, p2: { name: 'Tim' }, p3: { name: 'Kai' } } },
+  gen: 7,
+  entries: doc({
+    players: { p1: 'Lena', p2: 'Tim', p3: 'Kai' },
+    areas: { 'm7-6': 'Route 1', 'm7-10': 'Hau’oli City', 'm7-18': 'Route 2', 'm7-22': 'Verdant Cavern', 'm7-30': 'Brooklet Hill' },
+    ...us,
+    badges: { p1: 0, p2: 0, p3: 0 },
+    extra: won('p3'),
+  }),
+};
+
 export const LIVE_FIXTURES = [
   { name: 'soullink-2-death', ...hg, event: { kind: 'death', area: 'route-29' } },
   { name: 'soullink-2-victory', ...hg, entries: { ...hg.entries, 'run:status': { state: 'won', at: T + 9e6, by: 'p2', auto: false, note: null } }, event: { kind: 'victory' } },
@@ -140,4 +246,8 @@ export const LIVE_FIXTURES = [
   { name: 'soullink-3-wipe-3ds', ...usum, event: { kind: 'wipe' } },
   { name: 'nuzlocke-death', ...solo, event: { kind: 'death', area: 'm3-88' } },
   { name: 'nuzlocke-wipe', ...solo, entries: { ...solo.entries, 'run:status': { state: 'failed', at: T + 60e3, by: 'p1', auto: true, note: null, reason: 'blackout', rule: 'party' } }, event: { kind: 'wipe' } },
+  { name: 'hof-soullink-2', ...platinum, event: { kind: 'victory' } },
+  { name: 'hof-nuzlocke', ...emerald, event: { kind: 'victory' } },
+  { name: 'hof-soullink-4-randomized', ...black2, event: { kind: 'victory' } },
+  { name: 'hof-soullink-3-3ds', ...ultrasun, event: { kind: 'victory' } },
 ];

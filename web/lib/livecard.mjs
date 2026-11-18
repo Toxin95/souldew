@@ -391,14 +391,19 @@ export function drawCard(ctx, model, sprites = new Map()) {
   }
   font(ctx, `500 21px ${BODY}`);
   ctx.fillStyle = C.ink2;
-  const runLine = [model.run, model.game].filter(Boolean).join('  ·  ');
+  const runLine = [model.run, model.game, model.hof?.labels?.attempt].filter(Boolean).join('  ·  ');
   ctx.fillText(fit(ctx, runLine, W - 112), 56, y - lh + 40);
 
-  // ---- body: the cause on the left, the teams on the right ----
+  // ---- body: the cause on the left, the teams on the right (a won run: its numbers and rules, the final team) ----
   const top = 300;
   const bottom = 610;
-  drawCause(ctx, model, { x: 56, y: top, w: 344, h: bottom - top, accent, sprite, pixel });
-  drawTeams(ctx, model, { x: 424, y: top, w: W - 56 - 424, h: bottom - top, sprite, pixel });
+  if (model.hof) {
+    drawHofRun(ctx, model, { x: 56, y: top, w: 330, h: bottom - top });
+    drawHofTeam(ctx, model, { x: 410, y: top, w: W - 56 - 410, h: bottom - top, sprite, pixel });
+  } else {
+    drawCause(ctx, model, { x: 56, y: top, w: 344, h: bottom - top, accent, sprite, pixel });
+    drawTeams(ctx, model, { x: 424, y: top, w: W - 56 - 424, h: bottom - top, sprite, pixel });
+  }
 
   // ---- the ticker at the bottom (the banner's LCD strip) ----
   const ty = H - 46;
@@ -630,6 +635,232 @@ function drawTeams(ctx, model, { x, y, w, h, sprite, pixel }) {
   });
 }
 
+/** A won run, left: the run in four numbers (deaths, play time, badges, alive) and its rules as chips. */
+function drawHofRun(ctx, model, { x, y, w, h }) {
+  const hof = model.hof;
+  rr(ctx, x, y, w, h, 12);
+  ctx.fillStyle = 'rgba(29,28,36,.92)';
+  ctx.fill();
+  ctx.strokeStyle = hexA(C.gold, 0.28);
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.save();
+  rr(ctx, x, y, w, h, 12);
+  ctx.clip();
+  ctx.fillStyle = C.gold;
+  ctx.fillRect(x, y, 4, h);
+  glow(ctx, x + 80, y + 10, 220, C.gold, 0.12);
+  ctx.restore();
+
+  font(ctx, `500 13px ${MONO}`, 2.2);
+  ctx.fillStyle = C.gold;
+  ctx.fillText(String(hof.labels?.run || '').toUpperCase(), x + 22, y + 32);
+  glyph(ctx, 'trophy', x + w - 40, y + 16, 20, C.goldHi);
+
+  // 2×2 tiles: the value big in the pixel digits, its word under it
+  const boxes = (hof.boxes || []).slice(0, 4);
+  const gap = 10;
+  const tw = (w - 44 - gap) / 2;
+  const th = 66;
+  boxes.forEach((b, i) => {
+    const tx = x + 22 + (i % 2) * (tw + gap);
+    const ty = y + 48 + Math.floor(i / 2) * (th + gap);
+    const tone = { alive: C.alive, dead: C.dead, gold: C.gold }[b.tone] || C.ink;
+    rr(ctx, tx, ty, tw, th, 9);
+    ctx.fillStyle = 'rgba(14,13,18,.72)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.06)';
+    ctx.stroke();
+    if (b.icon) glyph(ctx, b.icon, tx + tw - 26, ty + 10, 16, hexA(tone, 0.75));
+    let fs = 34;
+    font(ctx, `700 ${fs}px ${PIXEL}`, 0.6);
+    while (ctx.measureText(b.value).width > tw - 40 && fs > 20) font(ctx, `700 ${(fs -= 2)}px ${PIXEL}`, 0.6);
+    ctx.fillStyle = tone;
+    ctx.fillText(b.value, tx + 14, ty + 36);
+    font(ctx, `500 13.5px ${BODY}`);
+    ctx.fillStyle = C.ink3;
+    ctx.fillText(fit(ctx, b.label, tw - 28), tx + 14, ty + 56);
+  });
+
+  // the rules: chips that wrap, at most two lines
+  const rules = hof.rules || [];
+  let ry = y + 48 + 2 * th + gap + 30;
+  if (rules.length && ry + 30 < y + h) {
+    font(ctx, `500 12px ${MONO}`, 2);
+    ctx.fillStyle = C.ink3;
+    ctx.fillText(String(hof.labels?.rules || '').toUpperCase(), x + 22, ry);
+    ry += 12;
+    font(ctx, `600 13px ${BODY}`, 0.2);
+    let cx = x + 22;
+    let line = 0;
+    for (const r of rules) {
+      const text = fit(ctx, r, w - 44 - 24);
+      const cw = ctx.measureText(text).width + 22;
+      if (cx + cw > x + w - 22 && cx > x + 22) {
+        if (++line > 1) break;
+        cx = x + 22;
+        ry += 32;
+      }
+      if (ry + 26 > y + h - 8) break;
+      rr(ctx, cx, ry, cw, 26, 13);
+      ctx.fillStyle = hexA(C.gold, 0.1);
+      ctx.fill();
+      ctx.strokeStyle = hexA(C.gold, 0.38);
+      ctx.stroke();
+      ctx.fillStyle = '#f0d9a4';
+      ctx.fillText(text, cx + 11, ry + 18);
+      cx += cw + 8;
+    }
+  }
+}
+
+/**
+ * A won run, right: the final team as trophy cards – a solo Nuzlocke one Pokémon per card, a SoulLink one linked
+ * group per card (each player's Pokémon in their colour, the link between them).
+ */
+function drawHofTeam(ctx, model, { x, y, w, h, sprite, pixel }) {
+  const hof = model.hof;
+  const groups = (hof.groups || []).slice(0, 6);
+  const players = hof.players || [];
+  const n = Math.max(1, players.length);
+
+  // header: "FINAL TEAM · LINKED", the players' names in their colours on the right
+  font(ctx, `600 15px ${MONO}`, 1.8);
+  ctx.fillStyle = C.gold;
+  const head = String(hof.labels?.team || '').toUpperCase();
+  ctx.fillText(head, x, y + 14);
+  const headW = ctx.measureText(head).width;
+  if (n > 1) {
+    font(ctx, `600 14px ${MONO}`, 1.4);
+    let px = x + w;
+    for (const p of [...players].reverse()) {
+      const name = fit(ctx, String(p.name).toUpperCase(), Math.max(60, (w - headW - 40) / n - 22));
+      const nw = ctx.measureText(name).width;
+      px -= nw;
+      ctx.fillStyle = p.color;
+      ctx.fillText(name, px, y + 14);
+      px -= 12;
+      ctx.fillRect(px, y + 5, 8, 8);
+      px -= 18;
+    }
+  }
+  const rule = ctx.createLinearGradient(x, 0, x + w, 0);
+  rule.addColorStop(0, C.gold);
+  rule.addColorStop(1, hexA(C.gold, 0.05));
+  ctx.fillStyle = rule;
+  ctx.fillRect(x, y + 24, w, 2);
+
+  const top = y + 38;
+  const avail = y + h - top;
+  if (!groups.length) {
+    rr(ctx, x, top, w, avail, 10);
+    ctx.strokeStyle = '#3a3942';
+    ctx.setLineDash([5, 5]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    font(ctx, `400 15px ${BODY}`);
+    ctx.fillStyle = C.ink3;
+    const text = fit(ctx, model.teams?.[0]?.empty || '', w - 24);
+    ctx.fillText(text, x + (w - ctx.measureText(text).width) / 2, top + avail / 2 + 5);
+    return;
+  }
+  const cols = 3;
+  const rows = Math.max(1, Math.ceil(groups.length / cols));
+  const gap = 12;
+  const cw = (w - gap * (cols - 1)) / cols;
+  const ch = Math.min(150, (avail - gap * (rows - 1)) / rows);
+  const box = n === 1 ? Math.min(ch - 56, 92) : n === 2 ? Math.min(ch - 60, (cw - 54) / 2, 80) : Math.min(ch - 60, (cw - 16) / n - 10, 60);
+  const scale = commonScale(groups.flatMap((g) => g.mons.filter(Boolean).map((m) => sprite(m.species))), box, box, n <= 2 ? 2 : 1);
+  groups.forEach((g, i) => {
+    const gx = x + (i % cols) * (cw + gap);
+    const gy = top + Math.floor(i / cols) * (ch + gap);
+    drawHofGroup(ctx, g, { x: gx, y: gy, w: cw, h: ch, n, box, scale, sprite, pixel, lv: model.labels?.lv || 'Lv' });
+  });
+}
+
+function drawHofGroup(ctx, g, { x, y, w, h, n, box, scale, sprite, pixel, lv }) {
+  // the card: dark glass, a gold rim at the top, a soft spotlight
+  rr(ctx, x, y, w, h, 10);
+  const bg = ctx.createLinearGradient(0, y, 0, y + h);
+  bg.addColorStop(0, 'rgba(40,37,46,.95)');
+  bg.addColorStop(1, 'rgba(25,24,31,.95)');
+  ctx.fillStyle = bg;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.07)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.save();
+  rr(ctx, x, y, w, h, 10);
+  ctx.clip();
+  const rim = ctx.createLinearGradient(x, 0, x + w, 0);
+  rim.addColorStop(0, hexA(C.gold, 0));
+  rim.addColorStop(0.5, hexA(C.goldHi, 0.8));
+  rim.addColorStop(1, hexA(C.gold, 0));
+  ctx.fillStyle = rim;
+  ctx.fillRect(x, y, w, 2);
+  glow(ctx, x + w / 2, y + 8, w * 0.6, C.gold, 0.09);
+  ctx.restore();
+
+  const mons = g.mons;
+  const slotW = (w - 16) / n;
+  const nameSize = n === 1 ? 19 : n === 2 ? 16 : 13;
+  const subSize = n === 1 ? 13.5 : n === 2 ? 12.5 : 11;
+  // sprite, name and level as one block, in the middle of the card
+  const spriteTop = y + Math.max(10, Math.round((h - (box + nameSize + subSize + 13)) / 2));
+  mons.forEach((m, k) => {
+    const sx = x + 8 + k * slotW;
+    const cx = sx + slotW / 2;
+    // the link between the group's Pokémon
+    if (k > 0 && n > 1) {
+      const lx = sx - 1;
+      const ly = spriteTop + box / 2;
+      ctx.fillStyle = hexA(C.goldHi, 0.85);
+      if (n === 2) glyph(ctx, 'link', lx - 10, ly - 10, 20, hexA(C.goldHi, 0.9));
+      else ctx.fillRect(lx, ly - box / 3, 1, (box * 2) / 3);
+    }
+    if (!m) {
+      font(ctx, `700 ${nameSize}px ${DISPLAY}`);
+      ctx.fillStyle = C.ink4;
+      ctx.fillText('–', cx - 4, spriteTop + box / 2 + 6);
+      return;
+    }
+    // pedestal shadow, the sprite, the player's colour as a small bar under it
+    ctx.fillStyle = 'rgba(0,0,0,.4)';
+    ctx.beginPath();
+    ctx.ellipse(cx, spriteTop + box - 3, Math.min(box * 0.42, slotW * 0.4), 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    drawSprite(ctx, sprite(m.species), cx - box / 2, spriteTop, box, box, { maxScale: n <= 2 ? 2 : 1, pixel, scale });
+    const textW = slotW - 10;
+    let ty = spriteTop + box + nameSize + 4;
+    font(ctx, `700 ${nameSize}px ${DISPLAY}`, 0.2);
+    ctx.fillStyle = n === 1 ? C.ink : m.color || C.ink;
+    const name = fit(ctx, m.name, textW);
+    ctx.fillText(name, cx - ctx.measureText(name).width / 2, ty);
+    if (m.shiny) glyph(ctx, 'star', cx + ctx.measureText(name).width / 2 + 3, ty - nameSize + 2, 12, C.goldHi);
+    ty += subSize + 5;
+    if (ty > y + h - 3) return;
+    const lvText = m.level ? `${lv} ${m.level}` : '';
+    const sub = n <= 2 && m.sub ? m.sub : '';
+    font(ctx, `700 ${subSize + 1}px ${PIXEL}`, 0.4);
+    const lvW = lvText ? ctx.measureText(lvText).width : 0;
+    font(ctx, `400 ${subSize}px ${BODY}`);
+    const subFit = sub ? fit(ctx, sub, textW - lvW - 8) : '';
+    const subW = subFit ? ctx.measureText(subFit).width : 0;
+    let sx2 = cx - (lvW + (subFit ? 8 + subW : 0)) / 2;
+    if (lvText) {
+      font(ctx, `700 ${subSize + 1}px ${PIXEL}`, 0.4);
+      ctx.fillStyle = C.ink2;
+      ctx.fillText(lvText, sx2, ty);
+      sx2 += lvW + 8;
+    }
+    if (subFit) {
+      font(ctx, `400 ${subSize}px ${BODY}`);
+      ctx.fillStyle = C.ink3;
+      ctx.fillText(subFit, sx2, ty);
+    }
+  });
+}
+
 function drawMon(ctx, m, { x, y, w, h, color, big, img, pixel, scale, labels }) {
   const fallen = m.state === 'fallen';
   const dead = m.state === 'dead' || fallen;
@@ -709,6 +940,7 @@ export async function loadSprites(model, spriteUrl) {
   const ids = new Set();
   if (model.cause?.species) ids.add(model.cause.species);
   for (const t of model.teams || []) for (const m of t.mons || []) if (m.species) ids.add(m.species);
+  for (const g of model.hof?.groups || []) for (const m of g.mons || []) if (m?.species) ids.add(m.species);
   const map = new Map();
   await Promise.all([...ids].map(async (id) => {
     const img = (await loadImage(spriteUrl(id))) || (await loadImage(spriteUrl(id, true)));

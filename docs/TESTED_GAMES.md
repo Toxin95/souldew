@@ -38,8 +38,8 @@ right area; "Randomizer" = the same game built with souldew's randomizer and pla
 | **FireRed** (English, 1.0) | ✅ | ✅ | ✅ | ✅ | – | Checked while adding Unbound and Radical Red (their base game): the German plan's steps with the English addresses (gSaveBlock1Ptr 0x03005008, gMain.inBattle 0x03003529). Charmander L5 → "Starter", the rival's Squirtle L5 as a trainer battle (19 → 7 as on screen), Pallet Town, Route 1, a wild Rattata / Pidgey L2. **Real catch:** Rattata, Pidgey → "Route 1" (two runs). Plan: [firered-leafgreen-us.json](../scripts/rom-matrix/plans/firered-leafgreen-us.json). |
 | **Pearl** | ✅ | ✅ | ✅ | ✅ | ⚠️ | Turtwig L5 21/21 from the briefcase at Lake Verity (met location Lake Verity), Twinleaf Town, Route 201, Verity Lakefront, Lake Verity, Sandgem Town (also inside the Mart); wild Starly L2 at the lake, Bidoof / Starly L3 on Route 201. **Real catch:** Bidoof L3 / Starly L3 → "Route 201", 2 of 2 runs. **Fixed (2.3.0):** the battle flag (checked live: 0x2101 / 0x2000) – battles stayed on the panel after running away. Randomized: built ✓, no live run. |
 | **Platinum** | ✅ | ✅ | ✅ | ✅ | – | Turtwig L5 21/21 on Route 201 (met location Route 201), Barry's Chimchar L5 (trainer), Twinleaf Town, Route 201, Verity Lakefront, Lake Verity; wild Starly / Bidoof / Kricketot L3 on Route 201. **Fixed (2.3.0):** the battle flag (checked live: 0x2100 / 0x2800) – a wild battle showed up ~1100 frames late and stayed after running away. **Real catch:** Bidoof L3 (met location Route 201) → "Route 201" (balls thrown on the touch screen). |
-| **Black** | ✅ | ✅ | ✅ | ✅ | ⚠️ | Tepig L5, met location Nuvema Town = the sign's place; zones: bedroom, downstairs, Nuvema Town, Route 1. Rival battles Snivy / Oshawott L5, wild Lillipup / Patrat on Route 1. **Real catch:** Lillipup → "Route 1", 2 of 2 runs. **Fixed (2.3.0):** the opponent's HP stayed at full (now 19 → 14 → 4 as on screen) and your Pokémon's HP during the fight; the battle flag (checked live: 0x2100 / 0x2800). Randomized: built ✓, the plan lost its way at the naming screen. |
-| **White** | ✅ | ✅ | ✅ | ✅ | – | Tepig L5 21/21 from the gift box, filed as the starter; no status condition and no held item, read as such (none came up to check other values); 0 badges → level cap 14 (the Striaton gym's ace). Place sign: Nuvema Town (also in the house and Juniper's lab), Route 1. Rival battles Snivy L5 19 → 14 → 0 HP and Oshawott L5 20 → 15 → 0 HP, Tepig 16/21 as on screen; wild Patrat L2–L4 / Lillipup L2–L3 on Route 1. **Real catch:** Patrat / Lillipup → "Route 1", 4 of 4 runs. **Fixed (2.3.1):** after Professor Juniper's catching demo (her Minccino L7 against a Patrat L2) its Patrat stayed on the panel as a trainer battle until the next real battle (~100 s in the test) – the battle flag (checked live: 0x2100 in battles and also in the demo, 0xF841 elsewhere) now ends it the moment the demo ends. While the demo runs it still shows as a battle (the game sets the battle value for it). Plan: [white.json](../scripts/rom-matrix/plans/white.json). |
+| **Black** | ✅ | ✅ | ✅ | ✅ | ⚠️ | Tepig L5, met location Nuvema Town = the sign's place; zones: bedroom, downstairs, Nuvema Town, Route 1. Rival battles Snivy / Oshawott L5, wild Lillipup / Patrat on Route 1. **Real catch:** Lillipup → "Route 1", 2 of 2 runs. **Fixed (2.3.0):** the opponent's HP stayed at full (now 19 → 14 → 4 as on screen) and your Pokémon's HP during the fight; the battle flag (checked live: 0x2100 / 0x2800). Randomized: built ✓, the plan lost its way at the naming screen. **Fixed (2.8.0):** the place sign of Black/White in other languages (a player's report: Black City in the intro, then no place) – it is read from the game's copy of the current zone's header, found by the ROM's own zone headers wherever it sits; checked in the fast and the browser player (room, downstairs, Nuvema Town, lab, Route 1, in battles too; with the RAM shifted to stand in for another language, the copy is found there), no place on the title screen any more (was Black City). |
+| **White** | ✅ | ✅ | ✅ | ✅ | – | Tepig L5 21/21 from the gift box, filed as the starter; no status condition and no held item, read as such (none came up to check other values); 0 badges → level cap 14 (the Striaton gym's ace). Place sign: Nuvema Town (also in the house and Juniper's lab), Route 1. Rival battles Snivy L5 19 → 14 → 0 HP and Oshawott L5 20 → 15 → 0 HP, Tepig 16/21 as on screen; wild Patrat L2–L4 / Lillipup L2–L3 on Route 1. **Real catch:** Patrat / Lillipup → "Route 1", 4 of 4 runs. **Fixed (2.3.1):** after Professor Juniper's catching demo (her Minccino L7 against a Patrat L2) its Patrat stayed on the panel as a trainer battle until the next real battle (~100 s in the test) – the battle flag (checked live: 0x2100 in battles and also in the demo, 0xF841 elsewhere) now ends it the moment the demo ends. While the demo runs it still shows as a battle (the game sets the battle value for it). Plan: [white.json](../scripts/rom-matrix/plans/white.json). The place sign reads White's copy of the zone header like Black's (2.8.0, fast player). |
 | **Black 2** | ✅ | ✅ | ✅ | ✅ | – | Tepig L5 from Bianca at the Lookout (met location Aspertia City), Aspertia City, Aspertia Gate, Route 19; Hugh's Oshawott L5 (HP going down as on screen), wild Purrloin / Patrat L2. **Real catch:** Purrloin L2 → "Route 19". **Fixed (2.3.0):** Bianca's catching demo (an NPC's battle) showed as the player's trainer battle and stayed after it ended – the battle flag (checked live: 0x2100 / 0x2800). |
 | **White 2** | ✅ | ✅ | ✅ | ✅ | – | As Black 2 (its position sits 0x40 further on); wild Patrat L2. **Real catch:** Patrat L2 → "Route 19". **Fixed (2.3.1):** the battle flag (checked live: 0x2100 in battles, 0xFAE3 elsewhere) – Bianca's catching demo showed as a battle against her Lillipup, and the summary screen (0x88C2, also in Black 2) did too. |
 
@@ -92,6 +92,7 @@ items: as before.
 |---|:---:|:---:|:---:|---|
 | **Crystal Legacy 1.3.1** (Crystal) | ✅ | ✅ | ✅ | **Fixed:** the hack keeps its RAM 11 bytes further on – before, souldew read no team, no battle and a place stuck on New Bark Town. Now found from the ROM's code (all 7 addresses confirmed in the running game); maps and landmarks are Crystal's (357 maps compared). |
 | **Emerald Kaizo** (Emerald) | ✅ | ✅ | ✅ | Torchic L5, Littleroot Town / Route 101, wild Zigzagoon L2; place names from the ROM. |
+| **Modern Emerald 3.6** (Emerald) | ✅ | ✅ | ✅ | **Fixed (after 2.7.2):** rebuilt from the pret source with 50 more species (an expanded species table, 461), a game-mode menu after the intro and RAM of its own (PokemonModernEmerald3.6.sym: gPlayerParty 0x0201D9CC, gPlayerPartyBackup between it and gEnemyParty 0x0201DE7C, gMain 0x03001574, gSaveBlock1Ptr 0x030036F0, SaveBlock1's flags at +0x1364, SaveBlock2's bag key past +0xAC, 15 PC boxes). The team and the place were found, but battles read the backup as the opponent's party (no opponent), badges and the PC weren't read (the trainer table was found one entry early – a string in front of it – so every leader had the next one's script and no badge flags came out) and Rare Candies weren't offered. Now: gEnemyParty from the code (the pair two arrays apart) or searched in battle, the flags' offset and gSaveBlock1Ptr from GetFlagPointer's literal pool, the bag key from an empty slot, the box count from the box names. Checked in the game: Torchic L5 → "Starter", the wild Zigzagoon L2 (HP as on screen), Poké Balls written into the bag, a **real catch** on Route 101, badges 0 → 1 (Roxanne's flag 0x867 set) → cap 15 → 19, 15 boxes read. The ROM data of 1.5.6, 2.4, 3.0 and 3.3.1 gives the same picture (other addresses, found the same way). Plan: [modern-emerald.json](../scripts/rom-matrix/plans/modern-emerald.json) (it saves the game-mode menu's defaults). |
 | **Light Platinum 1.0** (Ruby) | ✅ | ✅ | ✅ | **Fixed:** 141 species slots hold other Pokémon (Gen 4/5) – souldew showed the Ruby Pokémon of that number (Venipede as Weedle) or nothing. Now read from the ROM's species table; types from the ROM too (only Shaymin differs: its Sky Forme's Grass/Flying). Starter Charmander (also Squirtle/Bulbasaur checked), "Yellow Town", "Central City" (the hack's own region), wild Poochyena L2. No catch: the plan found no way out of Yellow Town. |
 | **Renegade Platinum 1.3.0** (Platinum) | – | ⚠️ | – | Place names from the ROM (126, the hack's own). **Types (2.3.0):** 49 Pokémon with the hack's types, Fairy in the old "???" slot (Clefairy Fairy, Meganium Grass/Fairy, Altaria Dragon/Fairy …) – the board, the battle panel and the type rule use them, with Fairy's matchups. Not played live: its intro differs and the Platinum plan stops in the bedroom. |
 | **Blaze Black 2 Redux 1.4.1** (Black 2) | ✅ | ✅ | ✅ | **Fixed:** no place sign (its place-name file is padded with empty entries). Now Aspertia City live; 153 names incl. the hack's new "Faraway Island". **Types (2.3.0):** 75 Pokémon with the hack's types (Fairy as type 17). Tepig L5 21/21 (the hack changed its stats), Aspertia City / Aspertia Gate / Route 19, Hugh's Oshawott L5 21 → 15, wild Venonat L5 / Patrat L4 with live HP. The hack's key bearer blocks the way to the Lookout until you talk to her. **Real catch:** Venonat / Patrat → "Route 19", 2 of 2 runs. |
@@ -122,6 +123,7 @@ and Ultra Sun**, in the development app and in the packaged app (`electron-build
 | **Ultra Sun battle panel** | ✅ wild Yungoos ("Mangunior") L3 16/16 → HP as on screen, "wild"; Hau's Popplio L5 → "Trainer", Water vs Rowlet ×½; gone after both. **Fixed:** Gen 7 keeps the opponents after the player's 12 battlers (block 12+, 24 read now – the panel stayed empty), and the Stream Tool's trainer byte reads 1 in wild battles too on 1.0 – the battle type byte 0x33FC1F44 (found by souldew: 1 from the trainer's cutscene on, 0 for wild, also right after a trainer battle) |
 | **Ultra Sun place sign** | ✅ "Route 1" (the house 36, outside 1, the grass 5 – all Route 1 in the ROM's table). The zone sits in the player's position { u16, u16 zone, float x, y, z } at 0x33F6D74A, found with a heap scan across house → outside → house; the same after a fresh start |
 | **Sun live** | ✅ played from the house on (bag and hat from the moving boxes, Kukui, Mahalo Trail, the bridge): Rowlet ♂ L5 22/22 the moment Hala hands it over, "Lili'i" (Iki Town) on the sign, later "Route 1"; L6 24/24 after the first battle. Battle panel: Hau's Popplio ("Robball") L5 → "Trainer", Rowlet's Tackle, Leafage (×2) and Growl (Gen 6/7 moves named since the merge with 2.4.0) (type byte 0x341C8CAC = 1), a wild Pikipek ("Peppeck") L3 in Route 1's grass → "wild" (type byte 0, in-battle 0x341C8CCD = 1). Kukui's demo battle (his Rockruff vs a Pikipek, your team not in it) shows no panel – the game doesn't set the in-battle flag there |
+| **Sun: Rare Candy cheat** (Sun 1.0) | ✅ in the play view (free play, scratch data folder): "Available once live tracking has found your team" until Rowlet is read, then "Add 99 Rare Candies" → "+99 Rare Candies in your bag"; the bag in the game: Medicine › Rare Candy ×99 (NEW), a second use stacks to 198, the Sparkling Stone in Key Items untouched and nothing else in the bag changed (4 bytes written, the block compared before/after). The host writes in 3–40 ms. X/Y, ORAS and Ultra Sun/Ultra Moon use addresses from Multi-PokemonFramework and the update shifts – not checked in a game |
 
 **Randomized Sun** (macOS, Apple Silicon, the No-Intro US cartridge image – decrypted `.3ds`, 4 GiB, NCCH 3.0 GB):
 
@@ -217,6 +219,52 @@ agree address for address – see [research/live_ram.md](../research/live_ram.md
 (Feuerrote, Blattgrüne – the matrix above, plan `scripts/rom-matrix/plans/firered-leafgreen-eu.json`): team, battles,
 battle flag, place sign, catch, the bag (the test's Poké/Master Balls went in through the cheat's SaveBlock1 pointer
 0x03004F58) and the map music. French, Italian and Spanish ROMs share the table but weren't at hand.
+
+### The place sign in every language (2.8.0)
+
+The place sign used to read the current map from addresses that are only known to be right for the games they come
+from – mostly the English ones (pret's symbols, NDS-Ironmon-Tracker, souldew's own checks). In a game whose RAM is laid
+out differently (another language, a revision, a game still booting) it then showed whatever was there: Black City in
+Black/White in other languages (fixed in 2.7.5), and – found in this round – Pallet Town on Red's title screen and in
+Oak's intro, Black City at power-on in Black 2/White 2. Since 2.8.0 every reader takes the place only from RAM it can
+check against the ROM, and shows no place rather than a guessed one:
+
+| Games | Where the place comes from | Checked against | Not at the English address (another language) |
+|---|---|---|---|
+| Red/Blue/Yellow | the copy of the current map's header in WRAM (wCurMapHeader, 10 bytes) | the ROM's map headers (MapHeaderPointers/MapHeaderBanks, found by their structure) | searched for in WRAM (8 KB, at most every 2 s, one copy only) and remembered |
+| Gold/Silver/Crystal | the copy of the map's header and attributes (wMapPartial + wMapAttributes, 17 bytes) | the ROM's maps (MapGroupPointers, found by their structure; must be exactly the maps souldew's table has) | as Gen 1 |
+| Ruby/Sapphire/Emerald, FireRed/LeafGreen | gMapHeader (a copy of the ROM's MapHeader) | its events pointer and section must be one of the ROM's maps | no place (the trackers that run on the other languages agree on gMapHeader for D/F/I/S) |
+| Diamond/Pearl/Platinum, HeartGold/SoulSilver | the map id in the save data | the save data the party reader confirmed (English: pret's pointer; other languages: the trainer owns the team), or a pointer whose save data holds a trainer | no place until then – never the scanned party's address (it may be a battle's copy) |
+| Black/White | the copy of the zone header (2.7.5) | the ROM's zone headers | searched for (4 MB, at most every 3 s, one copy only) |
+| Black 2/White 2 | the copy of the zone header behind the main pointer (+0x41B2C) – found in this round | the ROM's zone headers, the zone id after the copy | as Black/White |
+| X/Y, ORAS, Sun/Moon, USUM | the zone id (unchanged) | read only once the team was found at one of the game's update addresses | – (one RAM layout for all languages of a cartridge) |
+
+**Checked in the running games** (US/EU ROMs, browser player and fast player, 2026-11-16 – the matrix plans with a
+check at power-on and the raw bytes recorded at every check): Red (power-on: no place – was Pallet Town; the bedroom
+via the new-game warp, Oak's lab, Route 1, battles, the catch), Silver and Crystal (power-on: no place; bedroom, New
+Bark Town, Elm's lab, Route 29, battles, the catch – the map the header copy names was the one wMapGroup/wMapNumber
+name at every check), Sapphire (Littleroot Town, Route 101 – gMapHeader checked against the ROM's 394 maps), Pearl and
+Platinum (Twinleaf/Route 201, Verity Lakefront, Lake Verity, Sandgem Town and its Mart; the trainer block of the save
+data read as a trainer at every check), Black 2 and White 2 (power-on: the old reader showed Black City, now no
+place; the copy of the zone header at main pointer + 0x41B2C byte for byte the ROM's header of the zone after it in
+the room, Aspertia City, the Pokémon Center, Aspertia Gate, Route 19, in battles too). Red, Silver, Crystal, Sapphire,
+Emerald, Black 2 and White 2 in both players, Pearl, Platinum in the browser player, Black (unchanged reader) in the
+fast player; Crystal Legacy 1.3.1 (its WRAM 11 bytes further on – the header copy moves with it) and Blaze Black 2 Redux
+1.4.1 (its own zone table) too. All plans passed, with one exception that isn't one: in a White 2 run the walk to Route
+19 hadn't left Aspertia Gate at that check – the sign said Aspertia Gate, as did the game's own copy.
+
+**Other languages, simulated:** the WRAM recorded at every check of Red (8 checks) and Crystal (17) was shifted the way
+another language could keep its variables (bank 1 moved by −0x40 … +0x55 bytes, 9 shifts each): the new readers found
+the same place in all 225 shifted images; reading the English addresses there would have shown a wrong place in 77 of
+them. The tests do the same with made-up ROM tables for every reader (test/location-languages.test.mjs).
+
+**Not checked in a running game (no ROMs at hand):** the German, French, Italian, Spanish and Japanese Game Boy games
+(their map tables are found by structure – in the English ROMs exactly where pret's symbols put them; German Yellow
+"POKEMON YELAPSD" and Japanese Green have no memory-table entry at all), German Ruby/Sapphire/Emerald/FireRed/LeafGreen
+in this round (the check against the ROM's maps is new), every non-English DS game (German HeartGold, Platinum,
+Black/White, Black 2/White 2 …: whether their main pointer and the module params pointer lead where the English ones
+do – if not, the copy is searched for, and Gen 4 waits for the party reader), Yellow, Gold, Blue, Diamond, HeartGold,
+SoulSilver, the 3DS games after an update other than the ones in the memory table.
 
 ## What the checks found and what changed
 
@@ -315,8 +363,14 @@ German FireRed/LeafGreen (2.3.1, issue #16) – the memory table was right, two 
 
 ## Known gaps
 
-- White: Juniper's catching demo shows as a battle while it runs (the game sets the battle value for it); in the game's
-  other languages (memory unchecked) it may also stay on the panel afterwards, as before 2.3.1.
+- Catching demos (2.8.1): told by the battle type in Gen 1–3 (pret decomps) and, in the DS games, by the demo's two
+  one-Pokémon parties (Dawn/Lucas's starter and Bidoof, Lyra/Ethan's Marill and Rattata, Juniper's Minccino and a
+  Patrat, Bianca's Lillipup and a Purrloin) – checked against the decomps and synthetic RAM, not yet in a running game.
+  While only one of the demo's parties has been found (the first second or so) it can still flash up as a battle.
+  Wally's Zigzagoon and the Poké Dude's Teachy TV team are replaced by the team saved before them (SaveBlock1); German
+  Ruby/Sapphire (their RAM unchecked) don't get that. Gen 6/7 demos (Omega Ruby/Alpha Sapphire's Wally) aren't told
+  apart yet.
+- White: in the game's other languages (memory unchecked) a battle may stay on the panel after it ended, as before 2.3.1.
 - White: the address souldew had for "your Pokémon that is out" (battleActive, from NDS-Ironmon-Tracker) holds the wild
   opponent's PID instead (checked live) – it's only used when it is one of yours. Switching in a battle wasn't checked
   in White (one Pokémon in the test team).
@@ -332,7 +386,13 @@ German FireRed/LeafGreen (2.3.1, issue #16) – the memory table was right, two 
 - Moves of DS hacks that retype them (Fairy moves in Renegade Platinum / Blaze Black 2 Redux) come from souldew's move
   data (Gen 6's types for a Fairy hack); the Pokémon's types and the chart come from the ROM.
 - The battle's current types are read in GBA games only; DS and Game Boy battles use the species' types from the ROM.
-- Gen 3 PC boxes aren't read live: a catch sent to the PC (a full team) is filed once it joins the team.
+- Gen 5 PC boxes (2.8.1): read from the save blocks in RAM, 0x18A00 before the party block (Black: 0x0221BFAC, as the
+  community's RAM maps give it) – checked with synthetic RAM, not yet in a running game; Black 2/White 2 by the same
+  layout. A PC that reads as completely empty counts as unknown. Gen 1/2's PC isn't read (Gold/Silver/Crystal keep the
+  boxes in the cartridge RAM, Red/Blue/Yellow only the current box in WRAM).
+- Gen 3 PC boxes are read live in the retail games (FireRed/LeafGreen in English, German, French, Italian and
+  Spanish, English Emerald, English and German Ruby/Sapphire): a catch sent to the PC is filed right away. Not in the
+  expanded-engine hacks: there a catch sent to the PC (a full team) is filed once it joins the team.
 - German Ruby/Sapphire: no badges are read (their RAM sits elsewhere than in the English games and no German ROM was at
   hand to check), so no level cap either.
 - The ROM's data is worked out in a background thread the first time a game is opened (a few seconds for a big ROM);

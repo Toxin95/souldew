@@ -13,7 +13,7 @@ test('battle helper left or right of the game and folded in, remembered per prof
   const panel = src('session-info.mjs');
   // remembered in this profile, left and unfolded by default, anything else read as the default
   assert.match(panel, /const PANEL_KEY = 'sl-battle-panel';/);
-  assert.match(panel, /const PANEL_DEFAULT = \{ side: 'left', collapsed: false \};/);
+  assert.match(panel, /const PANEL_DEFAULT = \{ side: 'left', collapsed: false, hits: false \};/);
   assert.match(panel, /side: v\?\.side === 'right' \? 'right' : 'left', collapsed: v\?\.collapsed === true/);
   assert.match(panel, /localStorage\.setItem\(PANEL_KEY, JSON\.stringify\(next\)\)/);
   // two buttons on the panel: move it to the other side, fold it in / out
@@ -39,4 +39,24 @@ test('the battle helper, team and savestates judge by the running game\'s genera
   assert.equal(effectiveness('ghost', ['steel'], 4), 0.5);
   // … and Black/White's moves by Gen 5 (Tackle 50), not Gen 4
   assert.equal(moveInfo(MOVES, 33, 5).power, 50);
+});
+
+test('"What hits …" (the opponent\'s moves) folds in – folded by default, remembered with the panel, a real button', () => {
+  const panel = src('session-info.mjs');
+  // folded unless the player opened it (anything else stored reads as folded)
+  assert.match(panel, /collapsed: v\?\.collapsed === true, hits: v\?\.hits === true/);
+  assert.match(panel, /export function BattlePanel\(\{[^}]*hitsOpen = false[^}]*\}\)/);
+  assert.match(panel, /hits=\$\{onPrefs \? \{ open: hitsOpen, toggle: \(\) => onPrefs\(\{ hits: !hitsOpen \}\) \} : null\}/);
+  // a button in the head line: keyboard and screen readers know it opens / closes the list it controls
+  assert.match(panel, /<button type="button" class="bt-fold" aria-expanded=\$\{open\} aria-controls=\$\{listId\} onClick=\$\{hits\.toggle\}>/);
+  assert.match(panel, /name=\$\{open \? 'chevUp' : 'chevDown'\}/);
+  // folded: no move in the page at all, only the head line
+  assert.match(panel, /<ul class="bt-moves" id=\$\{listId\} hidden=\$\{!open\}>\n\s+\$\{open && incoming\.map/);
+  // the play view hands the choice over
+  assert.match(src('play.mjs'), /collapsed=\$\{panelPrefs\.collapsed\} onPrefs=\$\{setPanelPrefs\} hitsOpen=\$\{panelPrefs\.hits\}/);
+  const css = readFileSync(new URL('../web/session-info.css', import.meta.url), 'utf8');
+  assert.match(css, /\.bt-fold:hover, \.bt-fold:focus-visible \{ color: var\(--ink\); \}/);
+  // folded, the team check's "takes" tip doesn't name the foe's move either – only how hard it hits
+  assert.match(panel, /hideFoeMoves=\$\{!!onPrefs && !hitsOpen\}/);
+  assert.match(panel, /hideFoeMoves && typeof mu\.takesBy === 'number' \? t\('battle\.takesTipHidden'/);
 });

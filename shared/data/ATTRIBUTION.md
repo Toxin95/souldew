@@ -21,6 +21,9 @@ runtime or cached locally and are not redistributed.
 (https://github.com/kwsch/PKHeX, GPL-3.0), `PKHeX.Core/Resources/text/locations/gen6|gen7`. The 3DS party addresses in
 `addresses.json` (platform `3ds`) follow Citra-Tracker v2, Pokémon Stream Tool and PokeReader (see `research/azahar.md`).
 The 3DS covers in `web/assets/covers/` come from libretro-thumbnails like the others.
+The 3DS games' catch rates in `shared/live/catch3ds.mjs` (the battle helper's catch chance) come from PKHeX's personal
+tables (`PKHeX.Core/Resources/byte/personal/personal_xy|ao|sm|uu`, GPL-3.0), built by `scripts/build-catchrates-3ds.mjs`;
+the GB/GBA/DS games' are read from the running ROM itself.
 
 The place names in German, Spanish, French and Italian in `locations_gen2_crystal.json`, `locations_gen3.json`, `locations_gen4.json`, `locations_gen5.json`, `locations_gen6.json`, `locations_gen7.json` and `maps.json` (`gen1Locations`)
 come from the same PKHeX lists (https://github.com/kwsch/PKHeX, GPL-3.0, `PKHeX.Core/Resources/text/locations/gen2` … `gen7`), merged by

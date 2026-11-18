@@ -65,6 +65,10 @@
     "maxHpAddr": "0xCFF4",
     "levelAddr": "0xCFF3",
     "dvsAddr": "0xCFF1",
+    "statusAddr": "0xCFE9",
+    "catchRateAddr": "0xD007",
+    "battleTypeAddr": "0xD05A",
+    "catchSource": "pokered.sym wEnemyMonStatus / wEnemyMonActualCatchRate / wBattleType (pret symbols branch); the ball formula reads these (pokered engine/items/item_effects.asm ItemUseBall)",
     "source": "pokered.sym:18733 (wEnemyMon struct, pret symbols branch)"
    },
    "badges": {
@@ -135,6 +139,10 @@
     "maxHpAddr": "0xCFF4",
     "levelAddr": "0xCFF3",
     "dvsAddr": "0xCFF1",
+    "statusAddr": "0xCFE9",
+    "catchRateAddr": "0xD007",
+    "battleTypeAddr": "0xD05A",
+    "catchSource": "pokeblue.sym wEnemyMonStatus / wEnemyMonActualCatchRate / wBattleType (pret symbols branch); the ball formula reads these (pokered engine/items/item_effects.asm ItemUseBall)",
     "source": "pokeblue.sym:18733 (wEnemyMon struct, pret symbols branch)"
    },
    "badges": {
@@ -205,6 +213,10 @@
     "maxHpAddr": "0xCFF3",
     "levelAddr": "0xCFF2",
     "dvsAddr": "0xCFF0",
+    "statusAddr": "0xCFE8",
+    "catchRateAddr": "0xD006",
+    "battleTypeAddr": "0xD059",
+    "catchSource": "pokeyellow.sym wEnemyMonStatus / wEnemyMonActualCatchRate / wBattleType (pret symbols branch); the ball formula reads these (pokered engine/items/item_effects.asm ItemUseBall)",
     "source": "pokeyellow.sym:21956 (wEnemyMon struct, pret symbols branch)"
    },
    "badges": {
@@ -275,6 +287,10 @@
     "maxHpAddr": "0xD101",
     "levelAddr": "0xD0FC",
     "dvsAddr": "0xD0F5",
+    "statusAddr": "0xD0FD",
+    "catchRateAddr": "0xD114",
+    "battleTypeAddr": "0xD119",
+    "catchSource": "pokegold.sym wEnemyMonStatus / wEnemyMonCatchRate / wBattleType (pret symbols branch); the ball formula reads these (pokecrystal engine/items/item_effects.asm PokeBallEffect)",
     "source": "pokegold.sym:41504 (wEnemyMon struct, pret symbols branch)"
    },
    "badges": {
@@ -345,6 +361,10 @@
     "maxHpAddr": "0xD101",
     "levelAddr": "0xD0FC",
     "dvsAddr": "0xD0F5",
+    "statusAddr": "0xD0FD",
+    "catchRateAddr": "0xD114",
+    "battleTypeAddr": "0xD119",
+    "catchSource": "pokesilver.sym wEnemyMonStatus / wEnemyMonCatchRate / wBattleType (pret symbols branch); the ball formula reads these (pokecrystal engine/items/item_effects.asm PokeBallEffect)",
     "source": "pokesilver.sym:41503 (wEnemyMon struct, pret symbols branch)"
    },
    "badges": {
@@ -428,6 +448,10 @@
     "maxHpAddr": "0xD218",
     "levelAddr": "0xD213",
     "dvsAddr": "0xD20C",
+    "statusAddr": "0xD214",
+    "catchRateAddr": "0xD22B",
+    "battleTypeAddr": "0xD230",
+    "catchSource": "pokecrystal.sym wEnemyMonStatus / wEnemyMonCatchRate / wBattleType (pret symbols branch); the ball formula reads these (pokecrystal engine/items/item_effects.asm PokeBallEffect)",
     "source": "pokecrystal.sym:56002 (wEnemyMon struct, pret symbols branch)"
    },
    "badges": {
@@ -1049,9 +1073,9 @@
    "verified": "xMAP + ROM bytes (pointer); PKHeX (offsets); runtime not tested",
    "badges": {
     "generalOffsetFromSaveBase": "0x10",
-    "johtoOffset": "0x7E",
+    "trainerOffset": "0x64",
     "kantoOffset": "0x83",
-    "source": "save general block in RAM (saveBase+0x10, same layout as the .sav: shared/gen4save.mjs)"
+    "source": "save general block in RAM (saveBase+0x10, same layout as the .sav: shared/gen4save.mjs); PKHeX SAV4HGSS Trainer1 0x64: TID +0x10, SID +0x12, Johto badges +0x1A (0x7E), Kanto badges +0x1F (0x83), a bit per badge"
    },
    "battleActive": {
     "pidOffsetFromSaveBase": "0x49E7C",
@@ -1133,9 +1157,9 @@
    "verified": "xMAP (pointer); PKHeX (offsets); runtime not tested",
    "badges": {
     "generalOffsetFromSaveBase": "0x10",
-    "johtoOffset": "0x7E",
+    "trainerOffset": "0x64",
     "kantoOffset": "0x83",
-    "source": "save general block in RAM (saveBase+0x10, same layout as the .sav: shared/gen4save.mjs)"
+    "source": "save general block in RAM (saveBase+0x10, same layout as the .sav: shared/gen4save.mjs); PKHeX SAV4HGSS Trainer1 0x64: TID +0x10, SID +0x12, Johto badges +0x1A (0x7E), Kanto badges +0x1F (0x83), a bit per badge"
    },
    "battleActive": {
     "pidOffsetFromSaveBase": "0x49E7C",
@@ -1631,12 +1655,14 @@
     {
      "version": "1.5",
      "addr": "0x08CE1CF8",
-     "badges": "0x08C6A6B0"
+     "badges": "0x08C6A6B0",
+     "bag": "0x08C67564"
     },
     {
      "version": "1.0",
      "addr": "0x08CE1CE8",
-     "badges": "0x08C6A6A0"
+     "badges": "0x08C6A6A0",
+     "bag": "0x08C67554"
     }
    ],
    "source": "Citra-Tracker v2 (kcblack42) and Pokemon Stream Tool (Readek): party at the 1.0 address, XY 1.5 / ORAS 1.4 (and SM/USUM) also PokeReader (zaksabeast, reader_core/src/gen6|gen7/reader.rs); slots 0x1E4 apart, the PK6/PK7 party stats at +0x158",
@@ -1647,7 +1673,8 @@
     "source": "Pokemon Stream Tool (Readek): Battle Pokemon.mjs / Read Battle Type.mjs; ORAS checked live (Omega Ruby 1.0)"
    },
    "zoneAddr": "0x081828EC",
-   "zoneSource": "PKMN-NTR (fa-dx) BreedingBot6.cs mapidoff; ORAS checked live (Littleroot Town 6, Route 101 23 – the zone table of the ROM agrees)"
+   "zoneSource": "PKMN-NTR (fa-dx) BreedingBot6.cs mapidoff; ORAS checked live (Littleroot Town 6, Route 101 23 – the zone table of the ROM agrees)",
+   "bagSource": "Multi-PokemonFramework (semaj14, GPL-3) Sources/Folders/Trainer.cpp Pouch::Items for X/Y 1.5 (the pockets at +0x640/+0x7C0/+0x968/+0xA68 = PKHeX PlayerBag6XY, money 0x8C6A6AC right before the tracker's badge byte); 1.0 moved by the same 0x10 as the party and the badges – not checked in a game"
   },
   {
    "id": "oras",
@@ -1677,12 +1704,14 @@
     {
      "version": "1.4",
      "addr": "0x08CFB26C",
-     "badges": "0x08C71DC4"
+     "badges": "0x08C71DC4",
+     "bag": "0x08C6EC70"
     },
     {
      "version": "1.0",
      "addr": "0x08CF727C",
-     "badges": "0x08C6DDD4"
+     "badges": "0x08C6DDD4",
+     "bag": "0x08C6AC80"
     }
    ],
    "source": "Citra-Tracker v2 (kcblack42) and Pokemon Stream Tool (Readek): party at the 1.0 address, XY 1.5 / ORAS 1.4 (and SM/USUM) also PokeReader (zaksabeast, reader_core/src/gen6|gen7/reader.rs); slots 0x1E4 apart, the PK6/PK7 party stats at +0x158",
@@ -1693,7 +1722,8 @@
     "source": "Pokemon Stream Tool (Readek): Battle Pokemon.mjs / Read Battle Type.mjs; ORAS checked live (Omega Ruby 1.0)"
    },
    "zoneAddr": "0x08187BD4",
-   "zoneSource": "PKMN-NTR (fa-dx) BreedingBot6.cs mapidoff; ORAS checked live (Littleroot Town 6, Route 101 23 – the zone table of the ROM agrees)"
+   "zoneSource": "PKMN-NTR (fa-dx) BreedingBot6.cs mapidoff; ORAS checked live (Littleroot Town 6, Route 101 23 – the zone table of the ROM agrees)",
+   "bagSource": "Multi-PokemonFramework (semaj14, GPL-3) Sources/Folders/Trainer.cpp Pouch::Items for ORAS 1.4 (the pockets at +0x640/+0x7C0/+0x970/+0xA70 = PKHeX PlayerBag6AO, money 0x8C71DC0 right before the tracker's badge byte); 1.0 moved by the same 0x3FF0 as the party and the badges – not checked in a game"
   },
   {
    "id": "sm",
@@ -1720,7 +1750,8 @@
    "maxParty": 6,
    "partyAddrs": [
     {
-     "addr": "0x34195E10"
+     "addr": "0x34195E10",
+     "bag": "0x330D5934"
     }
    ],
    "source": "Citra-Tracker v2 (kcblack42) and Pokemon Stream Tool (Readek): party at the 1.0 address, XY 1.5 / ORAS 1.4 (and SM/USUM) also PokeReader (zaksabeast, reader_core/src/gen6|gen7/reader.rs); slots 0x1E4 apart, the PK6/PK7 party stats at +0x158",
@@ -1733,7 +1764,8 @@
     "source": "Pokemon Stream Tool (Readek): Battle Pokemon.mjs / Read Battle Type.mjs (the base, in battle); the opponents follow the player's 12 battlers (Ultra Sun checked live). isTrainer: the battle type byte 0x21 before the in-battle flag, as found in Ultra Sun – Sun 1.0 has the same structure there (the type byte, a pointer at +4, the same block at +0x28; in-battle at +0x21) – checked live in Sun 1.0 (US cartridge): Hau's Popplio L5 type 1, a wild Pikipek L3 on Route 1 type 0, in-battle 1 in both; Kukui's demo battle leaves in-battle 0. The Stream Tool's 0x3421BD74 is unverified"
    },
    "zoneAddr": "0x34183CC6",
-   "zoneSource": "Found by souldew in Sun 1.0 (US cartridge): the player's position { u16 ?, u16 zone, float x, y, z } – the same layout as Ultra Sun's, 0x1214A before the party; the house reads zone 27 (Route 1 in the ROM's zone table)"
+   "zoneSource": "Found by souldew in Sun 1.0 (US cartridge): the player's position { u16 ?, u16 zone, float x, y, z } – the same layout as Ultra Sun's, 0x1214A before the party; the house reads zone 27 (Route 1 in the ROM's zone table)",
+   "bagSource": "Multi-PokemonFramework (semaj14, GPL-3) Trainer.cpp Pouch::Items (SM 1.2); checked live in Sun 1.0 (US cartridge): the pockets as in PKHeX PlayerBag7SM, the game's own pointers to them right behind the block (0x330D6714), the Sparkling Stone from Hala in Key Items, Rare Candies added and shown in the bag"
   },
   {
    "id": "usum",
@@ -1760,7 +1792,8 @@
    "maxParty": 6,
    "partyAddrs": [
     {
-     "addr": "0x33F7FA44"
+     "addr": "0x33F7FA44",
+     "bag": "0x33011934"
     }
    ],
    "source": "Citra-Tracker v2 (kcblack42) and Pokemon Stream Tool (Readek): party at the 1.0 address, XY 1.5 / ORAS 1.4 (and SM/USUM) also PokeReader (zaksabeast, reader_core/src/gen6|gen7/reader.rs); slots 0x1E4 apart, the PK6/PK7 party stats at +0x158",
@@ -1773,7 +1806,8 @@
     "source": "Pokemon Stream Tool (Readek): Battle Pokemon.mjs (the base, in battle). Checked live in Ultra Sun 1.0 (US cartridge): a wild Yungoos L3 at battler 12 (the opponents follow the player's 12), Hau's Popplio L5; isTrainer found by souldew – 1 from the trainer's cutscene on, 0 for a wild battle, also right after a trainer battle (the Stream Tool's 0x340178B9 reads 1 in wild battles too)"
    },
    "zoneAddr": "0x33F6D74A",
-   "zoneSource": "Found by souldew in Ultra Sun 1.0 (US cartridge) with a heap scan across house → outside → house → outside: the player's position { u16 4, u16 zone, float x, y, z }, a copy of the previous one 0x48 after it; the house 36, outside 1 (both Route 1 in the ROM's zone table); the same address after a fresh start"
+   "zoneSource": "Found by souldew in Ultra Sun 1.0 (US cartridge) with a heap scan across house → outside → house → outside: the player's position { u16 4, u16 zone, float x, y, z }, a copy of the previous one 0x48 after it; the house 36, outside 1 (both Route 1 in the ROM's zone table); the same address after a fresh start",
+   "bagSource": "Multi-PokemonFramework (semaj14, GPL-3) Trainer.cpp Pouch::Items / Medicines (USUM 1.2: 0x33011934, Medicine 0x330124A8 = +0xB74 as in PKHeX PlayerBag7USUM); PokeReader's USUM shiny-charm bag base 0x33011930 agrees (4 bytes before, as in Sun); the party address is the same in 1.0 and 1.2 – not checked in a game"
   }
  ]
 }

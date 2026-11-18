@@ -1,6 +1,8 @@
 // Builds souldew's 3DS part into tools/ctr/<platform>-<arch>/ (bundled with the app like the JRE, see package.json):
 //   ctrhost[.exe]            native/ctr-host/ctrhost.c – the host that runs the core with Vulkan (needs the Vulkan headers)
-//   azahar_libretro.*        Azahar's libretro core with native/azahar-patch applied (live data: reading game memory)
+//   azahar_libretro.*        Azahar's libretro core with native/azahar-patch/*.patch applied (live data: reading game
+//                            memory; music from the ROM: the game's RomFS reads; sound effects in fast-forward: the
+//                            game's sound without the voices that play its streamed music)
 //   libMoltenVK.dylib        macOS only – Vulkan on Metal, from Azahar's own macOS release
 //   SOULDEW_CORE             marker: the core has the souldew patch
 //
@@ -16,7 +18,8 @@
 // skips building the core (copies a built one). Needs git, cmake, ninja, a C/C++ compiler, the Vulkan headers and – on
 // macOS – spirv-tools (as Azahar's own CI: brew install cmake ninja spirv-tools vulkan-headers).
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, writeFileSync, rmSync, readdirSync, chmodSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, writeFileSync, rmSync, readdirSync, chmodSync, readFileSync } from 'node:fs';
+import { coreStamp as stampOf, staleCore } from './ctrstamp.mjs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -34,14 +37,22 @@ const [os] = plat.split('-');
 const cross = plat !== `${process.platform}-${process.arch}`;
 const out = join(root, 'tools', 'ctr', plat);
 const ext = os === 'win32' ? 'dll' : os === 'darwin' ? 'dylib' : 'so';
+// native/azahar-patch/*.patch, applied in name order: souldew-memory (live data), souldew-romfs (music from the ROM),
+// souldew-sfx (the sound effects without the music while fast-forwarding), souldew-state (save states that stop the game
+// only while its memory is copied – zstd runs on a thread)
+const PATCH_NAMES = readdirSync(join(root, 'native', 'azahar-patch')).filter((n) => n.endsWith('.patch')).sort();
+const PATCHES = PATCH_NAMES.map((n) => join(root, 'native', 'azahar-patch', n));
+const coreStamp = () => stampOf(TAG, PATCH_NAMES, (n) => readFileSync(join(root, 'native', 'azahar-patch', n), 'utf8'));
 if (has('check')) {
   const need = [os === 'win32' ? 'ctrhost.exe' : 'ctrhost', `azahar_libretro.${ext}`, 'SOULDEW_CORE', ...(os === 'darwin' ? ['libMoltenVK.dylib'] : [])];
   const missing = need.filter((f) => !existsSync(join(out, f)));
-  if (!missing.length) {
+  const stale = !missing.length && staleCore(readFileSync(join(out, 'SOULDEW_CORE'), 'utf8'), coreStamp());
+  if (!missing.length && !stale) {
     console.log(`3DS part: ${out} ✓`);
     process.exit(0);
   }
-  const msg = `3DS part incomplete in ${out} (missing: ${missing.join(', ')}). Build it with \`npm run ctr\` (see docs/DEVELOPMENT.md › "Nintendo 3DS").`;
+  const msg = stale ? `3DS part in ${out} is out of date: its core was ${stale}. Rebuild it with \`npm run ctr\` (see docs/DEVELOPMENT.md › "Nintendo 3DS").`
+    : `3DS part incomplete in ${out} (missing: ${missing.join(', ')}). Build it with \`npm run ctr\` (see docs/DEVELOPMENT.md › "Nintendo 3DS").`;
   if (process.env.SLS_NO_3DS) {
     console.warn(`${msg}\nSLS_NO_3DS is set: building without it – 3DS games open in Azahar itself.`);
     process.exit(0);
@@ -87,10 +98,11 @@ function buildCore() {
     copyFileSync(given, target);
   } else {
     const src = azahar;
-    // apply the patch once (a checkout that has it already is left as it is)
-    const patch = join(root, 'native', 'azahar-patch', 'souldew-memory.patch');
-    const check = spawnSync('git', ['apply', '--reverse', '--check', patch], { cwd: src });
-    if (check.status !== 0) run('git', ['apply', patch], { cwd: src });
+    // apply the patches once each, in name order. A checkout that has some already: the last one applied is the last
+    // whose reverse applies (an earlier one's doesn't once a later patch changed lines around it) – the rest go on top.
+    let applied = 0;
+    for (let k = PATCHES.length; k > 0 && !applied; k--) if (spawnSync('git', ['apply', '--reverse', '--check', PATCHES[k - 1]], { cwd: src }).status === 0) applied = k;
+    for (const patch of PATCHES.slice(applied)) run('git', ['apply', patch], { cwd: src });
     const build = join(src, 'build-souldew');
     if (cross) throw new Error('building the core for another platform: use --core with a built one (.github/workflows/ctr.yml builds them)');
     const extra = process.platform === 'darwin' ? [`-DCMAKE_OSX_ARCHITECTURES=${process.arch === 'arm64' ? 'arm64' : 'x86_64'}`] : process.platform === 'linux' ? ['-DENABLE_LTO=OFF'] : [];
@@ -100,7 +112,7 @@ function buildCore() {
     if (!found) throw new Error('built core not found');
     copyFileSync(found, target);
   }
-  writeFileSync(join(out, 'SOULDEW_CORE'), `Azahar ${TAG} libretro core with native/azahar-patch/souldew-memory.patch\n`);
+  writeFileSync(join(out, 'SOULDEW_CORE'), coreStamp());
 }
 
 // ---- MoltenVK (macOS) -----------------------------------------------------------------------------------------------
@@ -149,7 +161,8 @@ buildHost();
 writeFileSync(join(out, 'LICENSES.txt'), `souldew's Nintendo 3DS part
 ctrhost – native/ctr-host/ctrhost.c, souldew (GPL-3.0); libretro headers MIT
 azahar_libretro – Azahar ${TAG} (GPL-2.0-or-later), https://github.com/azahar-emu/azahar, built with
-  native/azahar-patch/souldew-memory.patch from the souldew repository (the corresponding source: that tag + the patch)
+  ${PATCH_NAMES.map((n) => `native/azahar-patch/${n}`).join(' and ')} from the souldew repository (the corresponding
+  source: that tag + the patches)
 libMoltenVK – MoltenVK (Apache-2.0), https://github.com/KhronosGroup/MoltenVK, from Azahar's macOS release
 `);
 if (!has('host-only')) {

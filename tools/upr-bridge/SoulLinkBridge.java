@@ -44,7 +44,7 @@ import java.util.ResourceBundle;
  * export of the randomized game data (types, evolutions, encounters) for the tracker.
  *
  * Usage:
- *   java -cp PokeRandoZX.jar:bridge SoulLinkBridge info <rom>
+ *   java -cp PokeRandoZX.jar:bridge SoulLinkBridge info <rom> [<settings.properties> <seed>]
  *   java -cp PokeRandoZX.jar:bridge SoulLinkBridge fields
  *   java -cp PokeRandoZX.jar:bridge SoulLinkBridge randomize <rom> <out.nds> <settings.properties> <seed> <log.txt> <data.json>
  *
@@ -61,12 +61,12 @@ public class SoulLinkBridge {
 
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
-            System.err.println("usage: info <rom> | fields | randomize <rom> <out> <settings> <seed> <log> <json>");
+            System.err.println("usage: info <rom> [<settings> <seed>] | fields | randomize <rom> <out> <settings> <seed> <log> <json>");
             System.exit(2);
         }
         try {
             if ("info".equals(args[0])) {
-                info(args[1]);
+                info(args[1], args.length > 3 ? args[2] : null, args.length > 3 ? Long.parseLong(args[3]) : 0L);
             } else if ("arm9".equals(args[0])) {
                 // debug: dump UPR's decompressed arm9 so code tweaks can be checked against hacks
                 RomHandler h = load(args[1]);
@@ -166,7 +166,13 @@ public class SoulLinkBridge {
         return handler;
     }
 
-    private static void info(String rom) throws Exception {
+    /**
+     * What the new-run wizard needs to know about a game. With settings and a seed it also does a trial run: the whole
+     * randomization in memory, nothing written ("trial": null when UPR got through, else the exception's class name) –
+     * a Gen 1–5 game UPR can load but not randomize (a ROM hack or release whose data isn't where UPR expects it:
+     * "Index 1286 out of bounds for length 1268" on every build) is then known before the player builds a run.
+     */
+    private static void info(String rom, String settingsFile, long seed) throws Exception {
         RomHandler h = load(rom);
         StringBuilder sb = new StringBuilder("{");
         sb.append("\"romName\":").append(json(h.getROMName())).append(',');
@@ -200,8 +206,38 @@ public class SoulLinkBridge {
             first = false;
             sb.append(json(p.fullName()));
         }
-        sb.append("]}");
+        sb.append(']');
+        // (last: the trial changes the loaded game's data)
+        if (settingsFile != null && !(h instanceof Abstract3DSRomHandler)) sb.append(",\"trial\":").append(json(trial(h, settingsFile, seed)));
+        sb.append('}');
         System.out.println("@@JSON " + sb);
+    }
+
+    /** A randomization that writes nothing (see info): null when it went through, else the exception's class name. */
+    private static String trial(RomHandler h, String settingsFile, long seed) {
+        try {
+            Settings settings = forRom(h, readSettings(settingsFile));
+            PrintStream log = new PrintStream(new ByteArrayOutputStream(), true, "UTF-8");
+            // saveAsDirectory: Gen 1–5 handlers then save nothing – the write-back into the game's data that saving
+            // does first (stats, moves …) is called by hand, in memory
+            new Randomizer(settings, h, ResourceBundle.getBundle("com/dabomstew/pkrandom/newgui/Bundle"), true).randomize("", log, seed);
+            for (Class<?> c = h.getClass(); c != null; c = c.getSuperclass()) {
+                for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+                    if ((m.getName().equals("savingROM") || m.getName().equals("savingRom")) && m.getParameterTypes().length == 0 && !Modifier.isAbstract(m.getModifiers())) {
+                        m.setAccessible(true);
+                        m.invoke(h);
+                        return null;
+                    }
+                }
+            }
+            return null;
+        } catch (Throwable t) {
+            Throwable cause = t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null ? t.getCause() : t;
+            // where it stopped, for the app's diagnostics (server/lib/toolchain.mjs randomizerTrace) – stderr only
+            System.err.println("@@TRIAL " + cause);
+            cause.printStackTrace();
+            return cause.getClass().getSimpleName();
+        }
     }
 
     private static void fields() {
@@ -306,6 +342,7 @@ public class SoulLinkBridge {
                 System.out.println("@@WARN " + json("Unsupported setting type for " + e.getKey()));
             }
         }
+        s.setCustomNames(FileFunctions.getCustomNames());
         return s;
     }
 
@@ -336,10 +373,8 @@ public class SoulLinkBridge {
         return Enum.valueOf((Class) t, v);
     }
 
-    private static void randomize(String rom, String out, String settingsFile, long seed, String logFile, String jsonFile) throws Exception {
-        Settings settings = readSettings(settingsFile);
-        settings.setCustomNames(FileFunctions.getCustomNames());
-        RomHandler h = load(rom);
+    /** Settings made ready for the loaded game – the same for a build and a trial run. */
+    private static Settings forRom(RomHandler h, Settings settings) throws Exception {
         settings.setRomName(h.getROMName());
         boolean staticsBroken = (h instanceof SafeGen4RomHandler && ((SafeGen4RomHandler) h).staticsBroken)
                 || (h instanceof SafeGen5RomHandler && ((SafeGen5RomHandler) h).staticsBroken);
@@ -352,6 +387,13 @@ public class SoulLinkBridge {
         Settings.TweakForROMFeedback fb = settings.tweakForRom(h);
         if (fb.isChangedStarter()) System.out.println("@@WARN " + json("Custom starters were adjusted for this ROM"));
         if (fb.isRemovedCodeTweaks()) System.out.println("@@WARN " + json("Some code tweaks are not supported by this ROM and were removed"));
+        return settings;
+    }
+
+    private static void randomize(String rom, String out, String settingsFile, long seed, String logFile, String jsonFile) throws Exception {
+        Settings settings = readSettings(settingsFile);
+        RomHandler h = load(rom);
+        forRom(h, settings);
         System.out.println("@@SETTINGS " + json(settings.toString()));
 
         if (h instanceof Abstract3DSRomHandler) System.out.println("@@STEP " + json("randomize"));

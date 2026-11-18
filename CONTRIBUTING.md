@@ -83,6 +83,10 @@ minutes each. Never commit ROMs, saves, patched ROMs or the screenshots.
   `'one area|{count} areas'`.
 - Run `node scripts/extract-i18n.mjs` – it adds new keys to `web/i18n/en.json` and lists missing or stale ones per
   language. Add the translations to `de.json`, `fr.json`, `es.json` and `it.json`.
+- The server, the desktop shell and shared code write English and send a code the page translates:
+  `httpError(status, 'English text', 'code', vars)` with the code's text in `web/lib/errors.mjs`, build log lines
+  through `logLine`. The desktop shell's own texts are `t()` calls from the page's dictionaries (`electron/texts.mjs`).
+  `test/i18n-leaks.test.mjs` fails on German in those messages and on codes without a text.
 - German UI text uses the informal "du" and no gender stars. "souldew" is always written in lowercase.
 
 ## Pull requests

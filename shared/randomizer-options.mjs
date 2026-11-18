@@ -263,7 +263,11 @@ export const OPTION_GROUPS = [
     fields: [
       sel('fieldItemsMod', 'Items on the map', [['UNCHANGED', 'Unchanged'], ['SHUFFLE', 'Shuffle'], ['RANDOM', 'Random'], ['RANDOM_EVEN', 'Random (even)']]),
       bool('banBadRandomFieldItems', 'Exclude useless items', null, { key: 'fieldItemsMod', in: ['RANDOM', 'RANDOM_EVEN'] }),
-      sel('shopItemsMod', 'Shop items', [['UNCHANGED', 'Unchanged'], ['SHUFFLE', 'Shuffle'], ['RANDOM', 'Random']]),
+      // UPR ZX changes only the shops its ROM tables don't skip (SkipShops / MainGameShops in its gen*_offsets.ini):
+      // FireRed/LeafGreen Celadon 4F + 5F, Ruby/Sapphire/Emerald Slateport, Lavaridge and Lilycove 3F, the DS games their
+      // second counters and department stores – never the regular Poké Mart list, and no shops in Gen 1/2 (#62)
+      sel('shopItemsMod', 'Shop items', [['UNCHANGED', 'Unchanged'], ['SHUFFLE', 'Shuffle'], ['RANDOM', 'Random']],
+        'Only the special shops change: department store floors, herb and vitamin sellers and the second counter of a Poké Mart. The regular Poké Mart items stay – in FireRed/LeafGreen just Celadon Department Store 4F and 5F change. No shops in Gen 1/2.'),
       bool('banBadRandomShopItems', 'Exclude useless items', null, { key: 'shopItemsMod', in: ['RANDOM'] }),
       bool('banRegularShopItems', 'No regular shop items (Potions, Poké Balls …)', null, { key: 'shopItemsMod', in: ['RANDOM'] }),
       bool('banOPShopItems', 'Ban overpowered shop items', null, 'shopItemsMod'),

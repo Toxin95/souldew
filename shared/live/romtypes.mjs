@@ -13,6 +13,11 @@
 // Every table is validated against the retail chart before it is trusted (a hack keeps most matchups); what can't be
 // found that way is null, never a guess. A key per type: the app's own ('fire', 'fairy') for the official types, 'x-…'
 // for a type only the game has (named as the game names it, `labels`).
+//
+// The species table also gives each Pokémon's catch rate – the byte right after the types in every one of these formats
+// (pokeemerald SpeciesInfo / BaseStats .catchRate, pokered/pokecrystal base_data, PKHeX PersonalInfo1–5 CatchRate) – for
+// the battle helper's catch chance (shared/catchrate.mjs): the game's own, so a hack or the randomizer's "minimum catch
+// rate" shows what the game really uses.
 import { listNdsFiles, ndsFile, parseNarc, ndsArm9, blzDecompress } from '../nds.mjs';
 import { retailSingle } from '../typechart.mjs';
 
@@ -98,9 +103,10 @@ export function gbaTypeNames(rom, charset) {
 
 /**
  * GBA base stats (28 bytes per species in the retail games, 36 in older expansions, a field of gSpeciesInfo in newer
- * ones): Bulbasaur's stats (45/49/49/45/65/65), Ivysaur's one entry on, Venusaur's after it; the types at +6/+7. Of the
- * tables found (Radical Red keeps FireRed's next to its own) the one with the most entries that look like species.
- * → { offset, stride, types: [[id, id] | null] } (index = the game's species number) or null.
+ * ones): Bulbasaur's stats (45/49/49/45/65/65), Ivysaur's one entry on, Venusaur's after it; the types at +6/+7, the
+ * catch rate at +8. Of the tables found (Radical Red keeps FireRed's next to its own) the one with the most entries that
+ * look like species. → { offset, stride, types: [[id, id] | null], rates: [catch rate] } (index = the game's species
+ * number) or null.
  */
 export function gbaBaseStats(rom, count) {
   const B = [45, 49, 49, 45, 65, 65];
@@ -114,6 +120,7 @@ export function gbaBaseStats(rom, count) {
       if (!at(o + s, I) || !at(o + 2 * s, V) || o < s) continue;
       const start = o - s;
       const types = [null];
+      const rates = [0];
       let ok = 0;
       for (let i = 1; i <= count && start + i * s + 8 <= rom.length; i++) {
         const e = start + i * s;
@@ -121,15 +128,19 @@ export function gbaBaseStats(rom, count) {
         const b = rom[e + 7];
         const stats = rom[e] || rom[e + 1] || rom[e + 2];
         types[i] = stats && a < 0x80 && b < 0x80 ? [a, b] : null;
+        rates[i] = types[i] ? rom[e + 8] ?? 0 : 0;
         if (types[i]) ok++;
       }
-      if (!best || ok > best.ok) best = { offset: start, stride: s, types, ok };
+      if (!best || ok > best.ok) best = { offset: start, stride: s, types, rates, ok };
     }
   }
-  return best && best.ok >= Math.min(count, 386) * 0.9 ? { offset: best.offset, stride: best.stride, types: best.types } : null;
+  return best && best.ok >= Math.min(count, 386) * 0.9 ? { offset: best.offset, stride: best.stride, types: best.types, rates: best.rates } : null;
 }
 
-/** Game Boy base data: Bulbasaur's entry (dex 1, then its stats), 28 bytes per species in Gen 1, 32 in Gen 2. */
+/**
+ * Game Boy base data: Bulbasaur's entry (dex 1, then its stats), 28 bytes per species in Gen 1, 32 in Gen 2; the catch
+ * rate right after the two types (pokered/pokecrystal data/pokemon/base_stats: dex, stats, types, catch rate).
+ */
 function gbBaseStats(rom, gen) {
   const sig = gen === 1 ? [1, 45, 49, 49, 45, 65] : [1, 45, 49, 49, 45, 65, 65];
   const size = gen === 1 ? 28 : 32;
@@ -138,22 +149,25 @@ function gbBaseStats(rom, gen) {
     if (rom[o] !== 1 || !sig.every((v, k) => rom[o + k] === v)) continue;
     if (rom[o + size] !== 2 || rom[o + 2 * size] !== 3) continue; // Ivysaur and Venusaur after it, by dex number
     const out = [];
+    const rates = [];
     const last = gen === 1 ? 150 : 251; // (Gen 1 keeps Mew apart)
     for (let i = 0; i < last; i++) {
       const e = o + i * size;
       if (rom[e] !== i + 1) break;
       out[i + 1] = [rom[e + t], rom[e + t + 1]];
+      rates[i + 1] = rom[e + t + 2];
     }
     // Gen 1 keeps Mew's entry apart (MewBaseStats): dex 151 with 100 in every stat
     if (gen === 1) {
       for (let m = 0; m + 8 < rom.length; m++) {
         if (rom[m] === 151 && [1, 2, 3, 4, 5].every((k) => rom[m + k] === 100)) {
           out[151] = [rom[m + t], rom[m + t + 1]];
+          rates[151] = rom[m + t + 2];
           break;
         }
       }
     }
-    if (out.length > last * 0.9) return { offset: o, stride: size, types: out };
+    if (out.length > last * 0.9) return { offset: o, stride: size, types: out, rates };
   }
   return null;
 }
@@ -382,8 +396,70 @@ function dsPersonal(rom, gen, files, code) {
   const count = gen === 5 ? 649 : 493;
   if (parts.length < count) return null;
   const out = [];
-  for (let i = 1; i <= count; i++) out[i] = parts[i]?.length > 8 ? [parts[i][6], parts[i][7]] : null;
-  return { path, types: out };
+  const rates = [];
+  for (let i = 1; i <= count; i++) {
+    out[i] = parts[i]?.length > 8 ? [parts[i][6], parts[i][7]] : null;
+    rates[i] = out[i] ? parts[i][8] : 0; // (PKHeX PersonalInfo4/5: CatchRate at 0x08)
+  }
+  return { path, types: out, rates, forms: gen === 5 ? personalForms(parts, count) : [] };
+}
+
+/**
+ * Gen 5's alternate forms in the personal data: their own entries after #649 – each species' entry names the first
+ * (FormStatsIndex u16 at +0x1C) and how many forms it has (FormeCount at +0x20); form k is entry FormStatsIndex + k − 1
+ * (PKHeX PersonalInfo5). Rotom's appliances, Wormadam's cloaks, Shaymin's Sky Forme … with the ROM's types (a
+ * randomizer's or a hack's). → [species] = [null, [type1, type2] of form 1, …] (the game's type ids).
+ */
+export function personalForms(parts, count) {
+  const forms = [];
+  for (let i = 1; i <= count; i++) {
+    const e = parts[i];
+    if (!e || e.length <= 0x20) continue;
+    const first = e[0x1c] | (e[0x1d] << 8);
+    const n = e[0x20];
+    if (n < 2 || first <= count || first + n - 2 >= parts.length) continue;
+    forms[i] = [null];
+    for (let k = 1; k < n; k++) forms[i][k] = parts[first + k - 1]?.length > 8 ? [parts[first + k - 1][6], parts[first + k - 1][7]] : null;
+  }
+  return forms;
+}
+
+/** The forms (personalForms) whose types differ from the species', named: species → { form: [type key, …] }. */
+export function namedForms(list, keys, species) {
+  const forms = {};
+  list.forEach((fs, id) => {
+    if (!fs || !species[id]) return;
+    fs.forEach((t, k) => {
+      if (!k || !t) return;
+      const ks = [...new Set(t.map((x) => keys[x]))];
+      if (ks.some((x) => !x)) return;
+      const named = ks.filter((x) => x !== '???');
+      if (named.join() !== species[id].join()) (forms[id] ||= {})[k] = named;
+    });
+  });
+  return forms;
+}
+
+// ---------------------------------------------------------------- catch rates
+
+/**
+ * The catch rates of a species table by National Dex number: `rates[i]` of the game's species i, `national(i)` its
+ * number (0: none). Only species whose types were read count, and a catch rate is 1–255 – a table where too many aren't
+ * (not the field this format keeps there) gives null rather than wrong chances.
+ */
+function catchRatesBy(rates, national, species) {
+  if (!rates) return null;
+  const out = {};
+  let n = 0;
+  let bad = 0;
+  for (let i = 1; i < rates.length; i++) {
+    const id = national(i);
+    if (!id || !species[id] || id in out) continue;
+    n++;
+    if (rates[i] >= 1 && rates[i] <= 255) out[id] = rates[i];
+    else bad++;
+  }
+  return n && bad <= n * 0.05 ? out : null;
 }
 
 // ---------------------------------------------------------------- entry point
@@ -401,10 +477,11 @@ const ownKey = (name, id, used) => {
  * own Pokémon as `fakemon` + index), `vanillaIndex` (the retail Gen 3 map), `baseTypes(id, gen)` (the app's types – to
  * tell where Normal sits in the game's ids), `moveMap` (an expanded engine's move numbers → National, romspecies.mjs
  * gen3MoveMap), `fakemon`.
- * → { gen, keys, labels, species, chart, moves, fairy, own, source } or null (no species table found). `keys[id]` = the
+ * → { gen, keys, labels, species, catchRates, chart, moves, fairy, own, source } or null (no species table found). `keys[id]` = the
  * type key of the game's type id, `species[national]` = its types, `chart` = { atk: { def: mult } } without the ×1
  * matchups (null when no chart passed the checks), `moves[national move]` = its type (GBA, where found), `own` = the
- * number of types the game has beyond the official ones. Never throws.
+ * number of types the game has beyond the official ones, `catchRates[national]` = its catch rate (null when the table's
+ * catch rates didn't look like ones). Never throws.
  */
 export function romTypes(rom, opts = {}) {
   try {
@@ -495,7 +572,7 @@ function gbaTypes(rom, opts) {
   }
   const own = Object.keys(labels).length;
   return {
-    gen: 3, keys, labels, species, chart, moves, fairy: keys.includes('fairy') && Object.values(species).some((t) => t.includes('fairy')), own,
+    gen: 3, keys, labels, species, catchRates: catchRatesBy(base.rates, national, species), chart, moves, fairy: keys.includes('fairy') && Object.values(species).some((t) => t.includes('fairy')), own,
     source: { baseStats: base.offset, stride: base.stride, names: names?.offset ?? null, chart: c ? c.offset : null, moves: mt?.offset ?? null, shift },
   };
 }
@@ -518,7 +595,7 @@ function gbTypes(rom) {
   if (Object.keys(species).length < base.types.length * 0.9) return null;
   const idOf = (k) => { const i = keys.indexOf(k); return i >= 0 ? i : undefined; };
   const c = pickChart(tripleCharts(rom, { gb: true, maxId: 0x1c, min: 60 }).map(fromTriples), idOf, g, 0x1c);
-  return { gen: g, keys, labels: {}, species, chart: c ? chartByKey(c.mult, keys) : null, moves: null, fairy: false, own: 0, source: { baseStats: base.offset, chart: c ? c.offset : null } };
+  return { gen: g, keys, labels: {}, species, catchRates: catchRatesBy(base.rates, (i) => i, species), chart: c ? chartByKey(c.mult, keys) : null, moves: null, fairy: false, own: 0, source: { baseStats: base.offset, chart: c ? c.offset : null } };
 }
 
 function dsTypes(rom) {
@@ -539,6 +616,7 @@ function dsTypes(rom) {
     const ks = [...new Set(t.map((x) => keys[x]))];
     if (!ks.some((k) => !k)) species[id] = ks.filter((k) => k !== '???');
   });
+  const forms = namedForms(p.forms, keys, species);
   // the chart: in the ARM9 binary or a battle overlay
   const idOf = (k) => { const i = keys.indexOf(k); return i >= 0 ? i : undefined; };
   const bins = [{ id: 'arm9', bytes: ndsArm9(rom).bytes }, ...ndsOverlays(rom)];
@@ -549,5 +627,5 @@ function dsTypes(rom) {
     if (got && (!c || got.score > c.score)) c = { ...got, where: `${b.id}+0x${got.offset.toString(16)}` };
   }
   const chart = c ? chartByKey(c.mult, keys) : null;
-  return { gen, keys, labels: {}, species, chart: fairy ? withFairy(chart) : chart, moves: null, fairy, own: 0, source: { personal: p.path, chart: c?.where || null } };
+  return { gen, keys, labels: {}, species, ...(Object.keys(forms).length ? { forms } : {}), catchRates: catchRatesBy(p.rates, (i) => i, species), chart: fairy ? withFairy(chart) : chart, moves: null, fairy, own: 0, source: { personal: p.path, chart: c?.where || null } };
 }

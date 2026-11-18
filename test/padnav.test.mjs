@@ -170,7 +170,7 @@ test('the screen history: forward adds, back removes, B goes back – or to the 
   assert.equal(backAction({ layer: null, depth: 0 }), 'menu');
 });
 
-test('the game frames ignore their buttons while the app has the controller', () => {
+test('the game frames ignore their buttons while the app has the controller', async () => {
   const app = { __souldewPad: { mute: true } };
   const frame = { parent: app };
   assert.equal(appHasPad(frame), true);
@@ -185,13 +185,18 @@ test('the game frames ignore their buttons while the app has the controller', ()
   for (const f of ['../web/player.html', '../web/lib/nativeplayer.mjs', '../web/lib/ctrplayer.mjs']) {
     const src = readFileSync(new URL(f, import.meta.url), 'utf8');
     assert.match(src, /appHasPad\(\)/, `${f} asks whether the app has the controller`);
-    assert.match(src, /const HOT = \{ 7: 'turbo', 6: 'pause', 16: 'pause' \}/, `${f} still has its hotkeys`);
+    // (lib/controls.mjs padActions / padHotkeyPresses: ZR turbo, ZL and Home pause – and those while the app has it)
+    assert.match(src, /padHotkeyPresses\(pad, padActions, held, (muted|controls\.appHasPad\(\))\)/, `${f} still has its hotkeys`);
   }
+  const { padActions, padHotkeyPresses } = await import('../web/lib/controls.mjs');
+  assert.deepEqual(padActions(null), { 7: 'turbo', 6: 'pause', 16: 'pause' });
+  const pressed = (i) => ({ buttons: Array.from({ length: 17 }, (_, k) => ({ pressed: k === i })) });
+  assert.deepEqual(padHotkeyPresses(pressed(6), padActions(null), {}, true).map((m) => m.action), ['pause'], 'ZL resumes from the menus');
   // the play view tells the app what it needs to decide, and stops when it closes
   const play = readFileSync(new URL('../web/views/play.mjs', import.meta.url), 'utf8');
   assert.match(play, /useEffect\(\(\) => claimPad\(/);
   // (with the 3DS screen-layout menu and the "3DS player stopped" message – both are drawn over the game)
-  assert.match(play, /overlay: !!\(rulesOpen \|\| statesOpen \|\| soundOpen \|\| cheatOpen \|\| layoutOpen \|\| ctrFail \|\| confirmReset \|\| pendingLoad \|\| confirmCheat \|\| missed\)/);
+  assert.match(play, /overlay: !!\(rulesOpen \|\| statesOpen \|\| soundOpen \|\| cheatOpen \|\| layoutOpen \|\| ctrFail \|\| confirmReset \|\| pendingLoad \|\| confirmCheat \|\| asked\)/);
   // the stopped-3DS message: A starts with "Play 3DS games in Azahar", B is "Close game" (the game is gone already)
   assert.match(play, /data-pad-first disabled=\$\{busy\} onClick=\$\{toAzahar\}/);
   assert.match(play, /data-pad-back onClick=\$\{onClose\}>\$\{t\('play\.close'/);

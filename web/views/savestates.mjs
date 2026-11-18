@@ -4,6 +4,7 @@ import { html, useState, useEffect, useRef } from '/vendor/htm-preact.mjs';
 import { Sprite, useFocusTrap } from '../lib/ui.mjs';
 import { Icon } from '../lib/icons.mjs';
 import { t, ago } from '../lib/i18n.mjs';
+import { unhatched } from './party.mjs';
 
 // Slot numbers match server/app.mjs: 1–8 are the player's, 99 is "where you left off", 96–98 are older copies of 99.
 export const MANUAL_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -27,7 +28,7 @@ function base64(u8) {
 
 /** What the card shows next to a state: the live team (species, level) and badges at the time it was taken. */
 export function stateInfo({ party, badges, core }) {
-  const team = (party || []).filter((m) => m?.species).slice(0, 6).map((m) => ({ species: m.species, level: m.level, ...(m.shiny ? { shiny: true } : {}) }));
+  const team = (party || []).filter((m) => m?.species && !unhatched(m)).slice(0, 6).map((m) => ({ species: m.species, level: m.level, ...(m.shiny ? { shiny: true } : {}) }));
   return { core: core || '', party: team, ...(badges !== undefined && badges !== null ? { badges } : {}) };
 }
 

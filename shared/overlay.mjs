@@ -13,13 +13,13 @@ export const OVERLAY_FEED = 30; // newest log entries in a snapshot (alerts only
 export const WIDGETS = ['team', 'card', 'counters', 'where', 'alerts', 'stats', 'popup'];
 /** The Pokémon a test alert may show beyond the run's own (Pikachu, Eevee → Umbreon, the killer Miltank). */
 export const TEST_SPECIES = [25, 133, 197, 241];
-const GEN = { gb: 1, gbc: 2, gba: 3, nds: 4 };
+const GEN = { gb: 1, sgb: 1, gbc: 2, gba: 3, nds: 4 };
 const KEEP = ['player:', 'live:', 'party:', 'enc:', 'pair:', 'where:'];
 
 /** The run's generation: its game's system, else the base ROM's file extension (older manifests), else 4. */
 export function runGen(manifest) {
   if (GEN[manifest?.game?.system]) return GEN[manifest.game.system];
-  const ext = String(manifest?.base?.name || '').toLowerCase().match(/\.(gbc|gba|gb|nds)$/)?.[1];
+  const ext = String(manifest?.base?.name || '').toLowerCase().match(/\.(gbc|gba|gb|sgb|nds)$/)?.[1];
   return GEN[ext] || 4;
 }
 
@@ -257,7 +257,7 @@ export function alertsBetween(prev, S, seen, now = Date.now()) {
     if (f.type === 'death') {
       a.members = (S.slots || []).map((s) => {
         const e = S.doc[`enc:${f.area}:${s}`];
-        return e?.species ? { slot: s, species: e.species, nick: e.nickname || '' } : null;
+        return e?.outcome === 'caught' && e.species ? { slot: s, species: e.species, nick: e.nickname || '' } : null;
       }).filter(Boolean);
       a.killer = S.doc[`pair:${f.area}`]?.killer || null;
     } else if (f.type === 'catch') {

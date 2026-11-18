@@ -90,7 +90,7 @@ export function nativeSaveDir(key) {
 /** The host's arguments for `system` (the paths are the server's own – nothing here comes from the page). */
 export function hostArgs({ system, core, rom, saveDir, systemDir, sram = null }) {
   const c = NATIVE_CORES[system];
-  if (!c) throw httpError(400, 'Kein nativer Kern für dieses System', 'nativeSystem');
+  if (!c) throw httpError(400, 'The fast player doesn’t play this system', 'nativeSystem');
   const args = ['--core', core, '--rom', rom, '--system', systemDir, '--save', saveDir];
   if (sram) args.push('--sram', sram);
   for (const [addr, len] of c.ram) args.push('--ram', `0x${addr.toString(16)}:0x${len.toString(16)}`);
@@ -104,14 +104,14 @@ export function hostArgs({ system, core, rom, saveDir, systemDir, sram = null })
  */
 export function checkNativeCommands(body) {
   const { messages, rest } = splitMessages(body);
-  if (rest.length || !messages.length) throw httpError(400, 'Ungültiger Befehl', 'badCommand');
+  if (rest.length || !messages.length) throw httpError(400, 'Invalid command', 'badCommand');
   const limits = {
     [NCMD.INPUT]: [17, 32], [NCMD.SPEED]: [4, 4], [NCMD.SAVE]: [0, 0], [NCMD.LOAD]: [1, 64 * 1024 * 1024], [NCMD.QUIT]: [0, 0],
     [NCMD.RESET]: [0, 0], [NCMD.WRITE]: [5, 4 + 65536], [NCMD.FLUSH]: [0, 0], [NCMD.SRAM]: [1, MAX_SAVE], [NCMD.RESYNC]: [0, 0], [NCMD.STEP]: [4, 4],
   };
   for (const m of messages) {
     const l = limits[m.type];
-    if (!l || m.payload.length < l[0] || m.payload.length > l[1]) throw httpError(400, 'Ungültiger Befehl', 'badCommand');
+    if (!l || m.payload.length < l[0] || m.payload.length > l[1]) throw httpError(400, 'Invalid command', 'badCommand');
   }
   return body;
 }
@@ -148,7 +148,7 @@ export class NativeSessions extends CtrSessions {
    */
   startNative({ rom, key, system, tools, save = null, saveFile = null }) {
     const core = tools.cores?.[system];
-    if (!core) throw httpError(409, 'Der schnelle Emulator fehlt für dieses System', 'nativeMissing');
+    if (!core) throw httpError(409, 'The fast player is missing for this system', 'nativeMissing');
     this.stop();
     const saveDir = nativeSaveDir(key);
     const systemDir = join(DATA_DIR, DEV ? 'runs/.native' : 'native', 'system');
@@ -157,7 +157,7 @@ export class NativeSessions extends CtrSessions {
     const boot = join(saveDir, 'boot.sav');
     let sram = null;
     if (save?.length) {
-      if (save.length > MAX_SAVE) throw httpError(413, 'Spielstand zu groß', 'saveTooLarge');
+      if (save.length > MAX_SAVE) throw httpError(413, 'The save file is too large', 'saveTooLarge');
       writeFileSync(boot, save);
       sram = boot;
     } else {
@@ -187,15 +187,15 @@ export class NativeSessions extends CtrSessions {
 
   get(id) {
     const s = this.current;
-    if (!s || s.id !== id) throw httpError(404, 'Keine laufende Sitzung', 'noNativeSession');
+    if (!s || s.id !== id) throw httpError(404, 'No game is running in the fast player', 'noNativeSession');
     return s;
   }
 
   send(id, body) {
     const s = this.get(id);
-    if (s.exit) throw httpError(409, 'Das Spiel ist beendet', 'nativeEnded');
+    if (s.exit) throw httpError(409, 'The game has stopped', 'nativeEnded');
     // the host reads its commands between frames – a page that floods it waits instead of piling up memory here
-    if (s.child.stdin.writableLength > 128 * 1024 * 1024) throw httpError(503, 'Das Spiel ist beschäftigt', 'nativeBusy');
+    if (s.child.stdin.writableLength > 128 * 1024 * 1024) throw httpError(503, 'The game is busy', 'nativeBusy');
     s.child.stdin.write(this.check(body));
   }
 }

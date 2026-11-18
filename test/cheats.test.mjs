@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { findEntry } from '../shared/live/parse.mjs';
-import { addRareCandies, cheatSupported, RARE_CANDY } from '../shared/live/cheats.mjs';
+import { addRareCandies, addItem, cheatSupported, cheatRegions, RARE_CANDY, POKE_BALL } from '../shared/live/cheats.mjs';
 
 // web/lib/run.mjs imports browser paths (/shared/…): map them onto the project folder.
 const ROOT = new URL('../', import.meta.url).href;
@@ -50,7 +50,7 @@ const slot = (id, qty) => [...le16(id), ...le16(qty)];
 const u16 = (m, a) => { const b = m.read(a, 2); return b[0] | (b[1] << 8); };
 
 test('item ids per generation (pret constants, PokeAPI game_indices)', () => {
-  assert.deepEqual(RARE_CANDY, { 1: 0x28, 2: 0x20, 3: 68, 4: 50, 5: 50 });
+  assert.deepEqual(RARE_CANDY, { 1: 0x28, 2: 0x20, 3: 68, 4: 50, 5: 50, 6: 50, 7: 50 });
 });
 
 test('which games can get Rare Candies', () => {
@@ -259,6 +259,152 @@ test('a write the emulator refuses is reported, not logged as done', () => {
   assert.deepEqual(addRareCandies(e, { read: m.read, write: () => false }, {}), { error: 'write' });
   // the emulator says yes but the bytes didn't change
   assert.deepEqual(addRareCandies(e, { read: m.read, write: () => true }, {}), { error: 'write' });
+});
+
+// ---- 3DS (Gen 6/7) ------------------------------------------------------------------------------------------
+
+const ctr = (titleId) => entry({ platform: '3ds', titleId });
+const XY = '0004000000055D00';
+const ORAS = '000400000011C400';
+const SM = '0004000000164800';
+const USUM = '00040000001B5100'; // Ultra Moon
+const u32 = (m, a) => { const b = m.read(a, 4); return (b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)) >>> 0; };
+const g7 = (id, qty, sort = 0, isNew = false) => le32((id | (qty << 10) | (sort << 20) | (isNew ? 0x40000000 : 0)) >>> 0);
+/** Sun/Moon's bag as seen live in Sun 1.0: the key item from Hala, nothing else, the pocket pointers behind the block. */
+function sunBag(base = 0x330d5934, { ptrs = true } = {}) {
+  const m = memory();
+  m.poke(base + 0x6b8, g7(845, 1, 0, true)); // Sparkling Stone, NEW
+  // the order the game keeps them in: Medicine, Items, TMs, Berries, Key Items, Z-Crystals
+  if (ptrs) m.poke(base + 0xde0, [0xb48, 0x000, 0x998, 0xc48, 0x6b8, 0xd68].flatMap((o) => le32(base + o)));
+  return m;
+}
+
+test('3DS: all four games can get Rare Candies – the bag is watched with the party', () => {
+  for (const t of [XY, '0004000000055E00', ORAS, '000400000011C500', SM, '0004000000175E00', '00040000001B5000', USUM]) assert.ok(cheatSupported(ctr(t)), t);
+  assert.deepEqual(cheatRegions(ctr(XY)).map((r) => [r.addr, r.len]), [[0x08c67564, 0xb88 + 20], [0x08c67554, 0xb88 + 20]]);
+  assert.deepEqual(cheatRegions(ctr(ORAS)).map((r) => r.addr), [0x08c6ec70, 0x08c6ac80]);
+  assert.deepEqual(cheatRegions(ctr(SM)).map((r) => [r.addr, r.len]), [[0x330d5934, 0xde0 + 24]]);
+  assert.deepEqual(cheatRegions(ctr(USUM)).map((r) => [r.addr, r.len]), [[0x33011934, 0xe28 + 28]]);
+  assert.deepEqual(cheatRegions(entry({ platform: 'nds', code: 'IPKE' })), []);
+  // Medicine items only: nothing lands in the wrong pocket
+  assert.deepEqual(addItem(ctr(SM), sunBag(), {}, 4, 5), { error: 'unsupported' });
+  assert.equal(POKE_BALL[7], undefined);
+});
+
+test('Sun/Moon: a new Medicine slot as the game files items (NEW, not in Free Space), then the stack grows to 999', () => {
+  const e = ctr(SM);
+  const m = sunBag();
+  const med = 0x330d5934 + 0xb48;
+  assert.deepEqual(addRareCandies(e, m, { g67: 0 }), { ok: true, before: 0, after: 99, added: 99 });
+  assert.equal(u32(m, med), (50 | (99 << 10) | 0x40000000) >>> 0);
+  assert.equal(u32(m, 0x330d5934 + 0x6b8), (845 | (1 << 10) | 0x40000000) >>> 0); // the key item untouched
+  // the stack: only the count changes – its Free Space place and NEW mark stay
+  m.poke(med, g7(50, 900, 3, true));
+  assert.deepEqual(addRareCandies(e, m, {}), { ok: true, before: 900, after: 999, added: 99 });
+  assert.equal(u32(m, med), (50 | (999 << 10) | (3 << 20) | 0x40000000) >>> 0);
+  assert.deepEqual(addRareCandies(e, m, {}), { error: 'max', before: 999 });
+  assert.equal(m.writes, 2);
+  // behind other medicine: the first free slot
+  const m2 = sunBag();
+  m2.poke(med, [...g7(17, 3, 1), ...g7(18, 2)]);
+  assert.equal(addRareCandies(e, m2, {}).ok, true);
+  assert.equal(u32(m2, med + 8), (50 | (99 << 10) | 0x40000000) >>> 0);
+  assert.equal(u32(m2, med), (17 | (3 << 10) | (1 << 20)) >>> 0);
+});
+
+test('Sun/Moon: the 3DS player answers later – a Promise of the result', async () => {
+  const e = ctr(SM);
+  const m = sunBag();
+  const later = { read: m.read, write: (a, b) => new Promise((r) => setTimeout(() => r(m.write(a, b)), 5)) };
+  const p = addRareCandies(e, later, {});
+  assert.equal(typeof p.then, 'function');
+  assert.deepEqual(await p, { ok: true, before: 0, after: 99, added: 99 });
+  // refused by the host (the game changed the bag meanwhile, the page went away): nothing is logged as done
+  const refused = { read: m.read, write: () => Promise.resolve(false) };
+  assert.deepEqual(await addRareCandies(e, refused, {}), { error: 'write' });
+  assert.deepEqual(await addRareCandies(e, { read: m.read, write: () => Promise.reject(new Error('gone')) }, {}), { error: 'write' });
+  // the host's reason comes along: the game changed the bag meanwhile – its own message; anything else stays a failed
+  // write, with the reason for the diagnostics
+  const why = (w) => ({ read: m.read, write: () => Promise.resolve({ ok: false, why: w }) });
+  assert.deepEqual(await addRareCandies(e, why('changed'), {}), { error: 'changed' });
+  assert.deepEqual(await addRareCandies(e, why('failed'), {}), { error: 'write', why: 'failed' });
+  assert.deepEqual(await addRareCandies(e, why('notFound'), {}), { error: 'write', why: 'notFound' });
+  assert.deepEqual(addRareCandies(e, { read: m.read, write: () => ({ ok: false, why: 'range' }) }, {}), { error: 'write', why: 'range' });
+});
+
+test('3DS: anything that is not the bag is never written', () => {
+  const e = ctr(SM);
+  const med = 0x330d5934 + 0xb48;
+  const tries = [
+    ['nothing there (title screen, another game in that memory)', () => memory()],
+    ['pointers to other pockets', () => {
+      const m = sunBag();
+      m.poke(0x330d5934 + 0xde0, le32(0x330d0000));
+      return m;
+    }],
+    ['a non-medicine id in Medicine', () => { const m = sunBag(); m.poke(med, g7(4, 5)); return m; }],
+    ['an id past the last item', () => { const m = sunBag(); m.poke(0x330d5934, g7(1000, 1)); return m; }],
+    ['a count above 999', () => { const m = sunBag(); m.poke(0x330d5934, g7(4, 1000)); return m; }],
+    ['bit 31', () => { const m = sunBag(); m.poke(0x330d5934, le32((4 | (1 << 10) | 0x80000000) >>> 0)); return m; }],
+    ['a count without an item', () => { const m = sunBag(); m.poke(0x330d5934 + 8, g7(0, 3)); return m; }],
+    ['a non-TM in the TM pocket', () => { const m = sunBag(); m.poke(0x330d5934 + 0x998, g7(17, 1)); return m; }],
+  ];
+  for (const [why, mk] of tries) {
+    const m = mk();
+    assert.deepEqual(addRareCandies(e, m, {}), { error: 'notFound' }, why);
+    assert.equal(m.writes, 0, why);
+  }
+  // without the pointer table (or a game that has none): the slots alone decide
+  assert.equal(addRareCandies(e, sunBag(undefined, { ptrs: false }), {}).ok, true);
+  // a full pocket
+  const full = sunBag();
+  for (let i = 0; i < 64; i++) full.poke(med + i * 4, g7(17 + (i % 33), 1)); // (no Rare Candy among them)
+  assert.deepEqual(addRareCandies(e, full, {}), { error: 'full' });
+  assert.equal(full.writes, 0);
+});
+
+test('Ultra Sun/Ultra Moon: their own pockets (Medicine at +0xB74)', () => {
+  const base = 0x33011934;
+  const m = memory();
+  m.poke(base + 0x6ac, g7(845, 1));
+  m.poke(base + 0xe28, [0xb74, 0x000, 0x9c4, 0xc64, 0x6ac, 0xd70, 0xdfc].flatMap((o) => le32(base + o)));
+  assert.equal(addRareCandies(ctr(USUM), m, { g67: 0 }).ok, true);
+  assert.equal(u32(m, base + 0xb74), (50 | (99 << 10) | 0x40000000) >>> 0);
+  // Sun/Moon's offsets would be wrong here: Sun's pointer layout at USUM's address is refused
+  const sm = sunBag(base);
+  assert.deepEqual(addRareCandies(ctr(USUM), sm, {}), { error: 'notFound' });
+});
+
+test('X/Y and ORAS: { u16 id, u16 count } slots, the update the party was found at first', () => {
+  // X/Y 1.0 (the party found at partyAddrs[1]): the bag 0x10 before 1.5's
+  const xy = ctr(XY);
+  const b10 = 0x08c67554;
+  const m = memory();
+  m.poke(b10, slot(4, 10)); // Poké Balls
+  m.poke(b10 + 0x968, slot(17, 2)); // Potions in Medicine
+  assert.deepEqual(addRareCandies(xy, m, { g67: 1 }), { ok: true, before: 0, after: 99, added: 99 });
+  assert.equal(u16(m, b10 + 0x968 + 4), 50);
+  assert.equal(u16(m, b10 + 0x968 + 6), 99);
+  assert.equal(u16(m, b10 + 0x968 + 2), 2);
+  // a stack: the count's two bytes only
+  m.writes = 0;
+  assert.deepEqual(addRareCandies(xy, m, { g67: 1 }), { ok: true, before: 99, after: 198, added: 99 });
+  assert.equal(u16(m, b10 + 0x968 + 6), 198);
+  assert.equal(m.writes, 1);
+  // ORAS: Medicine at +0x970; 1.4's address is tried even when the state knows no update yet
+  const oras = ctr(ORAS);
+  const b14 = 0x08c6ec70;
+  const m2 = memory();
+  m2.poke(b14 + 0x640, slot(457, 1)); // a key item
+  m2.poke(b14 + 0x970, slot(65, 1)); // a flute – Medicine in ORAS
+  assert.equal(addRareCandies(oras, m2, {}).ok, true);
+  assert.equal(u16(m2, b14 + 0x970 + 4), 50);
+  // a Potion in the TM pocket isn't a bag
+  const m3 = memory();
+  m3.poke(b14, slot(4, 1));
+  m3.poke(b14 + 0x7c0, slot(17, 1));
+  assert.deepEqual(addRareCandies(oras, m3, {}), { error: 'notFound' });
+  assert.equal(m3.writes, 0);
 });
 
 // ---- run side -----------------------------------------------------------------------------------------------

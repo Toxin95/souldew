@@ -1,0 +1,650 @@
+diff --git a/src/audio_core/hle/aac_decoder.cpp b/src/audio_core/hle/aac_decoder.cpp
+index 33682a9..f189d78 100644
+--- a/src/audio_core/hle/aac_decoder.cpp
++++ b/src/audio_core/hle/aac_decoder.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include <neaacdec.h>
+ #include "audio_core/hle/aac_decoder.h"
++#include "common/souldew_music.h"
+ 
+ namespace AudioCore::HLE {
+ 
+@@ -136,6 +137,11 @@ BinaryMessage AACDecoder::Decode(const BinaryMessage& request) {
+         data_len -= frame_info.bytesconsumed;
+     }
+ 
++    // souldew: a frame of a music stream decoded – what it writes is music (common/souldew_music.h)
++    const u8* const souldew_src =
++        memory.GetFCRAMPointer(request.decode_aac_request.src_addr - Memory::FCRAM_PADDR);
++    const u32 souldew_bytes = static_cast<u32>(out_streams[0].size() * sizeof(s16));
++
+     // Transfer the decoded buffer from vector to the FCRAM.
+     for (std::size_t ch = 0; ch < out_streams.size(); ch++) {
+         if (out_streams[ch].empty()) {
+@@ -153,6 +159,13 @@ BinaryMessage AACDecoder::Decode(const BinaryMessage& request) {
+                     byte_size);
+     }
+ 
++    SouldewMusic::NoteDecoded(
++        souldew_src, request.decode_aac_request.size, request.decode_aac_request.dst_addr_ch0,
++        out_streams[0].empty() ? nullptr : reinterpret_cast<const u8*>(out_streams[0].data()),
++        out_streams[1].empty() ? 0 : static_cast<u32>(request.decode_aac_request.dst_addr_ch1),
++        out_streams[1].empty() ? nullptr : reinterpret_cast<const u8*>(out_streams[1].data()),
++        souldew_bytes);
++
+     // Set the output frame info.
+     response.decode_aac_response.num_samples = static_cast<u32_le>(out_streams[0].size());
+ 
+diff --git a/src/audio_core/hle/hle.cpp b/src/audio_core/hle/hle.cpp
+index 05ff9d7..24eb535 100644
+--- a/src/audio_core/hle/hle.cpp
++++ b/src/audio_core/hle/hle.cpp
+@@ -12,6 +12,7 @@
+ #include <boost/serialization/weak_ptr.hpp>
+ #include "audio_core/audio_types.h"
+ #include "audio_core/hle/aac_decoder.h"
++#include "common/souldew_music.h"
+ #include "audio_core/hle/common.h"
+ #include "audio_core/hle/decoder.h"
+ #include "audio_core/hle/hle.h"
+@@ -417,10 +418,34 @@ StereoFrame16 DspHle::Impl::GenerateCurrentFrame() {
+ 
+     std::array<QuadFrame32, 3> intermediate_mixes = {};
+ 
++    // souldew: while the frontend asks for it (fast-forward), the frame that goes out leaves the voices playing the
++    // game's streamed music out (common/souldew_music.h). Everything the game sees – statuses, the aux buses, the final
++    // mix in shared memory – stays as it was: the music voices are mixed in as always, and their share is also summed
++    // apart (exact integer sums) to be taken off the copy that goes out.
++    bool asked = false;
++    const bool mute = SouldewMusic::BeginFrame(asked);
++    std::array<QuadFrame32, 3> music_mixes = {};
++    bool muted = false, music = false, onset = false;
++
+     // Generate intermediate mixes
+     for (std::size_t i = 0; i < HLE::num_sources; i++) {
+         write.source_statuses.status[i] =
+             sources[i].Tick(read.source_configurations.config[i], read.adpcm_coefficients.coeff[i]);
++        const bool is_music = SouldewMusic::VoiceFrame(static_cast<u32>(i), sources[i].SouldewEnabled(), onset);
++        music |= is_music;
++        if (mute && is_music) {
++            muted = true;
++            for (std::size_t mix = 0; mix < 3; mix++) {
++                QuadFrame32 own = {};
++                sources[i].MixInto(own, mix);
++                for (std::size_t k = 0; k < own.size(); k++)
++                    for (std::size_t c = 0; c < 4; c++) {
++                        intermediate_mixes[mix][k][c] += own[k][c];
++                        music_mixes[mix][k][c] += own[k][c];
++                    }
++            }
++            continue;
++        }
+         for (std::size_t mix = 0; mix < 3; mix++) {
+             sources[i].MixInto(intermediate_mixes[mix], mix);
+         }
+@@ -439,6 +464,16 @@ StereoFrame16 DspHle::Impl::GenerateCurrentFrame() {
+         }
+     }
+ 
++    // (an unknown voice streaming queued buffers for long – maybe music nobody named: nothing is left out next frame)
++    SouldewMusic::EndFrame(asked, muted, music, onset);
++    if (muted) {
++        for (std::size_t mix = 0; mix < 3; mix++)
++            for (std::size_t k = 0; k < music_mixes[mix].size(); k++)
++                for (std::size_t c = 0; c < 4; c++)
++                    music_mixes[mix][k][c] = intermediate_mixes[mix][k][c] - music_mixes[mix][k][c];
++        return mixers.SouldewDownmix(music_mixes); // (the mixes without the music)
++    }
++
+     return output_frame;
+ }
+ 
+diff --git a/src/audio_core/hle/mixers.cpp b/src/audio_core/hle/mixers.cpp
+index 03dab65..d8c79d6 100644
+--- a/src/audio_core/hle/mixers.cpp
++++ b/src/audio_core/hle/mixers.cpp
+@@ -145,6 +145,28 @@ void Mixers::DownmixAndMixIntoCurrentFrame(float gain, const QuadFrame32& sample
+     UNREACHABLE_MSG("Invalid output_format {}", static_cast<std::size_t>(state.output_format));
+ }
+ 
++StereoFrame16 Mixers::SouldewDownmix(const std::array<QuadFrame32, 3>& input) const {
++    StereoFrame16 out{};
++    for (std::size_t mix = 0; mix < 3; mix++) {
++        const QuadFrame32& samples =
++            mix > 0 && state.aux_bus_enable[mix - 1] ? state.intermediate_mix_buffer[mix] : input[mix];
++        const float gain = state.intermediate_mixer_volume[mix];
++        for (std::size_t i = 0; i < out.size(); i++) {
++            const auto& x = samples[i];
++            if (state.output_format == OutputFormat::Mono) {
++                const s16 mono = ClampToS16(
++                    static_cast<s32>((gain * x[0] + gain * x[1] + gain * x[2] + gain * x[3]) / 2));
++                out[i] = AddAndClampToS16(out[i], {mono, mono});
++            } else {
++                const s16 left = ClampToS16(static_cast<s32>(gain * x[0] + gain * x[2]));
++                const s16 right = ClampToS16(static_cast<s32>(gain * x[1] + gain * x[3]));
++                out[i] = AddAndClampToS16(out[i], {left, right});
++            }
++        }
++    }
++    return out;
++}
++
+ void Mixers::AuxReturn(const IntermediateMixSamples& read_samples) {
+     // NOTE: read_samples.mix{1,2}.pcm32 annoyingly have their dimensions in reverse order to
+     // QuadFrame32.
+diff --git a/src/audio_core/hle/mixers.h b/src/audio_core/hle/mixers.h
+index 6950f2d..d2bd8e9 100644
+--- a/src/audio_core/hle/mixers.h
++++ b/src/audio_core/hle/mixers.h
+@@ -29,6 +29,11 @@ public:
+         return current_frame;
+     }
+ 
++    /// souldew: the final mix of the last Tick as if its intermediate mixes had been `input` (the music voices left
++    /// out) – same volumes, same output format; an aux bus the game processes returns what the game sent back. Changes
++    /// nothing (the frame the game sees is GetOutput()).
++    StereoFrame16 SouldewDownmix(const std::array<QuadFrame32, 3>& input) const;
++
+ private:
+     StereoFrame16 current_frame = {};
+     StereoFrame16 backup_frame = {}; // TODO(PabloMK7): Check if we actually need this
+diff --git a/src/audio_core/hle/source.cpp b/src/audio_core/hle/source.cpp
+index 4728526..ad658df 100755
+--- a/src/audio_core/hle/source.cpp
++++ b/src/audio_core/hle/source.cpp
+@@ -10,6 +10,7 @@
+ #include "audio_core/interpolate.h"
+ #include "common/assert.h"
+ #include "common/logging/log.h"
++#include "common/souldew_music.h"
+ #include "core/memory.h"
+ 
+ namespace AudioCore::HLE {
+@@ -91,6 +92,7 @@ void Source::ParseConfig(SourceConfiguration::Configuration& config,
+     if (config.reset_flag) {
+         config.reset_flag.Assign(0);
+         Reset();
++        SouldewMusic::OnReset(static_cast<uint32_t>(source_id)); // (souldew)
+         LOG_TRACE(Audio_DSP, "source_id={} reset", source_id);
+     }
+ 
+@@ -102,6 +104,8 @@ void Source::ParseConfig(SourceConfiguration::Configuration& config,
+ 
+     if (config.enable_dirty) {
+         config.enable_dirty.Assign(0);
++        if (!state.enabled && config.enable != 0)
++            SouldewMusic::OnKeyOn(static_cast<uint32_t>(source_id)); // (souldew: a new sound)
+         state.enabled = config.enable != 0;
+         LOG_TRACE(Audio_DSP, "source_id={} enable={}", source_id, state.enabled);
+     }
+@@ -296,6 +300,7 @@ void Source::ParseConfig(SourceConfiguration::Configuration& config,
+                 "addr {:X} length {:X}",
+                 static_cast<u32>(config.physical_address), static_cast<u32>(config.length));
+         } else {
++            SouldewMusic::OnKeyOn(static_cast<uint32_t>(source_id)); // (souldew: a new sound)
+             state.input_queue.emplace(Buffer{
+                 config.physical_address,
+                 config.length,
+@@ -484,6 +489,16 @@ bool Source::DequeueBuffer() {
+         return true;
+     }
+ 
++    // souldew: is this voice the game's streamed music? (common/souldew_music.h – only notes it, changes nothing here)
++    if (memory) {
++        const u32 channels = buf.mono_or_stereo == MonoOrStereo::Stereo ? 2 : 1;
++        const u32 bytes = buf.format == Format::ADPCM ? buf.length / 14 * 8
++                          : buf.format == Format::PCM16 ? buf.length * 2 * channels
++                                                        : buf.length * channels;
++        SouldewMusic::OnBuffer(static_cast<uint32_t>(source_id), memory, bytes,
++                               buf.physical_address & 0xFFFFFFFC, buf.from_queue, buf.has_played);
++    }
++
+     // the first playthrough starts at play_position, loops start at the beginning of the buffer
+     state.current_sample_number = (!buf.has_played) ? buf.play_position : 0;
+     state.current_buffer_physical_address = buf.physical_address;
+diff --git a/src/audio_core/hle/source.h b/src/audio_core/hle/source.h
+index 1223f68..7ccb4be 100755
+--- a/src/audio_core/hle/source.h
++++ b/src/audio_core/hle/source.h
+@@ -67,6 +67,11 @@ public:
+      */
+     void MixInto(QuadFrame32& dest, std::size_t intermediate_mix_id);
+ 
++    /// souldew: is this source playing (enabled)?
++    bool SouldewEnabled() const {
++        return state.enabled;
++    }
++
+ private:
+     const std::size_t source_id;
+     Memory::MemorySystem* memory_system{};
+diff --git a/src/citra_libretro/citra_libretro.cpp b/src/citra_libretro/citra_libretro.cpp
+index 6dff945..001bf1e 100644
+--- a/src/citra_libretro/citra_libretro.cpp
++++ b/src/citra_libretro/citra_libretro.cpp
+@@ -46,6 +46,7 @@
+ #include "core/frontend/image_interface.h"
+ #include "core/hle/kernel/kernel.h"
+ #include "core/file_sys/ivfc_archive.h"
++#include "common/souldew_music.h"
+ #include "core/hle/kernel/memory.h"
+ #include "core/hle/kernel/process.h"
+ #include "core/loader/loader.h"
+@@ -789,6 +790,48 @@ RETRO_API uint64_t souldew_romfs_size(uint32_t tag) {
+     return FileSys::Souldew::RomFSSize(tag);
+ }
+ 
++// ---- souldew: the game's sound without its streamed music (souldew's sound effects during fast-forward) ------------
++// common/souldew_music.h: souldew names the music streams in the RomFS, the core recognises the DSP voices that play
++// them and – while asked – leaves them out of the frame it hands to the audio callback (the game itself still hears
++// everything). souldew_audio_frame_flags tells, from inside the audio callback, what the frame just handed over is.
++
++/// The music streams of RomFS `tag` (as souldew_romfs_reads tags them): n [start, end) pairs, offsets in its level 3;
++/// n = 0 forgets them. Any time; takes effect for the reads that follow.
++RETRO_API void souldew_audio_music_ranges(uint32_t tag, const uint64_t* pairs, uint32_t n) {
++    SouldewMusic::SetRanges(tag, pairs, pairs ? n : 0);
++}
++
++/// 1: leave the music voices out of the frames that go to the audio callback (from the next frame on), 0: don't.
++RETRO_API void souldew_audio_mute_music(uint32_t on) {
++    SouldewMusic::S().mute.store(on != 0, std::memory_order_relaxed);
++}
++
++/// The frame just handed to the audio callback (call it from there): SouldewMusic::F_* bits – 1 a new sound that isn't
++/// music began, 2 music voices were left out, 4 asked but left in (unsure), 8 asked, 16 a music voice played.
++RETRO_API uint32_t souldew_audio_frame_flags(void) {
++    return SouldewMusic::S().flags.load(std::memory_order_relaxed);
++}
++
++/// Diagnostics into out[0..max): music voices (bit mask), fingerprints noted, buffers recognised, buffers not,
++/// AAC decodes recognised, RomFS with music streams, unsure (0/1). Returns how many were written.
++RETRO_API uint32_t souldew_audio_music_state(uint64_t* out, uint32_t max) {
++    auto& s = SouldewMusic::S();
++    uint64_t mask = 0;
++    for (uint32_t i = 0; i < SouldewMusic::SOURCES; i++)
++        if (s.voices[i].music)
++            mask |= 1ull << i;
++    std::size_t tags;
++    {
++        std::scoped_lock l(s.lock);
++        tags = s.tags.size();
++    }
++    const uint64_t v[] = {mask, s.noted.load(), s.hits.load(), s.misses.load(), s.decoded.load(), tags, s.unsure ? 1u : 0u};
++    uint32_t n = 0;
++    for (; out && n < max && n < sizeof v / sizeof *v; n++)
++        out[n] = v[n];
++    return n;
++}
++
+ } // extern "C"
+ 
+ size_t retro_get_memory_size(unsigned id) {
+diff --git a/src/citra_libretro/libretro.osx.def b/src/citra_libretro/libretro.osx.def
+index 36101ff..a35d3c3 100644
+--- a/src/citra_libretro/libretro.osx.def
++++ b/src/citra_libretro/libretro.osx.def
+@@ -22,6 +22,10 @@ _retro_cheat_set
+ _souldew_romfs_read
+ _souldew_romfs_reads
+ _souldew_romfs_size
++_souldew_audio_music_ranges
++_souldew_audio_mute_music
++_souldew_audio_frame_flags
++_souldew_audio_music_state
+ _retro_load_game
+ _retro_load_game_special
+ _retro_unload_game
+diff --git a/src/common/souldew_music.h b/src/common/souldew_music.h
+new file mode 100644
+index 0000000..17a3f6d
+--- /dev/null
++++ b/src/common/souldew_music.h
+@@ -0,0 +1,311 @@
++// souldew: which DSP voices play the game's streamed music – so that, while souldew fast-forwards, the core can hand out
++// the game's sound without its music (souldew then plays the music track itself at normal speed, from the ROM, and the
++// game's sound effects on top of it).
++//
++// How a voice is known to be music, without knowing the game: souldew tells the core where the music streams are in the
++// RomFS (SetRanges – the stream files it found by their own bytes, BCSTM / ADTS AAC). Every RomFS read the game makes
++// that touches one of them is fingerprinted (NoteRead: a 64-bit hash of 16 bytes at every 8-byte step of the file – the
++// DSP-ADPCM frames a voice can start at – and at every ADTS sync word). A DSP voice that starts a buffer whose first 16
++// bytes carry one of those fingerprints plays bytes of a music stream: music. X/Y's AAC goes through the DSP's AAC
++// decoder first: a decode whose source is a music stream's frame (fingerprint) marks its output (the PCM it writes, its
++// addresses and its own fingerprints) as music, and a voice playing that PCM is music. A voice keeps the mark while it
++// plays on (looping, queued buffers); a fresh buffer that doesn't match – a new sound on that voice – clears it.
++//
++// Nothing here changes what the game sees: the DSP's shared memory (source statuses, the final mix, the aux buses) is
++// written exactly as before; only the copy of the frame that goes out to the frontend leaves the music voices out, and
++// only while the frontend asks for it (SetMute) and nothing looks unsure (a voice that has been streaming queued buffers
++// for half a second without being recognised: then nothing is left out – the frontend sees that per frame in FrameFlags).
++// Header-only, so the file system (core) and the DSP (audio_core) share it without a new link dependency.
++#pragma once
++
++#include <algorithm>
++#include <array>
++#include <atomic>
++#include <cstdint>
++#include <cstring>
++#include <memory>
++#include <mutex>
++#include <vector>
++
++namespace SouldewMusic {
++
++constexpr uint32_t SOURCES = 24;           // AudioCore::HLE::num_sources
++constexpr uint32_t TABLE_BITS = 17;        // fingerprints kept (2 MB): ~14 s of emulated stereo ADPCM, more for AAC
++constexpr uint32_t UNSURE_FRAMES = 100;     // ~0.5 s of DSP frames (160 samples at 32728 Hz): an unknown voice streaming
++                                            // queued buffers that long might be music nobody told the core about
++// FrameFlags bits (the frame that just went out through the frontend's audio callback)
++constexpr uint32_t F_ONSET = 1;   // a voice that isn't music started a new sound in this frame (key-on)
++constexpr uint32_t F_MUTED = 2;   // music voices were left out of this frame
++constexpr uint32_t F_UNSURE = 4;  // muting was asked for but left off: an unknown voice streams (see above)
++constexpr uint32_t F_ASKED = 8;   // muting was asked for (SetMute)
++constexpr uint32_t F_MUSIC = 16;  // a music voice played in this frame (muted or not)
++
++struct Voice {
++    bool music = false;
++    uint8_t misses = 0;
++    bool key_on = false;       // a new sound began (enable 0→1, a new embedded buffer) – judged after the frame's dequeue
++    bool from_queue = false;   // the buffer playing came from the queue (a stream's continuation)
++    uint32_t stream_frames = 0; // frames this voice has played queued buffers without a pause
++};
++
++struct State {
++    std::mutex lock; // table, ranges, regions (the RomFS may be read from another thread than the DSP's)
++    struct Ranges {
++        uint32_t tag;
++        std::vector<std::pair<uint64_t, uint64_t>> r; // sorted [start, end)
++    };
++    std::vector<Ranges> tags;
++    std::unique_ptr<uint64_t[]> keys, vals; // fingerprint → (insertion serial) – 0 = empty
++    uint64_t serial = 0;
++    struct Region {
++        uint32_t addr = 0, len = 0;
++    };
++    std::array<Region, 128> regions{}; // the DSP AAC decoder's music output (physical addresses)
++    uint32_t region_next = 0;
++    // the DSP thread only
++    std::array<Voice, SOURCES> voices{};
++    std::atomic<bool> mute{false};
++    std::atomic<uint32_t> flags{0};
++    bool unsure = false;
++    // diagnostics
++    std::atomic<uint64_t> noted{0}, hits{0}, misses{0}, decoded{0};
++};
++
++inline State& S() {
++    static State s;
++    return s;
++}
++
++inline uint64_t Hash16(const uint8_t* p) {
++    uint64_t a, b;
++    std::memcpy(&a, p, 8);
++    std::memcpy(&b, p + 8, 8);
++    uint64_t h = a * 0x9E3779B97F4A7C15ull ^ (b + 0x632BE59BD9B4E019ull);
++    h ^= h >> 31;
++    h *= 0xD6E8FEB86659FD93ull;
++    h ^= h >> 29;
++    return h | 1; // (never 0: 0 marks an empty slot)
++}
++
++/** Silence and other near-constant bytes say nothing about where they came from. */
++inline bool Flat(const uint8_t* p) {
++    uint8_t seen[16];
++    int n = 0;
++    for (int i = 0; i < 16 && n < 4; i++) {
++        bool dup = false;
++        for (int k = 0; k < n; k++)
++            dup |= seen[k] == p[i];
++        if (!dup)
++            seen[n++] = p[i];
++    }
++    return n < 4;
++}
++
++/** (lock held) */
++inline void Insert(State& s, uint64_t key) {
++    if (!s.keys) {
++        s.keys = std::make_unique<uint64_t[]>(1u << TABLE_BITS);
++        s.vals = std::make_unique<uint64_t[]>(1u << TABLE_BITS);
++    }
++    const uint32_t mask = (1u << TABLE_BITS) - 1;
++    uint32_t i = static_cast<uint32_t>(key) & mask, victim = i;
++    uint64_t oldest = ~0ull;
++    for (int probe = 0; probe < 8; probe++, i = (i + 1) & mask) {
++        if (s.keys[i] == key || !s.keys[i]) {
++            victim = i;
++            break;
++        }
++        if (s.vals[i] < oldest)
++            oldest = s.vals[i], victim = i;
++    }
++    s.keys[victim] = key;
++    s.vals[victim] = ++s.serial;
++    s.noted.fetch_add(1, std::memory_order_relaxed);
++}
++
++/** (lock held) */
++inline bool Has(const State& s, uint64_t key) {
++    if (!s.keys)
++        return false;
++    const uint32_t mask = (1u << TABLE_BITS) - 1;
++    uint32_t i = static_cast<uint32_t>(key) & mask;
++    for (int probe = 0; probe < 8; probe++, i = (i + 1) & mask) {
++        if (s.keys[i] == key)
++            return true;
++        if (!s.keys[i])
++            return false;
++    }
++    return false;
++}
++
++/** The music streams of RomFS `tag`: n [start, end) pairs (offsets in its level 3); n = 0 forgets them. */
++inline void SetRanges(uint32_t tag, const uint64_t* pairs, uint32_t n) {
++    State& s = S();
++    std::scoped_lock l(s.lock);
++    auto it = std::find_if(s.tags.begin(), s.tags.end(), [&](const State::Ranges& r) { return r.tag == tag; });
++    if (!n) {
++        if (it != s.tags.end())
++            s.tags.erase(it);
++        return;
++    }
++    if (it == s.tags.end()) {
++        if (s.tags.size() >= 8)
++            s.tags.erase(s.tags.begin());
++        s.tags.push_back({tag, {}});
++        it = s.tags.end() - 1;
++    }
++    it->r.clear();
++    for (uint32_t i = 0; i < n; i++)
++        if (pairs[2 * i + 1] > pairs[2 * i])
++            it->r.emplace_back(pairs[2 * i], pairs[2 * i + 1]);
++    std::sort(it->r.begin(), it->r.end());
++}
++
++/** A read of the game: bytes [offset, offset + len) of RomFS `tag` – fingerprinted where they belong to a music stream. */
++inline void NoteRead(uint32_t tag, uint64_t offset, const uint8_t* data, std::size_t len) {
++    State& s = S();
++    if (!data || len < 16)
++        return;
++    std::scoped_lock l(s.lock);
++    const auto it = std::find_if(s.tags.begin(), s.tags.end(), [&](const State::Ranges& r) { return r.tag == tag; });
++    if (it == s.tags.end())
++        return;
++    const uint64_t end = offset + len;
++    // the streams this read touches (sorted, non-overlapping files)
++    auto r = std::upper_bound(it->r.begin(), it->r.end(), std::pair<uint64_t, uint64_t>{offset, ~uint64_t{0}});
++    if (r != it->r.begin())
++        --r;
++    for (; r != it->r.end() && r->first < end; ++r) {
++        const uint64_t a = std::max(offset, r->first), b = std::min(end, r->second);
++        if (b < a + 16)
++            continue;
++        // every 8 bytes from the file's start (DSP-ADPCM frames, PCM16 pairs)
++        for (uint64_t p = a + ((r->first - a) & 7); p + 16 <= b; p += 8) {
++            const uint8_t* q = data + (p - offset);
++            if (!Flat(q))
++                Insert(s, Hash16(q));
++        }
++        // ADTS frames (X/Y's AAC): wherever a sync word starts
++        for (uint64_t p = a; p + 16 <= b; p++) {
++            const uint8_t* q = data + (p - offset);
++            if (q[0] == 0xFF && (q[1] & 0xF6) == 0xF0 && ((p - r->first) & 7))
++                Insert(s, Hash16(q));
++        }
++    }
++}
++
++/** 1: these bytes are a music stream's (or the AAC decoder's music output), 0: they aren't, -1: can't tell (silence). */
++inline int Lookup(const uint8_t* p) {
++    if (!p)
++        return -1;
++    if (Flat(p))
++        return -1;
++    State& s = S();
++    std::scoped_lock l(s.lock);
++    return Has(s, Hash16(p)) ? 1 : 0;
++}
++
++/** The DSP's AAC decoder: if `src` is a music stream's frame, what it wrote to dst0 / dst1 (bytes each) is music. */
++inline void NoteDecoded(const uint8_t* src, uint32_t src_len, uint32_t dst0, const uint8_t* out0, uint32_t dst1,
++                        const uint8_t* out1, uint32_t bytes) {
++    if (!src || src_len < 16 || !bytes || Lookup(src) != 1)
++        return;
++    State& s = S();
++    std::scoped_lock l(s.lock);
++    s.decoded.fetch_add(1, std::memory_order_relaxed);
++    const uint32_t dst[2] = {dst0, dst1};
++    const uint8_t* out[2] = {out0, out1};
++    for (int c = 0; c < 2; c++) {
++        if (!dst[c] || !out[c])
++            continue;
++        s.regions[s.region_next++ % s.regions.size()] = {dst[c], bytes};
++        for (uint32_t p = 0; p + 16 <= bytes; p += 8)
++            if (!Flat(out[c] + p))
++                Insert(s, Hash16(out[c] + p));
++    }
++}
++
++/** Does [addr, addr + len) (physical) overlap the AAC decoder's recent music output? */
++inline bool InDecoded(uint32_t addr, uint32_t len) {
++    State& s = S();
++    std::scoped_lock l(s.lock);
++    for (const auto& r : s.regions)
++        if (r.len && addr < r.addr + r.len && r.addr < addr + len)
++            return true;
++    return false;
++}
++
++// ---- the DSP side (its thread only) ---------------------------------------------------------------------------------
++
++/** Source `id` begins a buffer (DequeueBuffer): `p` its first bytes (nullptr: unreadable), `bytes` how many it has. */
++inline void OnBuffer(uint32_t id, const uint8_t* p, uint32_t bytes, uint32_t paddr, bool from_queue, bool repeat) {
++    if (id >= SOURCES)
++        return;
++    State& s = S();
++    Voice& v = s.voices[id];
++    v.from_queue = from_queue;
++    if (repeat)
++        return; // a looping buffer again: whatever it was, it still is
++    int m = bytes >= 16 ? Lookup(p) : -1;
++    if (m != 1 && bytes && InDecoded(paddr, bytes))
++        m = 1;
++    if (m == 1) {
++        v.music = true;
++        v.misses = 0;
++        s.hits.fetch_add(1, std::memory_order_relaxed);
++    } else if (m == 0) {
++        s.misses.fetch_add(1, std::memory_order_relaxed);
++        // a fresh sound (not the queue's next part) that isn't music: the voice now plays something else; a stream's
++        // next part that doesn't match twice in a row: the same
++        if (!from_queue || ++v.misses >= 2) {
++            v.music = false;
++            v.misses = 0;
++        }
++    }
++}
++
++/** A DSP frame begins: leave the music out of it? (`asked`: the frontend asks – the frame's flags say so) */
++inline bool BeginFrame(bool& asked) {
++    State& s = S();
++    asked = s.mute.load(std::memory_order_relaxed);
++    return asked && !s.unsure;
++}
++
++/** Source `id` was ticked in this frame (`on`: enabled). Returns whether it plays music; `onset` set when it began a
++ *  new sound that isn't music. */
++inline bool VoiceFrame(uint32_t id, bool on, bool& onset) {
++    if (id >= SOURCES)
++        return false;
++    Voice& v = S().voices[id];
++    if (v.key_on) {
++        v.key_on = false;
++        onset |= on && !v.music;
++    }
++    v.stream_frames = on && v.from_queue ? v.stream_frames + 1 : 0;
++    return on && v.music;
++}
++
++/** The frame is mixed: its flags (for FrameFlags), and whether an unknown voice streams for long (the next frames). */
++inline uint32_t EndFrame(bool asked, bool muted, bool music, bool onset) {
++    State& s = S();
++    bool unsure = false;
++    for (const auto& v : s.voices)
++        unsure |= !v.music && v.stream_frames > UNSURE_FRAMES;
++    s.unsure = unsure;
++    const uint32_t f = (onset ? F_ONSET : 0) | (muted ? F_MUTED : 0) | (asked && unsure ? F_UNSURE : 0) |
++                       (asked ? F_ASKED : 0) | (music ? F_MUSIC : 0);
++    s.flags.store(f, std::memory_order_relaxed);
++    return f;
++}
++
++inline void OnKeyOn(uint32_t id) {
++    if (id < SOURCES)
++        S().voices[id].key_on = true;
++}
++
++inline void OnReset(uint32_t id) {
++    if (id < SOURCES)
++        S().voices[id] = {};
++}
++
++} // namespace SouldewMusic
+diff --git a/src/core/file_sys/ivfc_archive.cpp b/src/core/file_sys/ivfc_archive.cpp
+index 0a17380..f81de61 100644
+--- a/src/core/file_sys/ivfc_archive.cpp
++++ b/src/core/file_sys/ivfc_archive.cpp
+@@ -12,6 +12,7 @@
+ #include "common/logging/log.h"
+ #include "core/file_sys/ivfc_archive.h"
+ #include "core/file_sys/souldew_romfs_ring.h"
++#include "common/souldew_music.h"
+ 
+ SERIALIZE_EXPORT_IMPL(FileSys::IVFCFile)
+ SERIALIZE_EXPORT_IMPL(FileSys::IVFCFileInMemory)
+@@ -61,6 +62,12 @@ std::shared_ptr<RomFSReader> ReaderOf(u32 tag) {
+     return nullptr;
+ }
+ 
++void Fingerprint(const std::shared_ptr<RomFSReader>& r, u64 offset, const u8* data, std::size_t length) {
++    if (own_read || !r || !length)
++        return;
++    SouldewMusic::NoteRead(TagOf(r), offset, data, length);
++}
++
+ void Note(const std::shared_ptr<RomFSReader>& r, u64 offset, std::size_t length) {
+     if (own_read || !r || !length)
+         return;
+@@ -183,7 +190,9 @@ ResultVal<std::size_t> IVFCFile::Read(const u64 offset, const std::size_t length
+                                       u8* buffer) const {
+     LOG_TRACE(Service_FS, "called offset={}, length={}", offset, length);
+     Souldew::Note(romfs_file, offset, length); // (souldew)
+-    return romfs_file->ReadFile(offset, length, buffer);
++    const std::size_t got = romfs_file->ReadFile(offset, length, buffer);
++    Souldew::Fingerprint(romfs_file, offset, buffer, std::min(got, length)); // (souldew: music voices)
++    return got;
+ }
+ 
+ ResultVal<std::size_t> IVFCFile::Write(const u64 offset, const std::size_t length, const bool flush,

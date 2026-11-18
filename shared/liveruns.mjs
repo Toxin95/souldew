@@ -55,7 +55,7 @@ export function cleanText(s, max) {
 
 /** File names don't belong on a post (streamer mode, and a run name is sometimes the ROM's name): drop the extension. */
 export function stripFileNames(s) {
-  return String(s ?? '').replace(/\.(?:nds|gba|gbc|gb|3ds|cia|cxi|zip|7z|sav|dsv|srm|state|ips|bps|ups|xdelta|vcdiff)\b/gi, '');
+  return String(s ?? '').replace(/\.(?:nds|gba|gbc|gb|sgb|3ds|cia|cxi|zip|7z|sav|dsv|srm|state|ips|bps|ups|xdelta|vcdiff)\b/gi, '');
 }
 
 const safeKey = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -115,6 +115,10 @@ export function buildMeta(input = {}) {
     headline: field('headline', input.headline, LIMITS.headline),
     detail: field('detail', input.detail, LIMITS.detail),
     ...(typeof input.app === 'string' && /^\d+\.\d+\.\d+/.test(input.app) ? { app: input.app.slice(0, 20) } : {}),
+    // optional (the bot tags a #hall-of-fame post with them): the game's generation, ROM hack, randomized
+    ...(Number.isInteger(input.gen) && input.gen >= 1 && input.gen <= 9 ? { gen: input.gen } : {}),
+    ...(typeof input.hack === 'boolean' ? { hack: input.hack } : {}),
+    ...(typeof input.randomized === 'boolean' ? { randomized: input.randomized } : {}),
   };
   return { meta, changed };
 }
@@ -132,6 +136,8 @@ export function metaProblem(meta) {
   if (!meta.headline) return 'headline';
   if (!Array.isArray(meta.players) || meta.players.length > LIMITS.players
     || meta.players.some((p) => typeof p !== 'string' || p.length > LIMITS.player || hasLink(p))) return 'players';
+  if (meta.gen != null && !(Number.isInteger(meta.gen) && meta.gen >= 1 && meta.gen <= 9)) return 'gen';
+  for (const k of ['hack', 'randomized']) if (meta[k] != null && typeof meta[k] !== 'boolean') return k;
   return null;
 }
 

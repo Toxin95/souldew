@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { addSample, typicalReach, offeredSteps, beyondReach, KEEP, MIN_SAMPLES } from '../web/lib/reach.mjs';
 
 const MAX = Infinity;
@@ -65,4 +66,22 @@ test('beyondReach: the step label tells when the computer usually falls short', 
   assert.equal(beyondReach(2, 1.9), false);
   assert.equal(beyondReach(4, null), false);
   assert.equal(beyondReach(1, 0.5), false);
+});
+
+// 2.7.2 (a player on Discord, Windows): in the 3DS player minus at 4× went straight to 1× and plus jumped from 1× to 4×.
+// The 3DS page counted the pictures it got – in fast-forward the host sends only every 2nd–4th one (now: about 60 a
+// second) – so every step measured ≈1×, the reach became 1× and only 1× and 4× stayed on offer. It counts the host's
+// emulated frames now (as the fast player); the old lists live under another key (play.mjs reachKey "-2").
+test('3DS fast-forward is measured with the emulated frames, not the pictures shown', () => {
+  const pictures = (step) => (60 * step) / Math.min(4, Math.ceil(step)) / 60; // 2.7.1: ≈1× at every step
+  let wrong = [];
+  for (let i = 0; i < 8; i++) for (const s of [2, 3, 4]) wrong = addSample(wrong, s, pictures(s));
+  assert.deepEqual(offeredSteps([1, 2, 3, 4], typicalReach(wrong)), [1, 4], 'the reported jump 4× → 1×');
+  let right = [];
+  for (let i = 0; i < 8; i++) for (const s of [2, 3, 4]) right = addSample(right, s, s * 0.99);
+  assert.deepEqual(offeredSteps([1, 2, 3, 4, MAX], typicalReach(right)), [1, 2, 3, 4, MAX]);
+  const player = readFileSync(new URL('../web/lib/ctrplayer.mjs', import.meta.url), 'utf8');
+  assert.match(player, /frames: \(\) => \(st\.hostFrames \? st\.hostFrame : st\.frames\)/);
+  const view = readFileSync(new URL('../web/views/play.mjs', import.meta.url), 'utf8');
+  assert.match(view, /target\.system === '3ds' \? '-2' : ''/);
 });

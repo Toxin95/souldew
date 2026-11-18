@@ -151,6 +151,66 @@ test('Gen 3 FireRed/LeafGreen in German, French, Italian and Spanish: their own 
   assert.deepEqual(regionsFor(de), regionsFor(us));
 });
 
+test('Gen 3 PC boxes: a catch sent to the PC (full party) is read – FireRed/LeafGreen in every language, Emerald, Ruby/Sapphire', () => {
+  const party = pk3({ pid: 0x0badf00d, otId: 0xbeefcafe, internal: 1, nick: 'BISASAM', level: 5, hp: 20, maxHp: 21, met: 88 });
+  const caught = pk3({ pid: 0x13572468, otId: 0xbeefcafe, internal: 19, nick: 'RATTFRATZ', level: 3, hp: 12, maxHp: 12, met: 89 }).subarray(0, 80);
+  const traded = pk3({ pid: 0x2468ace1, otId: 0x12345678, internal: 16, nick: 'TAUBSI', level: 7, hp: 1, maxHp: 1, met: 90 }).subarray(0, 80);
+  const pc = (at) => {
+    const m = memory();
+    m.write(at, [3]); // currentBox
+    m.write(at + 4 + 3 * 30 * 80, caught); // box 4, slot 1
+    m.write(at + 4 + (13 * 30 + 29) * 80, traded); // the last slot of box 14
+    return m;
+  };
+  const cases = [
+    // German LeafGreen (the issue's game): gPokemonStoragePtr 0x03004F60, right after the save block pointers
+    { code: 'BPGD', ptr: 0x03004f60, at: 0x0202a000, count: 0x02024029, team: 0x02024284 },
+    { code: 'BPRE', ptr: 0x03005010, at: 0x02029314, count: 0x02024029, team: 0x02024284 },
+    { code: 'BPEE', ptr: 0x03005d94, at: 0x02029808, count: 0x020244e9, team: 0x020244ec },
+    { code: 'AXPE', at: 0x020300a0, count: 0x03004350, team: 0x03004360 },
+  ];
+  for (const c of cases) {
+    const e = findEntry(TABLE, { platform: 'gba', code: c.code });
+    assert.equal(e.partyAddr.toLowerCase(), `0x${c.team.toString(16).padStart(8, '0')}`, c.code);
+    const m = pc(c.at);
+    if (c.ptr) m.write(c.ptr, [c.at & 0xff, (c.at >> 8) & 0xff, (c.at >> 16) & 0xff, c.at >>> 24]);
+    m.write(c.count, [1]);
+    m.write(c.team, party);
+    const r = readLiveParty(e, m.read, T, {});
+    assert.deepEqual(r.party.map((x) => x.nickname), ['BISASAM'], c.code);
+    assert.deepEqual(r.boxes.map((x) => [x.species, x.nickname, x.box, x.slot, x.metLocation, x.metLevel, x.level, x.hp]), [
+      [19, 'RATTFRATZ', 3, 0, 89, 5, null, null],
+      [16, 'TAUBSI', 13, 29, 90, 5, null, null],
+    ], c.code);
+    // the same key as in the party: moving it to the team and back is the same Pokémon
+    assert.equal(r.boxes[0].key, parsePk3(pk3({ pid: 0x13572468, otId: 0xbeefcafe, internal: 19, nick: 'RATTFRATZ', level: 3, hp: 12, maxHp: 12, met: 89 }), T).key);
+  }
+  // not a PC: no pointer, a pointer outside EWRAM, a block of failed checksums – "unknown" (null), never an empty PC
+  const e = findEntry(TABLE, { platform: 'gba', code: 'BPRE' });
+  const team = (m) => {
+    m.write(0x02024029, [1]);
+    m.write(0x02024284, party);
+    return m;
+  };
+  assert.equal(readLiveParty(e, team(memory()).read, T, {}).boxes, undefined, 'no storage pointer');
+  const out = team(memory());
+  out.write(0x03005010, [0, 0, 0, 0x08]); // a ROM address
+  assert.equal(readLiveParty(e, out.read, T, {}).boxes, undefined, 'pointer outside EWRAM');
+  const junk = team(memory());
+  junk.write(0x03005010, [0x14, 0x93, 0x02, 0x02]);
+  junk.write(0x02029314 + 4, Uint8Array.from({ length: 30 * 80 }, (_, i) => (i * 37 + 11) & 0xff));
+  assert.equal(readLiveParty(e, junk.read, T, {}).boxes, undefined, 'failed checksums everywhere');
+  // an empty PC is an empty list (the pointer is right, the boxes are all zeros)
+  const empty = team(memory());
+  empty.write(0x03005010, [0x14, 0x93, 0x02, 0x02]);
+  assert.deepEqual(readLiveParty(e, empty.read, T, {}).boxes, []);
+  // the expanded engines keep their boxes their own way: not read
+  const hack = team(pc(0x02029314));
+  hack.write(0x03005010, [0x14, 0x93, 0x02, 0x02]);
+  const rh = readLiveParty({ ...e, scan3: true, party3Base: { party: 0x02024284, count: 0x02024029 } }, hack.read, T, {});
+  assert.deepEqual([rh.party.length, rh.boxes], [1, undefined]);
+});
+
 test('Gen 3 expanded engines (Run & Bun): the egg flag comes from the plain header, not from bit 30 of the IVs', () => {
   // Run & Bun keeps the IVs at bits 1–30: a starter with a high Sp. Def IV has bit 30 set – read the retail way it was
   // an egg, and every such Pokémon was left out of the run (never filed as the starter or a catch)

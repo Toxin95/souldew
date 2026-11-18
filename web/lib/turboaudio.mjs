@@ -10,8 +10,8 @@
 // The music can change during fast-forward (new area, battle). RetroArch plays the sped-up sound in full
 // (audio_fastforward_speedup, set by player.html), so the mixer slows it back down by the speed ratio –
 // that is the game's music at its normal pitch, just r× more of it than fits. It listens for the silence
-// between two songs: then the old loop fades out, the new song plays from the slowed-down recording and, once it
-// repeats, becomes the new loop. (Comparing the heard music with the loop to catch songs that follow without a
+// between two songs: then the old loop fades out and the new song plays from the slowed-down recording (until 2.8.1 it
+// became the new loop once it repeated – a loop of raced-through sound, its effects on repeat; see work()). (Comparing the heard music with the loop to catch songs that follow without a
 // pause was tried: on real Game Boy music the same song scored as low as a different one – false alarms.)
 //
 // Around a speed command the sped-up sound is unreliable (measured in the app): OpenAL still plays sound made at
@@ -29,11 +29,39 @@
 // "music" the game's own fast-forward sound is never heard: a song with nothing recorded yet keeps the music that played
 // before it (the previous song's loop – "music continues"), and only with nothing recorded at all is fast-forward quiet.
 //
+// The 3DS host has a better source than the sped-up sound: it hands over the core's own sound as well while it
+// fast-forwards ({ ffSound }, ctrhost.c message 8) – the music at its normal pitch, k seconds of it per second, never
+// resampled. The sped-up sound had to be low-passed to the speed-up's new Nyquist frequency before it was sped up, so
+// slowed back down it kept a k-th of the bandwidth (at 4×: nothing above ~1.8 kHz of the 3DS's 32.7 kHz – muffled).
+// Where the own sound comes, "music" records that instead; the sped-up sound is then only listened to for silences.
+//
+// A streamed song (no loop yet: the sped-up sound slowed down, or the 3DS host's own sound) is recorded r× faster than
+// it plays. Until 2.8.0 it was played through and only jumped ahead once it trailed by half the ring – at 60 s that was
+// up to 30 s behind the game, and everything in it came that late: a player on Pokémon Black heard menu sounds long after
+// pressing the button in "Music continues", the more the longer fast-forward ran. Now it never trails by more than
+// STREAM_LAG: then it skips ahead to just behind the recording, over a short crossfade at the spot where both waveforms
+// line up best (as WSOLA does) – the music goes on in pieces at its normal pitch, the game's sound at most a second late,
+// whatever the speed and however long it runs.
+//
+// 3DS games have the best source of all: their music is a stream file in the ROM, and the game's own RomFS reads say
+// which one plays and where (shared/ctr/rommusic.mjs, web/lib/rommusic.mjs – "music from the ROM"). The page hands the
+// track over ({ type: 'rom-track' }) and the game's position in it with every batch of reads ({ type: 'rom-sync', inband }
+// – applied when the sound that came after it plays, so it lines up with the game's sound to the sample). The track then
+// plays along silently at 1× (romvoice.mjs), and in fast-forward it is the music – ahead of everything else: the real
+// track at its normal speed and pitch, its own loop, the next track crossfaded in when the game starts one. When
+// fast-forward ends it jumps to where the game is now and crossfades back into the game's own sound. The game's sound
+// effects go on over it: the core leaves the voices that play the music out of its fast-forward sound ({ type: 'sfx' },
+// native/azahar-patch/souldew-sfx.patch) and says where each new sound begins – each one plays at its normal speed and
+// pitch the moment it happens, never piling up (sfxplayer.mjs). Without it
+// (another system, an unpatched core, a game whose music isn't a stream file) everything below applies.
+//
 // Plain DSP without Web Audio types: it runs in the AudioWorklet (turboaudio-worklet.mjs), in the
 // ScriptProcessor fallback of player.html and in test/turboaudio.test.mjs. The search is sliced into
 // small steps (generators), so one render quantum never does much work.
 
 import { SdatSynth } from './sdat-synth.mjs';
+import { RomVoice, alignLag } from './romvoice.mjs';
+import { SfxPlayer } from './sfxplayer.mjs';
 
 export const HOP = 1024; // samples per analysis frame
 export const TURBO_MODES = ['music', 'mute', 'original'];
@@ -55,6 +83,9 @@ const Q = 32767;
 // The DS song synthesized from the ROM (sdat-synth.mjs) is about this much quieter than the game's own mix
 // (measured on HeartGold: New Bark Town, Route 29, Elm's lab, wild battle – 1.23 to 1.8, music and effects).
 const SYNTH_GAIN = 1.45;
+const STREAM_LAG = 1; // seconds: the most a streamed song may trail what the game plays (see above)
+const JUMP_XFADE = 0.025; // seconds of crossfade where a streamed song skips ahead
+const JUMP_SEEK = 0.01; // seconds either side of the target searched for the best-matching spot to skip to
 
 /** Stereo ring buffer addressed by absolute sample positions (samples ever written). */
 export class AudioRing {
@@ -235,6 +266,45 @@ export function* refineLag(ring, end, lag, { radius = HOP, win = 2048, chunk = 8
 }
 
 /**
+ * Where a streamed song skips ahead to: of the positions within `seek` of `to`, the one whose next `win` samples match
+ * what would have played next from `from` best (normalised cross-correlation, every other sample, then refined to the
+ * sample) – the crossfade between the two then adds up in phase instead of cancelling (a dip) or beating (a click).
+ * Returns { pos, corr }.
+ */
+export function alignJump(ring, from, to, { win, seek }) {
+  if (!ring.has(from, from + win) || !ring.has(to - seek, to + seek + win)) return { pos: to, corr: 0 };
+  const a = ring.mono(from, win);
+  let na = 0;
+  for (let i = 0; i < win; i++) na += a[i] * a[i];
+  if (na < 1e-9) return { pos: to, corr: 0 }; // (nothing to line up with: anywhere will do)
+  const b = ring.mono(to - seek, win + 2 * seek);
+  const corr = (o, step) => {
+    let dot = 0;
+    let nb = 0;
+    for (let i = 0; i < win; i += step) {
+      const y = b[o + i];
+      dot += a[i] * y;
+      nb += y * y;
+    }
+    return nb > 1e-9 ? dot / Math.sqrt(nb) : 0;
+  };
+  let best = -Infinity;
+  let bestO = seek;
+  for (let o = 0; o <= 2 * seek; o += 2) {
+    const c = corr(o, 2);
+    if (c > best) [best, bestO] = [c, o];
+  }
+  const mid = bestO;
+  best = corr(mid, 1);
+  for (const o of [mid - 1, mid + 1]) {
+    if (o < 0 || o > 2 * seek) continue;
+    const c = corr(o, 1);
+    if (c > best) [best, bestO] = [c, o];
+  }
+  return { pos: to - seek + bestO, corr: best / Math.sqrt(na) };
+}
+
+/**
  * Full search for a loop that ends at `end` (absolute sample position of the end of the last frame).
  * Returns { start, end, lag, xfade, curve, score, fine } in samples, or null.
  */
@@ -280,7 +350,7 @@ function* findBed(ring, feats, n, end, sampleRate, win) {
 /**
  * The mixer between the emulator's sound and the speakers. Feed it every block with process(); control
  * it with command({ type: 'speed', ratio } | { type: 'mode', mode } | { type: 'paused', paused } | { type: 'cut' } |
- * { type: 'skip', on } | { type: 'rate', ratio }).
+ * { type: 'skip', on } | { type: 'rate', ratio }); the 3DS host's own fast-forward sound goes to ffSound().
  * onEvent receives small status objects ({ type: 'found' | 'turbo', … }) for debugging.
  */
 export class TurboMixer {
@@ -326,6 +396,9 @@ export class TurboMixer {
     this.info = {};
     this.ratio = 1; // the speed asked for
     this.real = 0; // the speed the emulator really reaches (measured by the page; 0 = not yet known)
+    // The 3DS host says itself by how much it sped the sound up ({ type: 'rate', exact: true } – the worklet hands it
+    // over when that sound plays): then that ratio is the one to slow down by, as it is, until the host says otherwise.
+    this.exact = false;
     // DeSmuME: RetroArch runs without audio_fastforward_speedup there (player.html), so its fast-forward sound is
     // the classic one – the song at normal pitch, in pieces, skipping ahead. Nothing to slow down: it is played as
     // it is (with the jumps smoothed), unless a loop or music bed recorded at 1× is there to play instead.
@@ -345,6 +418,14 @@ export class TurboMixer {
     // stretch at 3× sounds an octave and a fifth too low) – that stretch is not recorded.
     this.k.tskip = S(0.25);
     this.k.lead = S(0.1); // a streamed song starts once this much of it is recorded – never right at the write head
+    // The 3DS host's own fast-forward sound (ffSound) comes straight from the page, not through the worklet's jitter
+    // buffer – in bursts, between pictures: a streamed song keeps more of it in hand (at 1.1× it gains little).
+    this.k.ownLead = S(0.25);
+    this.k.streamLag = S(STREAM_LAG);
+    this.k.jumpXf = Math.max(16, S(JUMP_XFADE));
+    this.k.jumpSeek = Math.max(4, S(JUMP_SEEK));
+    this.jumps = 0; // times a streamed song skipped ahead (diagnostics)
+    this.own = false; // the host sends its own fast-forward sound (ffSound): recorded instead of the slowed-down one
     this.tSkip = 0; // fast-forward: samples of sound still to leave out of the recording after a speed command
     // The slowed-down sound reaches the ring through a short hold-back (`tail`), so where the recording skips ahead
     // the old end and the new start can be crossfaded instead of butted together (a click).
@@ -378,7 +459,12 @@ export class TurboMixer {
     this.k.libTotal = S(LIB_TOTAL);
     this.k.minPlay = S(minPlay);
     this.k.shortLoop = S(SHORT_LOOP);
-    this.k.keyLag = S(1); // how late a song key may come after the music changed (see songKey), with room to spare
+    // How late a song key may come after the music changed (see songKey), with room to spare: the song number and the
+    // map are read every 100 ms, but the 'battle' key comes from the live battle reader (every 0.7 s), and a game sets
+    // its battle flag a moment after the battle music began (Pokémon Sun: once the battle scene is loaded).
+    this.k.keyLag = S(2.5);
+    this.later = []; // loops found at 1×, filed under their song once the key held keyLag past their end [{ res, at }]
+    this.clock = 0; // samples processed (real time, whatever the speed)
     this.k.keyTrim = Math.ceil(S(0.6) / HOP); // frames left out at the start of a stretch that began with a key change
     this.trimNext = false;
     this.segBest = 0; // the longest loop or bed found in the stretch segBestId so far
@@ -393,6 +479,33 @@ export class TurboMixer {
     // lost graphics context – Windows restarts its GPU process now and then): its song library, and the music that played
     // last, so fast-forward after the rebuild still has music instead of starting from nothing.
     this.held = null; // { key, l, r, start, end, lag, xfade, curve, bed, score, fine } (Int16, like a library entry)
+    // 3DS: the game's own music track (see the top) – the voice, its fade, and what the page said last
+    this.rom = new RomVoice(sampleRate);
+    this.rv = { v: 0, t: 0, s: 0 };
+    this.romWant = null; // the position for a track that hasn't arrived yet { id, pos, at (clock) }
+    this.romResync = 0; // samples left to wait, after fast-forward, for the game's position before going back to its sound
+    this.romNone = false; // the page found no music stream: the voice isn't the music
+    this.k.romTol = S(0.03); // at 1× the voice follows the game when it is off by more than this
+    this.k.romTolAligned = S(0.3); // … once lined up with the game's sound (align): only a real jump
+    this.k.romBack = S(0.25); // the crossfade from the track back into the game's sound after fast-forward
+    this.k.romWait = S(0.8); // how long it waits for the game's position after fast-forward (then fades back anyway)
+    this.k.romChange = 0.4; // seconds: the crossfade into the next track during fast-forward
+    // The reads place the track to a few hundred samples; the game's own 1× sound places it to the sample: every few
+    // seconds (and right after fast-forward, before handing back) the voice's position is checked against it (alignLag)
+    // – so fading between the two is the same music at the same place, not two copies a few ms apart (phasing).
+    this.al = { buf: new Float32Array(Math.round(sampleRate * 0.0625)), n: 0, p0: 0, due: 0, jumps: 0, last: null, ok: false, target: null };
+    this.k.alEvery = S(2);
+    this.romHand = 0; // samples left: after fast-forward the voice is lined up with the game's sound, then handed back
+    this.k.romHand = S(0.6);
+    this.romJumps = 0;
+    // …and the game's sound effects on top of the track while it fast-forwards: the core leaves the music voices out of
+    // its sound ({ type: 'sfx' }, ctrhost.c message 11) and says where new sounds begin – each plays at its normal speed
+    // and pitch the moment it happens (sfxplayer.mjs), only while the ROM track is the music
+    this.sfx = new SfxPlayer(sampleRate);
+    this.sv = { v: 0, t: 0, s: 0 };
+    this.sfxSolo = null; // { l, r, n }: the sound effects' own share of the last block (diagnostics, the worklet's tap)
+    this.k.sfxIn = S(0.005);
+    this.k.sfxOut = S(0.03);
     this.quanta = 0; // render blocks processed (diagnostics: is the audio thread running this mixer at all?)
   }
 
@@ -417,9 +530,12 @@ export class TurboMixer {
       rate: +this.rate.toFixed(2),
       skip: this.skip,
       chop: this.chop.level,
+      own: this.own,
       rec: this.tRec,
       open: this.open,
       seg: this.seg ? sec(this.ring.written - this.seg.start) : null, // seconds recorded in the current stretch
+      behind: this.voice?.stream ? sec(this.ring.written - this.voice.pos) : null, // how late the streamed song plays
+      jumps: this.jumps,
       carry: kind(this.carry),
       carrySec: sec(this.carry?.lag),
       voice: kind(this.voice),
@@ -432,6 +548,10 @@ export class TurboMixer {
       sr: this.sr,
       held: !!this.held,
       quanta: this.quanta,
+      rom: this.rom.id, // the ROM track playing (or along) – and how loud
+      romLevel: +this.rv.t.toFixed(2),
+      romAlign: this.al.last ? { d: this.al.last.d, score: +this.al.last.score.toFixed(3) } : null,
+      sfx: this.sv.t > 0 || this.sfx.stats.onsets ? { level: +this.sv.t.toFixed(2), ...this.sfx.stats } : null,
     };
   }
 
@@ -445,7 +565,7 @@ export class TurboMixer {
     if (m.type === 'speed') {
       const change = this.turbo && m.ratio > 1 && m.ratio !== this.ratio;
       if (m.ratio > 1) this.ratio = m.ratio;
-      this.real = 0; // a new step: the old measurement doesn't hold
+      if (!this.exact) this.real = 0; // a new step: the old measurement doesn't hold (the host's own ratio does)
       this.setTurbo(m.ratio > 1);
       if (change) this.speedChange();
     } else if (m.type === 'mode' && TURBO_MODES.includes(m.mode)) {
@@ -464,6 +584,11 @@ export class TurboMixer {
       this.skip = !!m.on;
       this.retarget();
     } else if (m.type === 'rate') {
+      if (m.exact) {
+        if (m.ratio >= 1) [this.real, this.exact] = [m.ratio, true];
+        return;
+      }
+      if (this.exact) return; // (the host's own ratio beats the page's measurement)
       // the measured speed: a machine that can't hold 4× (≈2.7×) gives sound sped up 2.7×, not 4×
       if (this.turbo && m.ratio > 0) this.real = this.real ? this.real * 0.7 + m.ratio * 0.3 : m.ratio; // (measurement noise)
     } else if (m.type === 'song') {
@@ -474,6 +599,28 @@ export class TurboMixer {
     } else if (m.type === 'sdat') {
       if (!this.synth) this.synth = new SdatSynth(this.sr, { gain: SYNTH_GAIN });
       this.synth.add(m.key, m.pack);
+      this.retarget();
+    } else if (m.type === 'rom-track') {
+      if (this.rom.add(m)) {
+        const w = this.romWant;
+        if (w && w.id === m.id) {
+          // (it arrived late: where the game is now – the position went on since)
+          const src = this.rom.tracks.get(m.id);
+          this.romWant = null;
+          this.romPlay(m.id, w.pos + ((this.clock - w.at) * src.rate) / this.sr, this.turbo ? this.k.romChange : 0);
+        }
+        this.retarget();
+      }
+    } else if (m.type === 'rom-drop') {
+      if (this.rom.id !== m.id) this.rom.tracks.delete(m.id);
+    } else if (m.type === 'rom-sync') {
+      this.romSync(m);
+    } else if (m.type === 'rom-none') {
+      // no music stream plays (the game stopped it, or there is none): at 1× the voice stops; while fast-forwarding the
+      // music that played goes on ("Music continues"). `drop`: the game plays a track the page couldn't load – the one
+      // before isn't this place's music: the voice stops in fast-forward too, and the mixer's own music takes over
+      this.romWant = null;
+      if (m.drop || (!this.turbo && !this.romResync)) this.rom.stop();
       this.retarget();
     } else if (m.type === 'export') {
       this.emit({ type: 'export', ...this.exportMemory() });
@@ -488,10 +635,142 @@ export class TurboMixer {
       this.carry = this.turbo && this.noStream && this.mode === 'music' ? this.playable() : null; // (music goes on, see fallback)
       this.key = null;
       this.synth?.song(null);
+      this.rom.stop(); // (the page says the game's position again once it reads its music)
+      this.romWant = null;
+      this.romResync = 0;
+      this.romHand = 0;
+      this.sfx.reset();
+      this.al.target = null;
+      this.al.n = 0;
       this.song++;
       if (this.turbo) this.tRec = !this.carry;
       this.retarget();
     }
+  }
+
+  /** Plays the ROM track from `pos` (its samples), crossfading `xfade` seconds. */
+  romPlay(id, pos, xfade) {
+    const was = this.rom.id;
+    if (!this.rom.play(id, pos, xfade)) return false;
+    this.romJumps++;
+    this.al.n = 0; // (a recording for the alignment that spans the jump is useless)
+    // (told when the track changes or fast-forward takes it – not every small correction at 1×: the log stays readable)
+    if (id !== was || this.turbo) this.emit({ type: 'rom', id, pos: Math.round(pos), turbo: this.turbo });
+    return true;
+  }
+
+  /**
+   * The game's position in its music ({ id, pos } – pos in the track's samples at the start of the sound that follows,
+   * id null: no music stream plays). At 1× the voice follows it; in fast-forward only a new track is taken (crossfaded –
+   * the voice itself goes on at normal speed); right after fast-forward it jumps there and hands back to the game.
+   */
+  romSync(m) {
+    if (m.id == null) return this.cmd({ type: 'rom-none', drop: !!m.drop });
+    if (!this.rom.has(m.id)) {
+      // (not here: still on its way – or let go to make room: the page sends it again)
+      if (this.romWant?.id !== m.id) this.emit({ type: 'rom-missing', id: m.id });
+      this.romWant = { id: m.id, pos: m.pos, at: this.clock };
+      return;
+    }
+    this.romWant = null;
+    if (this.turbo) {
+      if (this.rom.id !== m.id) {
+        this.romPlay(m.id, m.pos, this.rom.id ? this.k.romChange : 0);
+        this.al.ok = false; // (a new track: not lined up with the game's sound yet)
+      }
+      this.retarget();
+      return;
+    }
+    // (a position from a fast-forwarded frame – the host hadn't switched yet when the speed changed – doesn't line up
+    // with 1× sound: only a track change is taken from it)
+    if (m.slow === false) {
+      if (this.rom.id !== m.id) this.romPlay(m.id, m.pos, this.rv.v > 0 ? 0.03 : 0);
+      return;
+    }
+    if (this.romResync > 0) {
+      // fast-forward just ended and this is the game's position as its 1× sound comes back: the game's sound is listened
+      // to for a moment (align) to find its exact place, the track jumps there once (a short crossfade, inside the
+      // music) and then fades into the game's sound – the same music at the same place. The track plays on meanwhile.
+      this.romResync = 0;
+      this.hold = 0; // (what follows is 1× sound: nothing sped up left to hide)
+      this.romHand = this.k.romHand;
+      this.al.target = { id: m.id, p0: m.pos, at: this.clock, tries: 0 };
+      this.al.n = 0;
+      return;
+    }
+    const d = this.rom.id === m.id ? Math.abs(this.rom.pos - m.pos) : Infinity;
+    const src = this.rom.tracks.get(m.id);
+    // (lined up with the game's sound, the voice is surer than the reads: only a real jump moves it then)
+    const tol = this.al.ok && this.rom.id === m.id ? this.k.romTolAligned : this.k.romTol;
+    if (d > (tol * src.rate) / this.sr) {
+      this.romPlay(m.id, m.pos, this.rv.v > 0 ? 0.03 : 0);
+      this.al.ok = false;
+      this.al.due = 0; // (line it up again soon)
+    }
+    this.retarget();
+  }
+
+  /**
+   * At 1×: the game's sound (this block, before the voice plays its own) is recorded for a moment next to the voice's
+   * position, then the voice is moved to where the game really is (alignLag). Right after fast-forward this hands back.
+   */
+  align(inL, inR, n) {
+    const a = this.al;
+    if (a.n === 0) {
+      if ((a.due -= n) > 0 && !a.target) return;
+      const cur = this.rom.cur;
+      const src = this.rom.tracks.get(a.target?.id ?? cur?.id);
+      if (!src || src.rate !== this.sr) return this.handBack(a.target ? a.target.p0 : null); // (another rate: no lining up)
+      // (after fast-forward: where the reads say the game is at this block – the sync came in band at its start or a
+      // try before; the clock already counts this block)
+      a.p0 = a.target ? a.target.p0 + (this.clock - n - a.target.at) : cur.pos;
+      a.jumps = this.romJumps;
+    }
+    const before = a.n; // (recorded before this block: the voice is about to play this block's first sample)
+    const k = Math.min(n, a.buf.length - a.n);
+    for (let i = 0; i < k; i++) a.buf[a.n + i] = (inL[i] + inR[i]) * 0.5;
+    a.n += k;
+    if (a.n < a.buf.length) return;
+    a.n = 0;
+    a.due = this.k.alEvery;
+    const t = a.target;
+    if (a.jumps !== this.romJumps && !t) return;
+    const id = t ? t.id : this.rom.id;
+    const r = alignLag(a.buf, this.rom.tracks.get(id), a.p0, t ? 4096 : 2048);
+    a.last = r;
+    const good = r && r.score >= 0.8;
+    if (good) a.ok = true;
+    if (t) {
+      // (right after fast-forward the game's sound can still be settling – its buffer catching up: a few tries)
+      if (!good && ++t.tries < 3) return;
+      // where the game is now: its place when the recording started, plus the recording
+      this.emit({ type: 'rom-align', d: good ? r.d : null, score: r ? +r.score.toFixed(3) : null, back: true, tries: t.tries });
+      return this.handBack(a.p0 + (good ? r.d : 0) + before, id);
+    }
+    if (good && Math.abs(r.d) >= 2) {
+      // (the voice played on meanwhile: it moves by d from where it is now)
+      this.rom.play(id, this.rom.pos + r.d, this.rv.v > 0 ? 0.02 : 0);
+      this.romJumps++;
+      this.emit({ type: 'rom-align', d: r.d, score: +r.score.toFixed(3) });
+    }
+  }
+
+  /** After fast-forward: the track to the game's place (`pos`, null: where it is), then back to the game's sound. */
+  handBack(pos, id = this.al.target?.id) {
+    const t = this.al.target;
+    if (pos == null && t) pos = t.p0 + (this.clock - t.at); // (not lined up: where the reads said, plus the time since)
+    this.al.target = null;
+    if (pos != null && id != null) {
+      this.rom.play(id, pos, 0.03);
+      this.romJumps++;
+    }
+    this.romHand = 0;
+    this.retarget(this.k.romBack);
+  }
+
+  /** The ROM track is there to be the music. */
+  get romReady() {
+    return this.rom.id != null;
   }
 
   /**
@@ -564,6 +843,23 @@ export class TurboMixer {
       total -= e.end;
     }
     this.emit({ type: 'kept', key: l.key, seconds: +(lag / this.sr).toFixed(2), bed, songs: this.lib.size });
+  }
+
+  /** A loop or bed found at 1× (its stretch ended at clock `endAt`): kept once its song key held keyLag past that end. */
+  fileLater(res, endAt) {
+    if (res.key == null) return; // (nothing is kept without a key)
+    this.later.push({ res, at: endAt ?? this.clock });
+    this.fileDue();
+  }
+
+  /** Files the waiting loops whose key held long enough; drops those whose key changed meanwhile (see fileLater). */
+  fileDue() {
+    while (this.later.length) {
+      const w = this.later[0];
+      if (w.res.key === this.key && this.clock - w.at < this.k.keyLag) return; // (oldest first: the rest wait too)
+      this.later.shift();
+      if (w.res.key === this.key) this.keep(w.res);
+    }
   }
 
   /** How much music a loop or bed gives before it repeats (a bed's long crossfade and a short loop's phrase count less). */
@@ -672,6 +968,10 @@ export class TurboMixer {
     this.turbo = on;
     if (on) {
       this.hold = 0;
+      this.romHand = this.romResync = 0; // (fast-forward again before the hand-back: the track simply goes on)
+      this.sfx.reset();
+      this.al.target = null;
+      this.al.n = 0;
       const loop = this.chooseLoop();
       if (!loop || (this.noStream && loop.song !== this.song)) this.wantSearch(); // (DeSmuME: another song's music for now)
       this.emit({ type: 'turbo', on: true, loop: loop ? this.describe(loop) : null, searching: this.pending });
@@ -693,6 +993,8 @@ export class TurboMixer {
       this.open = false; // the sound held in OpenAL is skipped (settle) – the 1× recording starts afresh
       this.settle = this.k.settle;
       this.hold = this.k.hold;
+      // the ROM track was the music: it goes on until the game's position comes with its 1× sound (romSync)
+      if (this.rv.t > 0 && this.romReady) this.romResync = this.k.romWait;
       this.emit({ type: 'turbo', on: false });
     }
     this.retarget();
@@ -700,6 +1002,7 @@ export class TurboMixer {
 
   /** The speed the sped-up sound really has: the measured one when known (never above the requested step). */
   get rate() {
+    if (this.exact) return this.real;
     // within 5 % of the step it is the step (no wobble from measurement noise when the speed holds)
     return this.real > 1 && this.real < this.ratio * 0.95 ? this.real : this.ratio;
   }
@@ -711,7 +1014,7 @@ export class TurboMixer {
 
   /** Beds instead of streams: the sped-up sound can't be slowed down (choppy, or not sped up at all). */
   get noStream() {
-    return this.skip || this.chop.level > 0;
+    return this.skip || (this.chop.level > 0 && !this.own); // (the host's own sound is streamed, whatever the sped-up one does)
   }
 
   /** A new step while fast-forwarding: the sound around the re-toggle is at the wrong speed and has holes. */
@@ -719,7 +1022,7 @@ export class TurboMixer {
     this.tGrace = Math.max(this.tGrace, this.k.tgrace); // no song-change judgement on the hiccup
     this.tSil = 0;
     this.tSkip = this.k.tskip;
-    this.endSplice();
+    if (!this.own) this.endSplice(); // (the host's own sound goes on without a skip)
   }
 
   resetStretch() {
@@ -869,7 +1172,8 @@ export class TurboMixer {
 
   startJob(u) {
     this.lastJob = { segId: this.seg.id, frame: this.frames };
-    this.job = { segId: this.seg.id, song: this.song, key: this.key, at1: !this.turbo, end: u.end, gen: this.search(u) };
+    // (endAt: when the stretch's end was heard – at 1× the ring's write head is now)
+    this.job = { segId: this.seg.id, song: this.song, key: this.key, at1: !this.turbo, end: u.end, endAt: this.clock, gen: this.search(u) };
   }
 
   *search(u) {
@@ -884,7 +1188,7 @@ export class TurboMixer {
   }
 
   finishJob(res) {
-    const { segId, song, key, at1 } = this.job;
+    const { segId, song, key, at1, endAt } = this.job;
     this.job = null;
     if (!res) {
       this.emit({ type: 'nofind', seg: segId, n: (this.info.nofind = (this.info.nofind || 0) + 1) });
@@ -898,7 +1202,10 @@ export class TurboMixer {
     res.pos = res.start;
     if (this.segBestId !== segId) [this.segBestId, this.segBest] = [segId, 0];
     this.segBest = Math.max(this.segBest, res.lag);
-    if (at1) this.keep(res); // 1× material only: the slowed-down recording is a stand-in
+    // 1× material only (the slowed-down recording is a stand-in) – and only once the song key held keyLag past the
+    // stretch's end: a key that comes late (a battle) would otherwise file the new song's first seconds under the old one
+    // (fileLater). The search itself can take longer than that – then it is filed now.
+    if (at1) this.fileLater(res, endAt);
     // the song changed while the search ran: the result is kept for that song, but it's not what plays now
     if (this.key != null && key !== this.key) {
       if (this.pending) this.emit({ type: 'turbo', on: this.turbo, loop: null, searching: false });
@@ -936,23 +1243,21 @@ export class TurboMixer {
   work(n) {
     if (!this.job && this.turbo) {
       if (this.mode !== 'music' || !this.tRec || this.paused || !this.open || this.silent >= this.k.sil) return;
-      // a new song: play it from the slowed-down recording right away …
-      // The recording grows r× faster than it plays, so a song without a loop falls behind: once it trails by
-      // half the ring, it jumps ahead (a short fade) instead of running into overwritten samples.
-      const behind = this.carry?.stream && this.ring.written - this.carry.pos > this.ring.cap / 2;
+      // a new song: play it from the slowed-down recording right away (it never falls behind by more than streamLag –
+      // keepUp skips it ahead) …
       if (this.noStream) return; // choppy or not sped up: nothing worth streaming
-      if ((!this.carry && this.ring.written - this.seg.start >= this.k.lead) || behind) {
+      if (!this.carry && this.ring.written - this.seg.start >= this.streamLead) {
         const at = Math.max(this.seg.start, this.ring.written - this.k.margin);
-        this.carry = { stream: true, key: this.key, song: this.song, start: at, pos: at, end: Infinity, lag: Infinity, xfade: 0, g: 0 };
+        this.carry = { stream: true, key: this.key, song: this.song, start: at, pos: at, end: Infinity, lag: Infinity, xfade: 0, g: 0, jf: 0, jlen: 0, from: 0, skips: 0 };
         this.retarget();
-        this.emit({ type: 'stream', seg: this.seg.id, jump: !!behind });
+        this.emit({ type: 'stream', seg: this.seg.id, jump: false });
       }
-      // … and look for its loop as soon as there is enough of it
-      const u = this.usable();
-      if (!u || u.n * HOP < this.minSeg) return;
-      if (this.lastJob.segId === this.seg.id && this.frames - this.lastJob.frame < this.researchAfter()) return;
-      this.startJob(u);
-      this.pending = true;
+      // … and play it on. Its loop is not searched for here: the stream is the game's own sound (the 3DS host's, or the
+      // sped-up sound slowed down), effects and all, at most streamLag late, and a loop found in it is made of sound the
+      // game raced through (k× the effects per second of music) – it replaces what the game does next with a few
+      // seconds on repeat. In a Windows player's Pokémon Y video (2.8.x, 4×) a 5.66 s loop found in the first trainer
+      // battle played through the knock-out, the level-up and the prize money – an attack sound every 5.66 s, the
+      // battle's own sounds never. Loops recorded at 1× (the library, this stretch's own) still take the stream's place.
       return;
     }
     if (!this.job) {
@@ -974,7 +1279,36 @@ export class TurboMixer {
     }
   }
 
-  ramp(r, target) {
+  /** How far behind the recording a streamed song starts, and where it lands when it skips ahead. */
+  get streamLead() {
+    return this.own ? this.k.ownLead : this.k.lead;
+  }
+
+  /**
+   * A streamed song is recorded r× faster than it plays: once it trails the recording by more than streamLag, it skips
+   * ahead to streamLead behind it – crossfaded where it is heard, at once where it isn't (a carry not playing yet).
+   */
+  keepUp() {
+    for (const v of this.voice === this.carry ? [this.voice] : [this.voice, this.carry]) {
+      if (!v?.stream || v.jf > 0) continue;
+      const behind = this.ring.written - v.pos;
+      if (behind <= this.k.streamLag) continue;
+      const to = this.ring.written - this.streamLead;
+      const heard = v === this.voice && this.loop.v > 0;
+      if (heard) {
+        const j = alignJump(this.ring, v.pos, to, { win: this.k.jumpXf, seek: this.k.jumpSeek });
+        v.from = v.pos;
+        v.pos = j.pos;
+        v.jf = v.jlen = this.k.jumpXf;
+        v.jlin = j.corr >= FINE_GOOD; // in phase: a linear crossfade keeps the level (equal power would swell by 3 dB)
+      } else v.pos = to;
+      // (the first skip of a stream is reported – later ones only counted: at 8× they come several times a second)
+      if (!v.skips++) this.emit({ type: 'stream', seg: this.seg?.id ?? null, jump: true, behind: +(behind / this.sr).toFixed(2) });
+      this.jumps++;
+    }
+  }
+
+  ramp(r, target, len = this.k.fade) {
     if (r.t === target && (r.v === target || r.s !== 0)) return;
     if (!this.quanta) {
       // nothing played yet (a mixer made while fast-forwarding): start where the mode says, no fade from 1×
@@ -983,13 +1317,33 @@ export class TurboMixer {
       return;
     }
     r.t = target;
-    r.s = (target - r.v) / this.k.fade;
+    r.s = (target - r.v) / Math.max(1, len);
     if (r.s === 0) r.v = target;
   }
 
   /** Where live sound and loop should be headed now; the ramps get there without clicks. */
-  retarget() {
+  retarget(back = this.k.fade) {
     const ff = this.turbo || this.hold > 0; // sped-up sound may still be coming out of OpenAL
+    if ((ff || this.romResync > 0 || this.romHand > 0) && this.mode === 'music' && !this.paused && this.romReady) {
+      // the game's own track: game sound, loops and the synth fade out – its sound effects play on top while it
+      // fast-forwards (not while the track is handed back at 1×)
+      this.ramp(this.live, 0);
+      this.ramp(this.loop, 0);
+      this.ramp(this.syn, 0);
+      this.ramp(this.rv, 1);
+      this.ramp(this.sv, this.turbo ? 1 : 0, this.turbo ? this.k.sfxIn : this.k.sfxOut);
+      return;
+    }
+    this.ramp(this.sv, 0, this.k.sfxOut);
+    // (back from the ROM track: both over `back`, the game's sound and the track are the same music there)
+    const fromRom = this.rv.t > 0;
+    this.ramp(this.rv, 0, back);
+    if (fromRom && !ff) {
+      this.ramp(this.live, 1, back);
+      this.ramp(this.loop, 0);
+      this.ramp(this.syn, 0);
+      return;
+    }
     if (ff && this.mode === 'music' && !this.paused && this.synth?.has(this.key)) {
       // the song itself, synthesized: game sound and loops fade out
       this.ramp(this.live, 0);
@@ -1036,6 +1390,7 @@ export class TurboMixer {
     if (e / n < SIL_LEVEL) this.turboQuiet(n);
     else this.tSil = 0;
     if (!this.tRec) return;
+    if (this.own) return; // the host's own sound is recorded instead (ffSound) – full bandwidth, nothing to slow down
     if (skip || this.noStream) {
       this.zrun = 0;
       this.zhole = false;
@@ -1048,6 +1403,35 @@ export class TurboMixer {
     if (!h.n) return;
     const s = this.stretch(h.l, h.r, h.n);
     this.put(s.l, s.r, s.n);
+  }
+
+  /**
+   * The 3DS host's own sound while it fast-forwards (ctrhost.c message 8, handed over by native-audio-worklet.mjs as it
+   * arrives): the core's samples as they come – the game's music at its normal pitch and full bandwidth, k seconds of it
+   * per second. It takes the place of the slowed-down sped-up sound (recordTurbo) for good once it came: recorded while
+   * a song is streamed or searched (tRec), its own silences tell a song change (store → frame) like the slowed-down
+   * sound's did. Nothing else changes – the sped-up sound still plays in "original" and is listened to for silences
+   * while a loop plays.
+   */
+  /**
+   * The game's sound effects while it fast-forwards (ctrhost.c message 11, handed over by native-audio-worklet.mjs as it
+   * arrives): the core's sound without the voices that play the music track, at the game's pace, `onsets` where new
+   * sounds began; `ok` false where the core kept the music in (unsure) – never played. Only while the ROM track is the
+   * music ("Music continues").
+   */
+  sfxSound(l, r, n, onsets, ok) {
+    if (!this.turbo || this.paused || this.mode !== 'music' || !n) return;
+    this.sfx.push(l, r, n, onsets, ok);
+  }
+
+  ffSound(l, r, n = l.length) {
+    if (!this.turbo || this.paused || this.mode !== 'music' || this.skip || !n) return;
+    if (!this.own) {
+      this.own = true;
+      this.emit({ type: 'own' });
+    }
+    if (!this.tRec) return; // a loop plays: its samples stay as they are
+    this.put(l, r, n);
   }
 
   /**
@@ -1153,7 +1537,7 @@ export class TurboMixer {
     if (share < 0.1 || !many) c.level = Math.max(0, c.level - 1);
     else if (share > 0.2) c.level = Math.min(3, c.level + 1);
     if (c.level !== was) this.emit({ type: 'chop', level: c.level, share: +share.toFixed(2) });
-    if (c.level >= 2 && (this.carry?.stream || (!this.carry && this.tRec && this.bed))) {
+    if (c.level >= 2 && !this.own && (this.carry?.stream || (!this.carry && this.tRec && this.bed))) {
       // the song being streamed would turn into buzz: the music bed takes over (or nothing); a new stretch
       // starts once the sound is clean again
       this.open = false;
@@ -1281,6 +1665,7 @@ export class TurboMixer {
       // played its loop on forever
       if (this.tGrace > 0) this.tGrace -= n;
       if (!this.tRec || this.noStream) return this.turboQuiet(n); // nothing recorded: judged on the sped-up sound
+      if (this.own) return; // (a gap in the sped-up sound is none in the host's own sound – that one's silences count)
       n = Math.round(n * this.rate); // in slowed-down time
     } else if (this.settle > 0) {
       this.settle -= n; // (the sound held in OpenAL drains in silence too)
@@ -1310,7 +1695,20 @@ export class TurboMixer {
       this.gap(n);
     }
     this.work(n);
+    this.keepUp();
+    this.clock += n;
+    if (this.later.length) this.fileDue();
     if (this.hold > 0 && (this.hold -= n) <= 0) this.retarget();
+    if (this.romResync > 0 && (this.romResync -= n) <= 0) this.retarget(this.k.romBack); // (no position came: back anyway)
+    if (this.romHand > 0 && (this.romHand -= n) <= 0) this.handBack(null); // (couldn't line up: back anyway)
+    if (this.rv.t > 0 && !this.romReady) this.retarget(); // (the track ended – a song that doesn't loop)
+    if (inL && !this.turbo && this.romReady && this.mode === 'music' && !this.paused) this.align(inL, inR, n);
+    else if (!inL && !this.al.target) {
+      // a gap in the game's sound (it comes late after it, not lost): the voice went on, the game didn't – line it up
+      // again as soon as the sound is back
+      this.al.n = 0;
+      this.al.due = 0;
+    }
     // DeSmuME: always through the 1 ms delay (switching it would jump), dips only while its sound skips
     if (this.skip) [inL, inR] = this.declick(inL || this.zeros(n), inR || this.zeros(n), n, this.turbo || this.hold > 0);
     this.mix(inL, inR, outL, outR, n);
@@ -1319,6 +1717,7 @@ export class TurboMixer {
 
   /** What reaches the speakers now: 'game' (its own sound), 'lib' / 'loop' / 'bed' / 'stream' (and for which song), 'quiet'. */
   playing() {
+    if (this.rv.t > 0) return { src: 'rom', of: this.rom.id, key: this.key, turbo: this.turbo, mode: this.mode };
     if (this.syn.t > 0) return { src: 'sdat', of: this.synth.cur?.key ?? null, key: this.key, turbo: this.turbo, mode: this.mode };
     const v = this.voice && this.loop.t > 0 ? this.voice : null;
     const src = v ? (v.lib ? 'lib' : v.stream ? 'stream' : v.bed ? 'bed' : 'loop') : this.live.t > 0 ? 'game' : 'quiet';
@@ -1336,6 +1735,8 @@ export class TurboMixer {
 
   mix(inL, inR, outL, outR, n) {
     this.mixGame(inL, inR, outL, outR, n);
+    this.mixRom(outL, outR, n);
+    this.mixSfx(outL, outR, n);
     const sy = this.syn;
     if (!this.synth || (this.paused && sy.v === 0)) return; // (paused: the song waits with the game)
     if (sy.v === sy.t && sy.v === 0) return this.synth.render(outL, outR, n, 0); // plays along silently, in time
@@ -1347,6 +1748,54 @@ export class TurboMixer {
     }
     const level = (from + sy.v) / 2;
     this.synth.render(outL, outR, n, outR === outL ? level / 2 : level); // (mono out: both sides land in one)
+  }
+
+  /** The ROM track: always played (silently at 1× – it keeps its place), heard at its fade's level. */
+  mixRom(outL, outR, n) {
+    if (this.rom.id == null || (this.paused && this.rv.v === 0)) return;
+    const r = this.rv;
+    const from = r.v;
+    if (r.v !== r.t) {
+      r.v += r.s * n;
+      if ((r.s > 0 && r.v >= r.t) || (r.s < 0 && r.v <= r.t)) r.v = r.t;
+    }
+    const k = outR === outL ? 0.5 : 1; // (mono out: both sides land in one)
+    if (from === 0 && r.v === 0) {
+      this.rom.render(this.romSink(n), this.romSink(n), n, 0, 0); // plays along silently, in time
+      return;
+    }
+    this.rom.render(outL, outR, n, from * k, r.v * k);
+  }
+
+  /** The sound effects over the ROM track (fast-forward), at their fade's level. */
+  mixSfx(outL, outR, n) {
+    const f = this.sv;
+    if (f.v === 0 && f.t === 0) {
+      if (this.sfx.active) this.sfx.reset();
+      return;
+    }
+    const from = f.v;
+    if (f.v !== f.t) {
+      f.v += f.s * n;
+      if ((f.s > 0 && f.v >= f.t) || (f.s < 0 && f.v <= f.t)) f.v = f.t;
+    }
+    if (!this.sfxSolo) return this.sfx.render(outL, outR, n, from, f.v);
+    // (diagnostics: what the sound effects alone add – the worklet's tap { part: 'sfx' } records it)
+    const a = (this.sfxSolo.l = this.sfxSolo.l?.length >= n ? this.sfxSolo.l : new Float32Array(n));
+    const b = (this.sfxSolo.r = this.sfxSolo.r?.length >= n ? this.sfxSolo.r : new Float32Array(n));
+    a.fill(0, 0, n);
+    b.fill(0, 0, n);
+    this.sfx.render(a, b, n, from, f.v);
+    for (let i = 0; i < n; i++) {
+      outL[i] += a[i];
+      if (outR !== outL) outR[i] += b[i];
+    }
+    this.sfxSolo.n = n;
+  }
+
+  romSink(n) {
+    if (!this.sink || this.sink.length < n) this.sink = new Float32Array(Math.max(128, n));
+    return this.sink;
   }
 
   mixGame(inL, inR, outL, outR, n) {
@@ -1400,6 +1849,17 @@ export class TurboMixer {
         const k = lib ? v.pos : v.pos % cap;
         let a = lib ? (lib.l[k] / Q) * g : L[k] * g;
         let b = lib ? (lib.r[k] / Q) * g : R[k] * g;
+        if (v.jf > 0) {
+          // a streamed song skipping ahead: where it was fades out as where it goes on fades in (keepUp picks the curve)
+          const t = 1 - v.jf / v.jlen;
+          const g1 = (v.jlin ? 1 - t : Math.cos(t * Math.PI * 0.5)) * g;
+          const g2 = v.jlin ? t : Math.sin(t * Math.PI * 0.5);
+          const k0 = v.from % cap;
+          a = a * g2 + L[k0] * g1;
+          b = b * g2 + R[k0] * g1;
+          v.from++;
+          v.jf--;
+        }
         const into = v.pos - (v.end - v.xfade);
         if (into >= 0) {
           // approaching the loop end: blend into the stretch just before the loop start

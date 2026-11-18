@@ -16,7 +16,7 @@ export const COVER_TYPES = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/w
 const ID = /^(?:(?:game|hack):[a-z0-9][a-z0-9-]{0,79}|rom:[0-9A-F]{8}|ctr:[0-9A-F]{16})$/;
 
 export function checkCoverId(id) {
-  if (typeof id !== 'string' || !ID.test(id)) throw httpError(400, 'Ungültige Bild-ID', 'badCoverId');
+  if (typeof id !== 'string' || !ID.test(id)) throw httpError(400, 'Invalid picture ID', 'badCoverId');
   return id;
 }
 
@@ -48,10 +48,10 @@ export function coverFile(id) {
 
 export function saveCover(id, buf) {
   checkCoverId(id);
-  if (!buf?.length) throw httpError(400, 'Leere Datei', 'emptyFile');
-  if (buf.length > COVER_LIMIT) throw httpError(413, 'Bild zu groß (höchstens 4 MB)', 'coverTooLarge');
+  if (!buf?.length) throw httpError(400, 'Empty file', 'emptyFile');
+  if (buf.length > COVER_LIMIT) throw httpError(413, 'Picture too large (4 MB at most)', 'coverTooLarge');
   const ext = imageKind(buf);
-  if (!ext) throw httpError(415, 'Nur Bilder im Format PNG, JPEG oder WebP', 'coverType');
+  if (!ext) throw httpError(415, 'Only PNG, JPEG or WebP pictures', 'coverType');
   mkdirSync(COVERS_DIR, { recursive: true });
   const h = hashOf(id);
   writeFileAtomic(join(COVERS_DIR, `${h}.${ext}`), buf);

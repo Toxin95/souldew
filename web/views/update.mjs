@@ -56,6 +56,27 @@ const STEPS = () => ({
   launch: t('upd.stepLaunch', 'Starting the installer – souldew closes and opens again by itself'),
 });
 
+// A failed check or update by its code (electron/update-core.mjs fail, electron/updater.mjs) – the main process' own
+// message is English and only shows for an error without a known code.
+const ERRORS = () => ({
+  BAD_SIGNATURE: t('upd.errSignatureFeed', 'The update could not be verified: its signature is missing or wrong, so it wasn’t installed.'),
+  NO_KEY: t('upd.errNoKey', 'This build can’t verify updates, so it doesn’t install any.'),
+  BAD_FEED: t('upd.errFeed', 'The update information from the server isn’t valid.'),
+  NOT_FOUND: t('upd.noRelease', 'No update has been published yet.'),
+  HTTP: t('upd.errHttp', 'The update server answered with an error – try again later.'),
+  TIMEOUT: t('upd.errTimeout', 'The update server didn’t answer in time – check the internet connection and try again.'),
+  INSECURE: t('upd.errInsecure', 'The update server pointed to an insecure address, so the update was stopped.'),
+  CHECKSUM: t('upd.errChecksum', 'The download is damaged or was changed – try again.'),
+  NO_STAGED: t('upd.errNoStaged', 'The downloaded update is missing – download it again.'),
+  BAD_DMG: t('upd.errDmg', 'The disk image doesn’t contain the expected version of souldew.'),
+  SIGNATURE: t('upd.errCodeSignature', 'The new version’s code signature doesn’t verify, so it wasn’t installed.'),
+  INSTALLER: t('upd.errInstaller', 'The installer couldn’t be started.'),
+  SAME_VERSION: t('upd.errSameVersion', 'This update isn’t newer than the installed version.'),
+  NO_ASSET: t('upd.errNoAsset', 'This update has no download for this computer.'),
+});
+/** The words for a failed check / update ({ code, message }). */
+const updateErrorText = (e) => (e?.code && Object.hasOwn(ERRORS(), e.code) ? ERRORS()[e.code] : e?.message || '');
+
 /** The platform the update is for (the main process says it; older states don't have it). */
 const isWin = (s) => (s?.platform || PLATFORM) === 'win32';
 const isLinux = (s) => (s?.platform || PLATFORM) === 'linux';
@@ -185,7 +206,7 @@ export function UpdateBanner() {
       <button class="btn small ghost" onClick=${() => b.showDownload()}>${t('upd.showDownload', 'Show download')}</button>`;
   } else {
     title = t('upd.failed', 'Update failed');
-    text = s.error || '';
+    text = updateErrorText({ code: s.errorCode, message: s.error });
     actions = html`${auto && html`<button class="btn small" onClick=${() => b.install()}>${t('err.retry', 'Try again')}</button>`}
       <button class="btn small ghost" onClick=${() => openExternal(u.page)}>${t('upd.page', 'Download page')}</button>
       <button class="btn small ghost" onClick=${later}>${t('common.close', 'Close')}</button>`;
@@ -220,7 +241,7 @@ export function UpdateSection() {
   else if (s.phase === 'checking' || busy) line = t('upd.checking', 'Checking …');
   else if (s.update && s.phase !== 'uptodate') line = t('upd.availableSide', 'Version {version} is available – see the sidebar.', { version: s.update.version });
   else if (s.checkError?.code === 'BAD_SIGNATURE') line = t('upd.badSignature', 'The update could not be verified: its signature is missing or wrong, so it was not downloaded. Your installed version is unchanged.');
-  else if (s.checkError) line = s.checkError.code === 'NOT_FOUND' ? t('upd.noRelease', 'No update has been published yet.') : t('upd.checkFailed', 'Could not check for updates: {error}', { error: s.checkError.message });
+  else if (s.checkError) line = s.checkError.code === 'NOT_FOUND' ? t('upd.noRelease', 'No update has been published yet.') : t('upd.checkFailed', 'Could not check for updates: {error}', { error: updateErrorText(s.checkError) });
   else if (s.phase === 'uptodate') line = t('upd.upToDate', 'You have the latest version.');
   return html`<div class="row">
     <span class="small">${t('upd.version', 'Version {version}', { version: s.current })}</span>

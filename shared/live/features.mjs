@@ -40,7 +40,8 @@ export function romFeatures(rom, addresses, { curatedCaps = false } = {}) {
   out.types = t?.species ? (t.chart || !t.own ? 'yes' : 'partial') : rom.vanilla || h.system === '3ds' ? 'yes' : 'no';
   // level caps: a curated list, or caps read from the game's trainers – and its badges must be readable live (an
   // expanded engine's only through the badge flags its own scripts name)
-  out.caps = curatedCaps || (rom.caps && (!expanded || Number.isInteger(rom.caps.badgeFlags))) ? 'yes' : 'no';
+  // (so must a decomp hack whose RAM moved – romloc.mjs gen3RamMoved – whose badges are read like an expanded engine's)
+  out.caps = curatedCaps || (rom.caps && (!(expanded || rom.data?.maps3?.moved) || Number.isInteger(rom.caps.badgeFlags))) ? 'yes' : 'no';
   return out;
 }
 

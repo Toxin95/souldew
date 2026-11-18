@@ -40,15 +40,15 @@ Deployment: `.github/workflows/pages.yml` uploads this folder on every push to `
 ## How the download buttons work
 
 - Without JavaScript every download button links to `https://github.com/souldewapp/souldew/releases/latest`.
-- `site.js` detects the visitor's system (`navigator.userAgentData.platform`, falling back to the user agent): the
-  header and hero buttons say "Download for Windows" on Windows, "Download for Linux" on Linux (Steam Deck included)
-  and "Download for macOS" everywhere else, and the matching platform panel in the download section moves first and
-  gets a green outline.
-- It then asks `https://api.github.com/repos/souldewapp/souldew/releases/latest` (cached for 30 minutes in
+- The page doesn't guess the visitor's system. Every download sits side by side in one fixed order – macOS (.dmg),
+  Windows (.exe), Linux (AppImage), Linux (.deb) – as four tiles in the hero and as a menu behind the "Download"
+  button in the nav (a `<details>`, so it opens without JavaScript too). The download section keeps its three
+  platform panels in the same order.
+- `site.js` asks `https://api.github.com/repos/souldewapp/souldew/releases/latest` (cached for 30 minutes in
   `sessionStorage`) and picks the assets by name: `souldew-<v>-arm64.dmg`, `souldew-<v>-win-x64-setup.exe`,
-  `souldew-<v>-linux-x86_64.AppImage` and `souldew-<v>-linux-amd64.deb` (the second link in the Linux panel). The
-  buttons link straight to the files and show version and size. If a release has no Windows or Linux asset, that
-  button says it's coming and links to the releases page.
+  `souldew-<v>-linux-x86_64.AppImage` and `souldew-<v>-linux-amd64.deb`. Tiles, menu and panels then link straight
+  to the files and show their size; the version goes next to "Free · open source". A file a release lacks keeps
+  its link to the releases page.
 
 ## Preview locally
 

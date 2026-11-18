@@ -1,4 +1,5 @@
-// Collects every t('key', 'Default') call from web/ and writes web/i18n/en.json.
+// Collects every t('key', 'Default') call from web/ and electron/ (the desktop shell's own texts, electron/texts.mjs)
+// and writes web/i18n/en.json.
 // Translators then produce de/fr/es/it with the same keys. Reports keys missing per language.
 import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -27,6 +28,7 @@ function walk(dir) {
   }
 }
 walk(web);
+walk(join(root, 'electron'));
 // Randomizer labels live in shared/ and are looked up with dynamic keys (rnd.*).
 const { randomizerStrings } = await import('../shared/randomizer-options.mjs');
 Object.assign(out, randomizerStrings());

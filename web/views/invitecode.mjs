@@ -66,6 +66,18 @@ const mmss = (ms) => {
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
 };
 
+/**
+ * A run that older apps can't join (its pack names the version it needs – shared/runpack.mjs: another shiny rate): said
+ * where the invite is handed out, so nobody waits for a friend whose souldew refuses the invite.
+ */
+export function PackVersionNote({ manifest }) {
+  const version = manifest?.pack?.minVersion;
+  if (!version) return null;
+  return html`<p class="warning info">${manifest.shiny
+    ? t('invite.needsVersionShiny', 'This run changes the shiny rate: everyone needs souldew {version} or newer to join. Older versions can’t open the invite.', { version })
+    : t('invite.needsVersion', 'Everyone needs souldew {version} or newer to join this run. Older versions can’t open the invite.', { version })}</p>`;
+}
+
 /** Host: "Invite with code" → big code, countdown, live status, Allow / Decline. */
 export function HostCode({ manifest }) {
   const { toast, me, doc, linkStatus } = useApp();
@@ -180,6 +192,7 @@ const joinErrors = () => ({
   'no-host': t('code.errNoHost', 'Nobody answered this code. Check the digits – whoever invited you must have it open in souldew, and a code is valid for 15 minutes.'),
   offline: t('code.errOffline', 'Can’t reach the relay servers. Check your internet connection.'),
   bad: t('code.errBad', 'The code didn’t match. Check the digits and try again.'),
+  newer: t('code.errNewer', 'This run needs a newer souldew. Update souldew, then ask for a new code.'),
   expired: t('code.errExpired', 'This code has expired. Ask for a new one.'),
   used: t('code.errUsed', 'This code was already used – every player needs their own. Ask for a new one.'),
   locked: t('code.errLocked', 'This code was blocked after too many attempts. Ask for a new one.'),

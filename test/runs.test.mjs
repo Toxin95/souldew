@@ -58,8 +58,8 @@ test('trashRun moves the run folder to runs/.trash and refuses unknown runs', ()
   assert.ok(existsSync(join(target, 'run.json')));
   assert.ok(readdirSync(join(DATA, 'runs', '.trash'))[0].startsWith('bbbb0002-'));
   assert.ok(!listRuns().some((m) => m.id === 'bbbb0002'));
-  assert.throws(() => trashRun('bbbb0002'), /nicht gefunden/);
-  assert.throws(() => trashRun('../etc'), /Ungültige/);
+  assert.throws(() => trashRun('bbbb0002'), { code: 'runNotFound' });
+  assert.throws(() => trashRun('../etc'), { code: 'badRunId' });
 });
 
 test('summarizeDoc: a group of 3 is alive only once all three caught; live and badges for every slot', () => {
@@ -84,12 +84,12 @@ test('summarizeDoc: a group of 3 is alive only once all three caught; live and b
 
 test('runPlayers / seedsFor: 1–4 contiguous players, a mode, one seed per slot', () => {
   assert.deepEqual(runPlayers({}).slots, ['p1', 'p2'], 'older requests: a pair');
-  assert.deepEqual(runPlayers({ players: { p1: { name: 'A' } } }).players, { p1: { name: 'A' }, p2: { name: 'Spieler 2' } });
+  assert.deepEqual(runPlayers({ players: { p1: { name: 'A' } } }).players, { p1: { name: 'A' }, p2: { name: 'Player 2' } });
   assert.deepEqual(runPlayers({ players: { p1: {}, p2: {}, p3: {}, p4: {} } }).slots, ['p1', 'p2', 'p3', 'p4']);
   assert.deepEqual(runPlayers({ mode: 'nuzlocke', players: { p1: { name: 'A' }, p2: { name: 'B' } } }), { mode: 'nuzlocke', slots: ['p1'], players: { p1: { name: 'A' } } });
   assert.equal(runPlayers({}, { mode: 'nuzlocke', players: { p1: { name: 'A' } } }).mode, 'nuzlocke', 'a rebuild keeps the mode');
-  assert.throws(() => runPlayers({ players: { p1: {}, p3: {} } }), /lückenlos/);
-  assert.throws(() => runPlayers({ mode: 'battle-royale' }), /Modus/);
+  assert.throws(() => runPlayers({ players: { p1: {}, p3: {} } }), { code: 'playersGap' });
+  assert.throws(() => runPlayers({ mode: 'battle-royale' }), { code: 'badMode', vars: { mode: 'battle-royale' } });
   assert.deepEqual(seedsFor(['p1', 'p2', 'p3'], { p1: '1', p2: '2', p3: '3', p4: '4' }, false), { p1: '1', p2: '2', p3: '3' });
   assert.deepEqual(seedsFor(['p1', 'p2', 'p3'], { p1: '7' }, true), { p1: '7', p2: '7', p3: '7' });
 });
@@ -146,7 +146,7 @@ test('build a solo Nuzlocke: p1 only, one ROM, mode in manifest and pack', async
   assert.deepEqual(Object.keys(runSummary(m.id).badges), ['p1']);
   assert.throws(() => checkPack({ ...pack, mode: 'x' }), /mode/);
   // a request to build a slot the run doesn't have is refused
-  await assert.rejects(buildRun({ romId: ROM, randomize: false, config: {}, mode: 'nuzlocke', players: { p1: {} }, buildFor: ['p2'] }), /Kein gültiger Spieler/);
+  await assert.rejects(buildRun({ romId: ROM, randomize: false, config: {}, mode: 'nuzlocke', players: { p1: {} }, buildFor: ['p2'] }), { code: 'noBuildPlayer' });
 });
 
 test('a two-player build without a mode works as before (equal names get the slot in the file name)', async () => {

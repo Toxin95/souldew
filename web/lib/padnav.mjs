@@ -16,7 +16,7 @@
 //
 // The pure parts (where the focus moves, key repeat, reading the pad, who owns it, the back stack) come first and are
 // tested in test/padnav.test.mjs; the DOM part below them runs only in the app page (startPadNav in app.mjs).
-import { padMap, pickPad, PAD_LABELS, PAD_HOTKEYS } from './controls.mjs';
+import { padMap, pickPad, PAD_LABELS, padActions } from './controls.mjs';
 
 // ---- where the focus moves ----------------------------------------------------------------------------------------
 
@@ -118,7 +118,6 @@ export function createRepeat({ delay = 380, rate = 95 } = {}) {
 
 // ---- reading the controller ----------------------------------------------------------------------------------------
 
-const HOT_INDEX = new Set([...Object.keys(PAD_HOTKEYS).map((l) => PAD_LABELS.indexOf(l)), 16]); // ZL/ZR and Home: the game's
 const STICK = 0.5;
 const deadzone = (v) => (Math.abs(v) < 0.25 ? 0 : v);
 
@@ -138,7 +137,8 @@ export function readPad(pad, pads = null) {
   let dir = on(pm.up) ? 'up' : on(pm.down) ? 'down' : on(pm.left) ? 'left' : on(pm.right) ? 'right' : null;
   if (!dir && Math.max(Math.abs(lx), Math.abs(ly)) > STICK) dir = Math.abs(lx) > Math.abs(ly) ? (lx < 0 ? 'left' : 'right') : (ly < 0 ? 'up' : 'down');
   const buttons = [...(pad?.buttons || [])];
-  const any = buttons.some((b, i) => b?.pressed && !HOT_INDEX.has(i)) || [lx, ly, rx, ry].some((v) => Math.abs(v) > STICK);
+  const hot = padActions(pads); // the game's shortcut buttons (ZL / ZR unless re-bound) and Home
+  const any = buttons.some((b, i) => b?.pressed && !(i in hot)) || [lx, ly, rx, ry].some((v) => Math.abs(v) > STICK);
   return { dir, confirm: on(pm.a), back: on(pm.b), alt: on(pm.x), prev: on(pm.l), next: on(pm.r), menu: on(pm.start), scrollX: deadzone(rx), scrollY: deadzone(ry), any };
 }
 

@@ -107,14 +107,17 @@ test('run outputs: a crafted rom name in run.json cannot reach files outside the
   try {
     // private GETs: a typed URL, another program or an old client without Sec-Fetch-Site gets nothing (#21)
     for (const path of ['/api/runs/aaaa0001', '/api/runs/aaaa0001/doc', '/api/runs/aaaa0001/save/p1', `/api/runs/aaaa0001/file?name=${encodeURIComponent('Ana - HeartGold.nds')}`,
-      '/api/runs/aaaa0001/download?what=pack', '/api/runs/aaaa0001/log/p1', '/api/stream', '/api/status']) {
+      '/api/runs/aaaa0001/download?what=pack', '/api/runs/aaaa0001/log/p1', '/api/stream', '/api/status', '/api/events', '/live/soullink.lua']) {
       const typed = await globalThis.fetch(`${url}${path}`, { headers: { 'sec-fetch-site': 'none' } });
+      assert.equal(typed.status, 403, `typed ${path} → ${typed.status}`);
+      typed.body?.cancel();
+      // SSE (/api/events) never ends – only the status line matters here
       const viaPage = await globalThis.fetch(`${url}${path}`, { headers: { 'sec-fetch-site': 'same-origin' } });
-      const isPrivate = !path.includes('/save/');
-      assert.equal(typed.status === 403, isPrivate, `typed ${path} → ${typed.status}`);
       assert.notEqual(viaPage.status, 403, `same-origin ${path}`);
+      viaPage.body?.cancel();
     }
     assert.equal((await globalThis.fetch(`${url}/api/runs/aaaa0001`)).status, 403, 'no headers at all');
+    assert.equal((await globalThis.fetch(`${url}/live/soullink.lua`)).status, 403, 'lua token without app headers');
 
     // the run's own files still work
     assert.equal(await (await fetch(`${url}/api/runs/aaaa0001/save/p1`)).text(), 'SAVE');

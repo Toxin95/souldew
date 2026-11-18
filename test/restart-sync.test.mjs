@@ -65,7 +65,15 @@ const until = async (fn, ms = 8000, what = 'condition') => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const links = [];
+// A test that fails while several computers still run (Promise.all: one rejects, the others go on) must not leave a
+// link behind: its heartbeat would keep the test file – and `npm test` – running forever. Links are stopped after
+// each test, and a computer that joins a run after its test is over is stopped at once.
+let testOver = false;
+test.beforeEach(() => {
+  testOver = false;
+});
 test.afterEach(() => {
+  testOver = true;
   for (const l of links.splice(0)) l.stop();
 });
 
@@ -89,6 +97,10 @@ async function enter(net, c, m) {
   c.run = m;
   c.doc = Object.assign(new RunDoc(m.id), { by: `dev-${c.slot}`, _persistSoon() {} });
   c.link = new SyncLink({ room: m.room, secret: m.secret, slot: c.slot, name: c.name, doc: c.doc, importers: { mqtt: net.importer, trystero: noP2P } });
+  if (testOver) {
+    c.link.stop();
+    throw new Error(`${c.slot} joined a run after its test was over`);
+  }
   links.push(c.link);
   await c.link.start();
   await until(() => c.link.status.relay === 'connected', 8000, `${c.slot} relay`);

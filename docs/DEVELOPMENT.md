@@ -10,7 +10,7 @@ Requirements: **Node.js ≥ 22.15** and git; macOS (Apple silicon) to build the 
 npm ci                 # install dependencies
 npm run app            # Electron app in development mode (data in the Electron profile)
 npm start              # server only, UI in the browser (data in the project folder: runs/, library/)
-npm test               # all tests (node --test "test/*.test.mjs")
+npm test               # all tests (node --test "test/*.test.mjs"); a test that waits forever fails after 10 min
 npm run lint           # ESLint (eslint.config.mjs)
 node scripts/extract-i18n.mjs   # sync UI strings, list missing/stale translations
 npm run ctr            # macOS: build the 3DS part (see "Nintendo 3DS" below)
@@ -100,11 +100,31 @@ node scripts/build-ctr.mjs --host-only                # only the host (after cha
 node scripts/build-ctr.mjs --src ../azahar            # reuse an Azahar checkout (with submodules)
 ```
 
-The core build takes a while (Azahar from source, `--target citra_libretro`). `native/azahar-patch/souldew-memory.patch`
-adds `souldew_read_memory` and `souldew_title_id` to the core: the libretro memory map only has what exists when the
-game loads, not the heaps where the Pokémon games keep their party, so without the patch the game runs but has no
-live data (the status says `liveMemory: false`). MoltenVK comes from Azahar's macOS release. `npm run dist` checks the
-folder (`build-ctr.mjs --check`) and stops when it's incomplete; `SLS_NO_3DS=1 npm run dist` builds without it – 3DS
+The core build takes a while (Azahar from source, `--target citra_libretro`). The patches in `native/azahar-patch/` are
+applied in name order. `native/azahar-patch/souldew-romfs.patch` logs every RomFS read the game makes (offset, length,
+which RomFS – a lock-free ring in `IVFCFile::Read`) and adds `souldew_romfs_reads`, `souldew_romfs_read` and
+`souldew_romfs_size`: ctrhost sends the reads to the page (message 9) and reads RomFS bytes for it (ROMREAD/ROMDATA), so
+"music from the ROM" (`shared/ctr/rommusic.mjs`, `web/lib/rommusic.mjs`, `web/lib/romvoice.mjs`) knows which stream the
+game plays and where. `native/azahar-patch/souldew-sfx.patch` (`src/common/souldew_music.h`) recognises the DSP voices
+that play the game's streamed music – the page names the stream files (MUSIC), the core fingerprints the game's reads
+of them and matches the bytes a voice starts playing (DSP-ADPCM; X/Y's AAC through the DSP's AAC decoder's output) – and,
+while the page asks (SFX) and the game fast-forwards, leaves them out of the frames it hands to the audio callback (the
+game's own DSP state and final mix stay as they are). `souldew_audio_frame_flags` says per DSP frame whether a new sound
+began (key-on) and whether the music was left out; ctrhost sends that sound as message 11 and the turbo mixer plays each
+sound at 1× over the ROM track (`web/lib/sfxplayer.mjs`). An unknown voice streaming queued buffers for half a second
+makes the core leave everything in (the page then plays no sound effects). `native/azahar-patch/souldew-state.patch`
+adds `souldew_state_begin`, `souldew_state_poll` and `souldew_state_take`: a save state stops the game only while its
+memory (~300 MB) is copied into one buffer, zstd and the header run on a thread, and ctrhost answers SAVE a few frames
+later (Azahar's own `retro_serialize_size` packs it between two frames: 0.4 s without sound on a Windows PC – every
+2 minutes, when the play view took its resume state). The play view also takes that state at a quiet moment of the
+game's sound (`quietMoment` in `web/lib/ctrplayer.mjs`). `native/azahar-patch/souldew-memory.patch`
+adds `souldew_read_memory`, `souldew_write_memory` and `souldew_title_id` to the core: the libretro memory map only has
+what exists when the game loads, not the heaps where the Pokémon games keep their party, so without the patch the game
+runs but has no live data (the status says `liveMemory: false`). `souldew_write_memory` is the Rare Candy cheat's
+write – through the core's own page table, only into the game's heaps (a core without it falls back to ctrhost's page
+scan). MoltenVK comes from Azahar's macOS release. `npm run dist` checks the
+folder (`build-ctr.mjs --check`) and stops when it's incomplete or its core is out of date (`SOULDEW_CORE` names and
+hashes the patches it was built with – a patch added or changed since means `npm run ctr` again); `SLS_NO_3DS=1 npm run dist` builds without it – 3DS
 games then open in the Azahar app.
 
 Windows and Linux: `.github/workflows/ctr.yml` builds host and core (Linux with gcc 12 on Ubuntu 22.04, Windows
@@ -116,6 +136,13 @@ cross-builds with Ubuntu's MinGW-w64 (`g++-mingw-w64-x86-64-posix`, a CMake tool
 holds the few OS calls. Vulkan there is the system's loader (`vulkan-1.dll` / `libvulkan.so.1`); without it
 `server/lib/ctr.mjs` reports the part as missing and 3DS games open in the Azahar app.
 
+**Checking a Gen 1–5 game for the randomizer:** the new-run wizard's check (`POST /api/rom/inspect` →
+`inspectRom` in `server/lib/toolchain.mjs`) runs `SoulLinkBridge info <rom> <settings> <seed>`: UPR's info plus a trial
+run of the recommended preset – the whole randomization in memory, nothing written (under a second for a DS game). A game
+UPR loads but can't randomize (a ROM hack or release whose data isn't where UPR expects it) comes back as
+`reason: 'randoCrash'` and the wizard turns the randomizer off with that reason; a build that fails anyway answers
+`randoFailed` with only the Java exception's class name (`randomizerError`), the bridge's output stays in the server log.
+
 **Randomizing 3DS games** uses the same bundled UPR ZX 4.6.1 jar and `SoulLinkBridge` as Gen 1–5 – UPR's own
 Gen6/Gen7RomHandler (`server/lib/ctrrando.mjs`, the 3DS branch of `server/lib/build.mjs`). Input: a decrypted `.3ds`/
 `.cci`/`.cxi`/`.cia` (UPR reads the game's NCCH; an encrypted one ends with `@@CODE "encrypted"` → `ctrEncrypted` –
@@ -123,7 +150,8 @@ souldew has no keys and decrypts nothing). Output: one rebuilt, self-contained `
 LayeredFS mod folder), hashed with a stream and compared on a join like any ROM; a shared seed builds once and hard-links
 the others. The bridge runs with `-Xmx4608m` (UPR ZX's launcher value; Sun runs out below ~2 GB) and
 `-Dsouldew.upr.root=<cache>/upr-3ds/<id>`: the patched `SysConstants` ahead of the jar moves UPR's `tmp_<game>` folder
-out of the app (without the property – every Gen 1–5 build – nothing changes). UPR writes the `.cxi` with
+out of the app (Gen 1–5 runs get `<cache>/upr-work/<id>` the same way – two runs on one game, the wizard's check during a
+build, no longer take each other's unpacked files). UPR writes the `.cxi` with
 `RandomAccessFile("rw")`, which doesn't truncate, so the build always deletes the target first (it may be a hard link
 to the library's game). Rebuild the bridge after changing it:
 `javac --release 8 -cp tools/upr/PokeRandoZX.jar:tools/upr-bridge -d tools/upr-bridge tools/upr-bridge/SoulLinkBridge.java tools/upr-bridge/com/dabomstew/pkrandom/SysConstants.java`.
@@ -133,13 +161,18 @@ Game updates aren't loaded (UPR could only write them as LayeredFS).
 
 Notes: New 3DS mode is on (the core's default; a savestate from Old 3DS mode would crash the core, so the play view
 stores states as core `azahar-n3ds` and refuses others). The host exits with `_exit` – the core's unload crashes.
-`CTRHOST_DEBUG=1` logs the input it reads; `ctrhost --bench N --dump` runs a game without souldew. Windows and Linux
+`CTRHOST_DEBUG=1` logs the input it reads; `ctrhost --bench N --dump` runs a game without souldew;
+`--renderer vulkan|compat|software` (or `CTRHOST_RENDERER`) picks how the core draws – Settings › Emulators › "3DS
+renderer", "Automatic" steps down by itself (server/lib/ctrrenderer.mjs). Windows and Linux
 are built by CI only (see above). Research notes: [research/azahar.md](../research/azahar.md).
 
 ## Live runs ("Share to Discord")
 
 A player links souldew to their Discord account once (Settings › Discord › "Live runs", with the code from `/live connect`)
-and can then post a card of a death, a wipe or a won run to `#live-runs` on the souldew Discord. The bot is a separate
+and can then post a card of a death or a wipe to `#live-runs` on the souldew Discord – a won run becomes its own post in
+the public `#hall-of-fame` forum ("Post to the Hall of Fame" in the run-won notice and the board; the bot picks the
+channel by `kind: 'victory'`, titles the post from the meta and tags it from `mode` and the optional `gen`, `hack`,
+`randomized`). The bot is a separate
 Cloudflare Worker; its contract (v1) is: `POST /live/link` (code → token), `GET /live/me`, `DELETE /live/link` and
 `POST /live/post` (multipart: `meta` JSON + `image` 1200×675 PNG ≤ 1.5 MB).
 
@@ -149,7 +182,7 @@ Cloudflare Worker; its contract (v1) is: `POST /live/link` (code → token), `GE
 | `server/lib/liveruns.mjs` | The only code that talks to the bot and the only code that sees the token. `/api/liveruns` (state), `/api/liveruns/link` (POST link, DELETE unlink), `/api/liveruns/post` |
 | `web/lib/liveshare.mjs` | The card model from the run doc (headline, the killer from `pair.killer`, the place sign stored with the death as `pair.place`, every player's live team), the post's text, the share |
 | `web/lib/livecard.mjs` | Paints the card on a canvas: the app's fonts, colours, app mark and sprites |
-| `web/views/liveshare.mjs` | The "Share to Discord" button (death notice, graveyard, run-over notice) and the Settings block |
+| `web/views/liveshare.mjs` | The "Share to Discord" button (death notice, graveyard, a wipe's notice), "Post to the Hall of Fame" with the card's preview (run-won notice, board banner) and the Settings block |
 
 **No secrets in the app.** souldew is open source: it ships no key, token, password or signing secret – only the bot's
 public address (`LIVE_RUNS_URL`, `https://api.souldew.app`; when that gives no answer at all – some DNS filters don't

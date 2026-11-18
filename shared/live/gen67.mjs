@@ -293,3 +293,22 @@ export function readGen67Battle(entry, read, party = null) {
   };
 }
 
+
+/**
+ * Why no team is read (diagnostics – ticket #21: a team that wasn't found after reopening a game): per known update
+ * address whether its memory arrived and what slot 0 holds there ('empty' – zeros, 'ok' – a Pokémon, 'checksum' – data
+ * that fails its checksum, 'invalid' – passes it but isn't a party Pokémon, 'unread' – no memory there), and the zone.
+ * Nothing about the Pokémon itself.
+ */
+export function probeGen67(entry, read) {
+  const addrs = (entry?.partyAddrs || []).map((a) => {
+    const region = read(hex(a.addr ?? a), PARTY_BYTES);
+    if (!region || region.length < PARTY_BYTES) return { version: a.version || null, slot0: 'unread' };
+    const raw = slotBytes(region, 0);
+    if (raw.every((b) => b === 0)) return { version: a.version || null, slot0: 'empty' };
+    if (!decryptPK6(raw).checksumOk) return { version: a.version || null, slot0: 'checksum' };
+    return { version: a.version || null, slot0: pk6Mon(raw, entry.gen) ? 'ok' : 'invalid' };
+  });
+  const z = entry?.zoneAddr ? read(hex(entry.zoneAddr), 2) : null;
+  return { addrs, zone: z && z.length >= 2 ? u16(z, 0) : null };
+}

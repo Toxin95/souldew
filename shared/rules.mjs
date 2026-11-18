@@ -4,6 +4,9 @@
 export const DEFAULT_RULES = {
   typeClause: 'global',
   dupes: 'player',
+  // a missed encounter (fled, knocked out) with a known species counts for the dupes clause like a catch – off: only
+  // catches count (runs from before it have no `missedDupes`)
+  missedDupes: false,
   shinyClause: true,
   gifts: 'area', // 'area' (a gift is that area's encounter) | 'free' | 'banned' – older docs say giftsCount: true/false
   giftsCount: true,
@@ -16,6 +19,9 @@ export const DEFAULT_RULES = {
   // the battle helper's type matchups (move effectiveness, what hits you, weaknesses) in the play view. The host
   // sets it when creating the run; runs from before it have no `typeHelp` and keep the help (true).
   typeHelp: true,
+  // lives (shared/lives.mjs): 0 = off, else how many – every death costs one; `livesPool` 'shared' | 'player'
+  lives: 0,
+  livesPool: 'shared',
   // (the Discord webhook is not a rule: it stays on this computer – GET/PUT /api/runs/:id/discord)
 };
 
@@ -48,5 +54,8 @@ export function rulesWithDefaults(stored, mode) {
   // `giftsCount` (true/false) came first; `gifts` is the same rule with a third option
   if (s.gifts === undefined && s.giftsCount !== undefined) r.gifts = s.giftsCount ? 'area' : 'free';
   r.giftsCount = r.gifts !== 'free';
+  // the host's signature of a SoulLink's rules (shared/hostrules.mjs) is no rule
+  delete r.rev;
+  delete r.sig;
   return r;
 }

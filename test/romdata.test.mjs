@@ -373,10 +373,17 @@ test('Gen 5 battle without a flag: over once the battle\'s HP is copied back int
     return f;
   };
   assert.equal(poll(6)?.enemy?.species, 495, 'in battle');
-  // the battle's own structs { species, max HP, HP, …, level at +12 } hold the HP the screen shows
-  const bmon = (species, maxHp, hp, level) => { const b = new Uint8Array(16); b.set([species & 0xff, species >> 8, maxHp & 0xff, maxHp >> 8, hp & 0xff, hp >> 8]); b[12] = level; return b; };
-  w(0x0226d6b0, bmon(498, 21, 9, 5));
-  w(0x0226d8d4, bmon(495, 21, 8, 5)); // (Snivy's maxHp in the copy: 21)
+  // the battle's own structs { species, max HP, HP, …, level at +12 } hold the HP the screen shows – 0x0C after a pointer
+  // to their Pokémon in the battle's party copy
+  const bmon = (pp, species, maxHp, hp, level) => {
+    const b = new Uint8Array(0x0c + 16);
+    new DataView(b.buffer).setUint32(0, pp, true);
+    b.set([species & 0xff, species >> 8, maxHp & 0xff, maxHp >> 8, hp & 0xff, hp >> 8], 0x0c);
+    b[0x0c + 12] = level;
+    return b;
+  };
+  w(0x0226d6b0 - 0x0c, bmon(0x02310008, 498, 21, 9, 5));
+  w(0x0226d8d4 - 0x0c, bmon(0x02300008, 495, 21, 8, 5)); // (Snivy's maxHp in the copy: 21)
   state.g5scan = 0;
   const f = poll(1);
   assert.deepEqual([f.enemy.hp, f.active.hp], [8, 9], 'live HP from the battle structs, not the copies\' starting HP');

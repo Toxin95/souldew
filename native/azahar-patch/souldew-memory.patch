@@ -1,17 +1,17 @@
 diff --git a/src/citra_libretro/citra_libretro.cpp b/src/citra_libretro/citra_libretro.cpp
-index 8a65f9d..e474722 100644
+index 8a65f9d..a070477 100644
 --- a/src/citra_libretro/citra_libretro.cpp
 +++ b/src/citra_libretro/citra_libretro.cpp
-@@ -750,3 +750,46 @@ size_t retro_get_memory_size(unsigned id) {
+@@ -750,3 +750,75 @@ size_t retro_get_memory_size(unsigned id) {
  void retro_cheat_reset() {}
  
  void retro_cheat_set(unsigned index, bool enabled, const char* code) {}
 +
-+// ---- souldew: reading the running game's memory --------------------------------------------------------------
++// ---- souldew: reading (and for cheats writing) the running game's memory --------------------------------------
 +// The memory map (RETRO_ENVIRONMENT_SET_MEMORY_MAPS) is set once, when the game loads – before the game allocates
 +// its heaps, so the regions frontends need for live data (the party in the application / linear heap) aren't in it.
-+// These two calls read through the process's page table instead: any mapped address, whatever VMAs it is split
-+// into. Call them between two retro_run()s (the same thread), never from another thread.
++// These calls go through the process's page table instead: any mapped address, whatever VMAs it is split into.
++// Call them between two retro_run()s (the same thread), never from another thread.
 +// RETRO_API: exported like the retro_* calls (a Windows DLL exports only what is marked, Linux builds may hide the
 +// rest); macOS lists them in libretro.osx.def.
 +extern "C" {
@@ -37,6 +37,35 @@ index 8a65f9d..e474722 100644
 +    return true;
 +}
 +
++/// Writes `size` bytes from `data` to the game process's virtual address `addr` (souldew's cheats: a few bytes of the
++/// bag). Through the core's own memory system – the process's page table and Memory::WriteBlock – so the bytes land in
++/// the emulated memory on every OS, whatever the heap, and whatever the renderer cached there is invalidated. Only
++/// inside the game's heaps (application heap, linear heap, New 3DS linear heap), only within one 4 KB page, and only
++/// when that page is mapped: false otherwise, or when no game runs (nothing is written then).
++RETRO_API bool souldew_write_memory(uint32_t addr, const void* data, uint32_t size) {
++    if (!emu_instance || !emu_instance->game_loaded || !data || size == 0)
++        return false;
++    const uint64_t end = static_cast<uint64_t>(addr) + size;
++    if ((addr & 0xFFF) + static_cast<uint64_t>(size) > 0x1000)
++        return false;
++    const auto inside = [&](uint64_t lo, uint64_t hi) { return addr >= lo && end <= hi; };
++    if (!inside(Memory::HEAP_VADDR, Memory::HEAP_VADDR_END) &&
++        !inside(Memory::LINEAR_HEAP_VADDR, Memory::LINEAR_HEAP_VADDR_END) &&
++        !inside(Memory::NEW_LINEAR_HEAP_VADDR, Memory::NEW_LINEAR_HEAP_VADDR_END))
++        return false;
++    auto& system = Core::System::GetInstance();
++    if (!system.IsPoweredOn())
++        return false;
++    auto process = system.Kernel().GetCurrentProcess();
++    if (!process)
++        return false;
++    auto& memory = system.Memory();
++    if (!memory.IsValidVirtualAddress(*process, static_cast<VAddr>(addr)))
++        return false;
++    memory.WriteBlock(*process, addr, data, size);
++    return true;
++}
++
 +/// The program (title) ID of the running process, 0 when none runs.
 +RETRO_API uint64_t souldew_title_id(void) {
 +    if (!emu_instance || !emu_instance->game_loaded)
@@ -50,12 +79,13 @@ index 8a65f9d..e474722 100644
 +
 +} // extern "C"
 diff --git a/src/citra_libretro/libretro.osx.def b/src/citra_libretro/libretro.osx.def
-index 53a556a..34f20c9 100644
+index 53a556a..0d43acd 100644
 --- a/src/citra_libretro/libretro.osx.def
 +++ b/src/citra_libretro/libretro.osx.def
-@@ -25,3 +25,5 @@ _retro_unload_game
+@@ -25,3 +25,6 @@ _retro_unload_game
  _retro_get_region
  _retro_get_memory_data
  _retro_get_memory_size
 +_souldew_read_memory
 +_souldew_title_id
++_souldew_write_memory

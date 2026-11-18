@@ -4,7 +4,7 @@ import { Icon } from '../lib/icons.mjs';
 import { t, currentLang } from '../lib/i18n.mjs';
 import { api, events } from '../lib/api.mjs';
 import { serverErrorText } from '../lib/errors.mjs';
-import { catalog, gameTitle } from '../lib/data.mjs';
+import { catalog, gameTitle, patchFits } from '../lib/data.mjs';
 import { romFeatures, FEATURES } from '/shared/live/features.mjs';
 import { gymCapsFamily } from '/shared/routes.mjs';
 import { FirstSteps } from './firststeps.mjs';
@@ -142,13 +142,15 @@ export async function addGamesFlow({ reloadLibrary, folder = false, toast } = {}
         await api.post('/api/library/folders', { add: paths[0] });
         added = null;
       } else {
-        added = (await api.post('/api/library/import', { paths }))?.added || [];
+        const r = await api.post('/api/library/import', { paths });
+        added = r?.added || [];
+        failures = skippedFailures(r?.skipped);
       }
     } else {
       const input = document.createElement('input');
       input.type = 'file';
       input.multiple = true;
-      input.accept = '.gb,.gbc,.gba,.nds,.3ds,.cci,.cxi,.cia,.3dsx,.zcci,.zcxi,.z3dsx,.zip,.xdelta,.vcdiff,.bps,.ups,.ips';
+      input.accept = '.gb,.gbc,.sgb,.gba,.nds,.3ds,.cci,.cxi,.cia,.3dsx,.zcci,.zcxi,.z3dsx,.zip,.xdelta,.vcdiff,.bps,.ups,.ips';
       const files = await new Promise((resolve) => {
         input.onchange = () => resolve([...input.files]);
         input.addEventListener('cancel', () => resolve([]));
@@ -256,7 +258,7 @@ async function uploadFile(file) {
     const body = await res.text().catch(() => '');
     let msg = body;
     try {
-      msg = JSON.parse(body).error || body;
+      msg = serverErrorText(JSON.parse(body), res.status);
     } catch {}
     throw new Error(msg || `HTTP ${res.status}`);
   }
@@ -278,6 +280,13 @@ async function uploadFiles(files) {
     }
   }
   return { failures, added };
+}
+
+/** Files the server didn't take (server/lib/library.mjs importFiles `skipped`) as failures to show: { name, error }. */
+export function skippedFailures(skipped) {
+  return (skipped || []).map((x) => ({ name: x.name,
+    error: x.why === 'archive' ? t('lib.skipArchive', 'souldew can’t open .7z or .rar archives – unpack the game first (with 7-Zip, for example), then add the .3ds, .cci or .cxi file.')
+      : t('lib.skipType', 'not a game or patch file souldew knows') }));
 }
 
 function toastFailures(toast, failures) {
@@ -753,8 +762,9 @@ function HackDetail({ id, onClose, openGame }) {
   // a ROM that was patched before it was added (its CRC32 is a known version of the hack): played as it is
   const ready = !patch ? library?.roms?.find((r) => r.hackId === id) : null;
   const baseRom = patch?.baseRomId ? library.roms.find((r) => r.id === patch.baseRomId) : library?.roms?.find((r) => !r.hackId && r.gameId === h?.baseGameId);
-  // Only offer the patched game when the base ROM is the one the patch expects (otherwise patching fails).
-  const canPatch = !!(patch && baseRom && (!patch.expectedCrc || baseRom.crc === patch.expectedCrc));
+  // Only offer the patched game when the patch goes with the base ROM (otherwise patching fails) – the same rule as the
+  // new-run wizard's hack picker
+  const canPatch = !!(patch && baseRom && patchFits(patch, baseRom, cat));
   const save = useSoloSave(canPatch ? `${baseRom.id}|${patch.id}` : null);
   if (!h) return null;
   const base = cat.games.find((g) => g.id === h.baseGameId);
@@ -929,9 +939,10 @@ export function liveSupportText(g) {
   const map = {
     1: t('lib.liveGen12', 'Party, levels and HP live'),
     2: t('lib.liveGen12', 'Party, levels and HP live'),
-    3: t('lib.liveGen3', 'Party live incl. catch location'),
+    // (the PC boxes: Gen 3 and 4 – shared/live/parse.mjs readBoxesGen3 / readBoxesGen4; Black/White don't read them)
+    3: t('lib.liveGen45', 'Party + PC boxes live incl. catch location'),
     4: t('lib.liveGen45', 'Party + PC boxes live incl. catch location'),
-    5: t('lib.liveGen45', 'Party + PC boxes live incl. catch location'),
+    5: t('lib.liveGen3', 'Party live incl. catch location'),
     // 3DS: in souldew's own player (or the Azahar app over its RPC server) – the party, no PC boxes
     6: t('lib.liveGen3', 'Party live incl. catch location'),
     7: t('lib.liveGen3', 'Party live incl. catch location'),

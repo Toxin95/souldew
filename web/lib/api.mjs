@@ -1,5 +1,6 @@
 // Thin fetch wrapper for the local server. The x-soullink header is the server's CSRF guard.
 import { serverErrorText } from './errors.mjs';
+import { diag } from './diag.mjs';
 
 async function request(method, url, body) {
   const res = await fetch(url, {
@@ -12,6 +13,8 @@ async function request(method, url, body) {
   if (!res.ok) {
     const err = new Error(serverErrorText(data && typeof data === 'object' ? data : {}, res.status));
     err.code = data?.code;
+    // diagnostics: which call failed and how (the randomizer's stack frames among it – vars.trace, server/lib/toolchain.mjs)
+    diag('api', { method, url: String(url).split('?')[0], status: res.status, code: data?.code ?? null, what: data?.vars?.what ?? null, trace: data?.vars?.trace ?? null });
     throw err;
   }
   return data;

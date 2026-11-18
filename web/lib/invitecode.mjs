@@ -45,7 +45,12 @@ export const CODE_TTL = 15 * 60000;
 export const KDF_ITERATIONS = 1000000;
 // Protocol ids from the app's former name – they must never change, or codes and packs of other versions stop working.
 const SALT = 'soullink-studio/invite-code@1';
-const PACK_FORMAT = 'soullink-studio/run-pack@1';
+// The run pack's formats this app reads – shared/runpack.mjs PACK_FORMATS (a test keeps the two the same; a run with
+// another shiny rate has its own, which 2.7.4 refuses – and one with a rate 2.8.0 doesn't know, which 2.8.0 refuses).
+// A pack of a later format: "update souldew".
+export const PACK_FORMATS = ['soullink-studio/run-pack@1', 'soullink-studio/run-pack@2', 'soullink-studio/run-pack@3'];
+const packFormatState = (pack) => (PACK_FORMATS.includes(pack?.format) ? 'ok'
+  : typeof pack?.format === 'string' && /^soullink-studio\/run-pack@\d{1,4}$/.test(pack.format) ? 'newer' : 'invalid');
 const MAX_FAILS = 3; // wrong key or declined
 const MAX_REQUESTS = 8; // different request ids per code
 const RESEND = 3000;
@@ -519,7 +524,9 @@ export function joinWithCode(code, o = {}) {
       }
       if (msg?.kind !== 'pack' || finished) return; // forged / foreign – ignore
       if (!msg.ok) return finish(codeError('declined'));
-      if (msg.pack?.format !== PACK_FORMAT) return finish(codeError('bad'), null, 'bye');
+      const format = packFormatState(msg.pack);
+      if (format === 'newer') return finish(codeError('newer'), null, 'bye'); // a run of a later version
+      if (format !== 'ok') return finish(codeError('bad'), null, 'bye');
       // an older host sends no hint – then only a matching name says who this is
       const named = Object.keys(msg.pack.players || {}).find((s) => o.name && String(msg.pack.players[s]?.name || '').trim().toLowerCase() === String(o.name).trim().toLowerCase());
       const seat = 'slot' in msg || 'taken' in msg ? seatOf(msg, msg.pack) : { slot: named || null, taken: [] };

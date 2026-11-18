@@ -135,6 +135,29 @@ test('HGSS level cap follows the Kanto badges: E4 implied after badge 9, Blue at
   assert.equal(levelCapFor(8, { will: 1, koga: 1, bruno: 1, karen: 1, lance: 1 }).boss.key, 'kanto-leaders');
 });
 
+test('HGSS level caps: Falkner\'s ace is Pidgeotto Lv. 13, and marking him defeated moves the cap on to Bugsy – solo and in a 3-player SoulLink (2.8.1)', () => {
+  // vanilla HeartGold/SoulSilver (PokémonDB, Serebii): Falkner Pidgey 9 / Pidgeotto 13, Bugsy Scyther 17
+  assert.deepEqual([levelCapFor(0, {}, true).boss.key, levelCapFor(0, {}, true).cap], ['falkner', 13]);
+  assert.deepEqual([levelCapFor(1, {}, true).boss.key, levelCapFor(1, {}, true).cap], ['bugsy', 17], 'the badge moves it on');
+  assert.deepEqual([levelCapFor(0, { falkner: { at: 1 } }, true).boss.key, levelCapFor(0, { falkner: { at: 1 } }, true).cap], ['bugsy', 17], 'so does marking him defeated');
+  assert.equal(levelCapFor(0, { falkner: 1, bugsy: 1 }, true).boss.key, 'whitney');
+  assert.equal(levelCapFor(2, { falkner: 1 }, true).boss.key, 'whitney', 'badges and marks together');
+  assert.equal(levelCapFor(0, {}, false).cap, 15, 'Definitive HeartGold keeps its own caps');
+  // the board's list shows the vanilla caps
+  const d = mkDoc();
+  assert.equal(R.progression(d, HG).find((x) => x.key === 'falkner').cap, 13);
+  assert.equal(R.progression(d, HG).find((x) => x.key === 'rival-2').cap, 18);
+  // a 3-player SoulLink: every player's cap from their own badges, the boss marks shared
+  const HG3 = { ...HG, mode: 'soullink', players: { p1: { name: 'A' }, p2: { name: 'B' }, p3: { name: 'C' } } };
+  for (const s of ['p1', 'p2', 'p3']) d.set(`live:${s}`, { badges: 0, at: Date.now() });
+  assert.deepEqual(['p1', 'p2', 'p3'].map((s) => R.levelCap(d, HG3, s).cap), [13, 13, 13]);
+  d.set('boss:falkner', { at: Date.now(), by: 'p3' });
+  assert.deepEqual(['p1', 'p2', 'p3'].map((s) => R.levelCap(d, HG3, s).boss.key), ['bugsy', 'bugsy', 'bugsy']);
+  assert.equal(R.levelCap(d, HG3, 'p3').cap, 17);
+  d.set('live:p2', { badges: 2, at: Date.now() });
+  assert.equal(R.levelCap(d, HG3, 'p2').boss.key, 'whitney');
+});
+
 // ---------------------------------------------------------------------------
 // Gen 2 RAM
 
@@ -167,7 +190,7 @@ test('Gen 2: the previous battle\'s enemy is not shown (or flashed) during the n
   assert.equal(readLiveBattle(SILVER, read, T, state).enemy, null);
   // now loaded
   m[0xd0ef] = 16; m[0xd0fc] = 3; put16be(m, 0xd0ff, 12); put16be(m, 0xd101, 12); put16be(m, 0xd0f5, 0x1234);
-  assert.deepEqual(readLiveBattle(SILVER, read, T, state).enemy, { species: 16, level: 3, hp: 12, maxHp: 12, shiny: false });
+  assert.deepEqual(readLiveBattle(SILVER, read, T, state).enemy, { species: 16, level: 3, hp: 12, maxHp: 12, shiny: false, status: 0 }); // (wEnemyMonStatus: none)
 });
 
 test('Gen 2: a stale fainted wBattleMon is not folded onto the mon now at that index', () => {
@@ -530,7 +553,7 @@ test('HGSS: the opponent comes from the battle structs, not from a party copy in
   flag(0x2100);
   sendOutAll(w, [{ ...P[0], level: 10 }, { species: 300, level: 2, hp: 14, maxHp: 14, pid: 0xbbbb0001 }]);
   const { fight, party } = poll(read, state, 3);
-  assert.deepEqual(fight.enemy, { species: 300, level: 2, hp: 14, maxHp: 14, shiny: false, moves: [33] });
+  assert.deepEqual(fight.enemy, { species: 300, level: 2, hp: 14, maxHp: 14, shiny: false, moves: [33], status: 0 }); // (BattleMon.status: none)
   assert.equal(fight.kind, 'wild', 'a wild Pokémon carries the player’s ID');
   assert.deepEqual(fight.active, { index: 0, hp: 20, maxHp: 20, status: 0 });
   // a hit shows at once, on both sides
@@ -694,15 +717,19 @@ test('HGSS: a status condition from the battle shows during the battle, not only
 
 // ---------------------------------------------------------------------------
 // Black 2 battles (#11, #12): the party copies in the heap keep the HP the battle started with; the battle's own
-// structs ({ species, max HP, HP, … level at +12 }, one per team member) and its team-order pointer arrays say who
-// is out and how much HP is left.
+// structs ({ species, max HP, HP, … level at +12 }, one per team member, 0x0C after a pointer to that Pokémon in the
+// battle's party copy) and its team-order pointer arrays say who is out and how much HP is left.
 
 const B2E = findEntry(TABLE, { platform: 'nds', code: 'IREO' });
 function b2Battle() {
   const { m, w, read } = dsRam();
   const u32 = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, v >>> 24];
   const flag = (v) => w(0x021b5138, [v & 0xff, v >> 8]);
-  const struct = (addr, { species, maxHp, hp, level }) => w(addr, [species & 0xff, species >> 8, maxHp & 0xff, maxHp >> 8, hp & 0xff, hp >> 8, 0, 0, 0, 0, 0, 0, level, 0]);
+  // `pp`: the Pokémon in the battle's party copy (copy + 8 + slot × 220) – left as it is when not given
+  const struct = (addr, { species, maxHp, hp, level }, pp) => {
+    if (pp) w(addr - 0x0c, u32(pp));
+    w(addr, [species & 0xff, species >> 8, maxHp & 0xff, maxHp >> 8, hp & 0xff, hp >> 8, 0, 0, 0, 0, 0, 0, level, 0]);
+  };
   return { m, w, read, flag, struct, u32 };
 }
 const g5 = ({ pid, species, level, hp, maxHp, tid = 4242 }) => ({ pid, species, level, hp, maxHp, tid, size: 220 });
@@ -718,9 +745,9 @@ test('Black 2: the Pokémon you switch in shows on the battle helper, with its l
   w(0x02300000, core([g5(PATRAT)]));
   // the battle structs (two copies each, as in the game) and the team order arrays: battle order, own order
   const S = { tepig: 0x0225b1f0, purr: 0x0225b414, patrat: 0x0225b638 };
-  struct(S.tepig, TEPIG); struct(S.tepig + 0x66c, TEPIG);
-  struct(S.purr, PURR); struct(S.purr + 0x66c, PURR);
-  struct(S.patrat, PATRAT);
+  struct(S.tepig, TEPIG, 0x02320008); struct(S.tepig + 0x66c, TEPIG, 0x02320008);
+  struct(S.purr, PURR, 0x02320008 + 220); struct(S.purr + 0x66c, PURR, 0x02320008 + 220);
+  struct(S.patrat, PATRAT, 0x02300008);
   const order = (a, b) => w(0x0225736c, [...u32(a - 0x0c), ...u32(b - 0x0c)]);
   order(S.tepig, S.purr);
   w(0x022573ec, [...u32(S.tepig - 0x0c), ...u32(S.purr - 0x0c)]);
@@ -749,9 +776,9 @@ test('Black 2: a trainer’s next Pokémon shows once the first one fainted – 
   const party = g5party([TEPIG]);
   w(0x02320000, core([g5(TEPIG)]));
   w(0x02300000, core([g5(A), g5(B)]));
-  struct(0x0225b1f0, TEPIG);
-  struct(0x0225b414, A);
-  struct(0x0225b638, B);
+  struct(0x0225b1f0, TEPIG, 0x02320008);
+  struct(0x0225b414, A, 0x02300008);
+  struct(0x0225b638, B, 0x02300008 + 220);
   w(0x0225736c, u32(0x0225b1f0 - 0x0c));
   flag(0x2100);
   const state = {};
@@ -771,8 +798,8 @@ test('Black 2: the panel stays for a whole long battle and through a poll withou
   const party = g5party([TEPIG]);
   w(0x02320000, core([g5(TEPIG)]));
   w(0x02300000, core([g5(PATRAT)]));
-  struct(0x0225b1f0, TEPIG);
-  struct(0x0225b414, PATRAT);
+  struct(0x0225b1f0, TEPIG, 0x02320008);
+  struct(0x0225b414, PATRAT, 0x02300008);
   flag(0x2100);
   const state = {};
   for (let i = 0; i < 6; i++) readLiveBattle(B2E, read, T, state, party);

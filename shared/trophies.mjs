@@ -180,6 +180,8 @@ export function digestRun(manifest, entries, slot, opts = {}) {
     id: str(manifest?.id, 16), name: str(manifest?.name, 80), mode, players: slots.length, me, names,
     gameId: str(game.id || manifest?.base?.gameId, 60) || null, gen: opts.gen || num(game.generation) || { gb: 1, gbc: 2, gba: 3, nds: 4, '3ds': 6 }[game.system] || null,
     randomized: manifest?.randomizer ? manifest.randomizer.enabled !== false : false, hack: !!(manifest?.patch || game.hackId || game.hackName),
+    // a game with a higher shiny rate (shared/shiny.mjs): its shinies fill the Pokédex but earn no shiny trophies
+    shinyBoost: !!manifest?.shiny?.rate && manifest.shiny.rate !== 8192,
     createdAt: time(manifest?.createdAt), attempt: Number(manifest?.attempt) || Number(/#(\d+)\s*$/.exec(manifest?.name || '')?.[1]) || 1,
     status: st?.state ? { state: st.state, reason: str(st.reason, 20) || null, at: num(st.at), by: str(st.by, 4) || null } : null,
     rules: { hardcore: rules.levelCaps === 'strict' && rules.noBattleItems === true && rules.setMode === true, levelCaps: !!rules.levelCaps, deathless: !!rules.deathless,
@@ -258,6 +260,8 @@ const nth = (times, k) => {
 };
 const count = (n, times, target) => ({ n, at: n >= target ? nth(times, target) : null });
 const flag = (hit) => (hit ? { n: 1, at: hit.at ?? null } : { n: 0 });
+/** A shiny caught at the game's own odds – not in a run that raised them. */
+const fairShiny = (x) => x.shiny && !x.run?.shinyBoost;
 const firstBy = (list, fn) => {
   const hits = list.filter(fn).sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity));
   return hits[0] || null;
@@ -357,8 +361,8 @@ export const ACHIEVEMENTS = [
     const s = Object.values(c.dex).filter((e) => e.seenAt !== null || e.caught > 0);
     return count(s.length, s.map((e) => e.seenAt || e.first?.at || null), 100);
   } },
-  { id: 'firstShiny', cat: 'collection', rarity: 'rare', check: (c) => { const s = c.catches.filter((x) => x.shiny); return count(s.length, s.map((x) => x.at), 1); } },
-  { id: 'shiny5', cat: 'collection', rarity: 'legendary', target: 5, check: (c) => { const s = c.catches.filter((x) => x.shiny); return count(s.length, s.map((x) => x.at), 5); } },
+  { id: 'firstShiny', cat: 'collection', rarity: 'rare', check: (c) => { const s = c.catches.filter(fairShiny); return count(s.length, s.map((x) => x.at), 1); } },
+  { id: 'shiny5', cat: 'collection', rarity: 'legendary', target: 5, check: (c) => { const s = c.catches.filter(fairShiny); return count(s.length, s.map((x) => x.at), 5); } },
   { id: 'legendary', cat: 'collection', rarity: 'rare', check: (c) => { const l = Object.keys(c.caughtAt).map(Number).filter(isLegendary); return count(l.length, l.map((id) => c.caughtAt[id]), 1); } },
   { id: 'legendary5', cat: 'collection', rarity: 'epic', target: 5, check: (c) => { const l = Object.keys(c.caughtAt).map(Number).filter(isLegendary); return count(l.length, l.map((id) => c.caughtAt[id]), 5); } },
   { id: 'starterTrio', cat: 'collection', rarity: 'uncommon', check: (c) => {
@@ -413,7 +417,7 @@ export const ACHIEVEMENTS = [
   { id: 'atlas', cat: 'soullink', rarity: 'rare', check: (c) => flag(firstBy(c.digests.filter((d) => won(d) && d.mode === 'soullink' && levelGap(d) >= 10).map((d) => d.status), () => true)) },
   { id: 'groupLink', cat: 'soullink', rarity: 'uncommon', check: (c) => { const r = c.digests.filter((d) => d.mode === 'soullink' && d.players >= 3); return count(r.length, r.map((d) => d.createdAt), 1); } },
   { id: 'fellowship', cat: 'soullink', rarity: 'epic', check: (c) => flag(firstBy(c.digests.filter((d) => won(d) && d.mode === 'soullink' && d.players >= 3).map((d) => d.status), () => true)) },
-  { id: 'jealous', cat: 'soullink', rarity: 'rare', check: (c) => { const s = c.digests.flatMap((d) => d.partners.filter((p) => p.shiny)); return count(s.length, s.map((p) => p.at), 1); } },
+  { id: 'jealous', cat: 'soullink', rarity: 'rare', check: (c) => { const s = c.digests.filter((d) => !d.shinyBoost).flatMap((d) => d.partners.filter((p) => p.shiny)); return count(s.length, s.map((p) => p.at), 1); } },
   { id: 'unbreakable', cat: 'soullink', rarity: 'epic', check: (c) => flag(firstBy(c.digests.filter((d) => d.mode === 'soullink' && d.badges >= 8 && d.badgeAt[1])
     .flatMap((d) => d.catches.filter((x) => !x.dead && x.at && x.at < d.badgeAt[1] && d.partners.some((p) => p.area === x.area && !p.dead)).map(() => ({ at: d.badgeAt[8] ?? null }))), () => true)) },
   { id: 'notMe', cat: 'soullink', rarity: 'uncommon', check: (c) => flag(firstBy(c.digests.filter((d) => d.mode === 'soullink' && d.deaths[0]?.by && d.deaths[0].by !== d.me).map((d) => d.deaths[0]), () => true)) },
@@ -476,7 +480,7 @@ export const ACHIEVEMENTS = [
   { id: 'kaboom', cat: 'fun', rarity: 'uncommon', check: (c) => flag(firstBy(killedBy(c, (k) => k.kind === 'wild' && EXPLODERS.has(k.species)), () => true)) },
   { id: 'teleport', cat: 'fun', rarity: 'common', check: (c) => flag(firstBy(c.digests.flatMap((d) => d.missed.filter((x) => x.species === 63)), () => true)) },
   { id: 'roamer', cat: 'fun', rarity: 'uncommon', check: (c) => flag(firstBy(c.digests.flatMap((d) => d.missed.filter((x) => roams(x.species, d.gen))), () => true)) },
-  { id: 'shinyDown', cat: 'fun', rarity: 'rare', hidden: true, check: (c) => flag(firstBy(c.catches.filter((x) => x.dead && x.shiny).map((x) => ({ at: x.diedAt })), () => true)) },
+  { id: 'shinyDown', cat: 'fun', rarity: 'rare', hidden: true, check: (c) => flag(firstBy(c.catches.filter((x) => x.dead && fairShiny(x)).map((x) => ({ at: x.diedAt })), () => true)) },
   { id: 'gyarados', cat: 'collection', rarity: 'uncommon', check: (c) => flag(firstBy(c.digests.flatMap((d) => d.evolutions.filter((e) => e.from === 129 && e.to === 130)), () => true)) },
   { id: 'feebas', cat: 'collection', rarity: 'rare', check: (c) => flag(firstBy(c.catches.filter((x) => x.first === 349), () => true)) },
   { id: 'helix', cat: 'collection', rarity: 'uncommon', hidden: true, check: (c) => { const h = [138, 139].filter((id) => id in c.caughtAt); return count(h.length, h.map((id) => c.caughtAt[id]), 1); } },

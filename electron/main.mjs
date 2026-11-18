@@ -8,8 +8,9 @@ import { setupUpdater } from './updater.mjs';
 import { appImageFromEnv, appImageRelaunch } from './update-core.mjs';
 import { writeFileAtomic } from '../server/lib/fsutil.mjs';
 import { grantPicked } from '../server/lib/grants.mjs';
-import { chromiumSwitches, startDecision, crashDecision, gpuInfoSummary } from '../shared/gpu.mjs';
+import { chromiumSwitches, startDecision, crashDecision, gpuInfoSummary, safeGraphicsRequested, withoutSafeGraphics } from '../shared/gpu.mjs';
 import { sameOrigin, safeExternalUrl, subframeNavigationAllowed, permissionAllowed, isTrustedIpcSender, titleBarColors, initialWindowSize } from './guards.mjs';
+import { appLang, textsFor } from './texts.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MAC = process.platform === 'darwin';
@@ -59,6 +60,13 @@ function readConfig() {
     return {};
   }
 }
+/** t(key, english) in the app language (electron/texts.mjs) – after `ready` (the system language comes from Electron). */
+const dictionaries = new Map();
+function mainTexts() {
+  const lang = appLang(readConfig().lang, app.getLocale());
+  if (!dictionaries.has(lang)) dictionaries.set(lang, textsFor(lang, join(here, '..', 'web', 'i18n')));
+  return dictionaries.get(lang);
+}
 function patchConfig(patch) {
   if (!patch) return;
   try {
@@ -72,13 +80,19 @@ function patchConfig(patch) {
 // Graphics backend (Settings › General, shared/gpu.mjs) plus the power-user flags from SOULDEW_CHROMIUM_FLAGS. Only
 // the first instance counts its start – a second one quits right away. A start that never shows the window with a
 // chosen backend is remembered (gpuStart); after a few of them the backend goes back to "Automatic".
-const gpu = { backend: 'auto', switches: [], pending: false };
+// A safe start (--safe-graphics, shared/gpu.mjs) draws without the graphics card and leaves the setting and its start
+// count alone: it is how a player whose window stays blank gets to Settings to pick another backend.
+const gpu = { backend: 'auto', switches: [], pending: false, safe: safeGraphicsRequested(process.argv, process.env) };
 if (primary) {
-  const { backend, patch } = startDecision(readConfig(), process.platform);
-  patchConfig(patch);
-  gpu.backend = backend;
-  gpu.pending = backend !== 'auto';
-  gpu.switches = chromiumSwitches({ backend, platform: process.platform, envFlags: process.env.SOULDEW_CHROMIUM_FLAGS || '' });
+  if (gpu.safe) {
+    app.disableHardwareAcceleration();
+  } else {
+    const { backend, patch } = startDecision(readConfig(), process.platform);
+    patchConfig(patch);
+    gpu.backend = backend;
+    gpu.pending = backend !== 'auto';
+  }
+  gpu.switches = chromiumSwitches({ backend: gpu.backend, platform: process.platform, envFlags: process.env.SOULDEW_CHROMIUM_FLAGS || '', safe: gpu.safe });
   for (const [name, value] of gpu.switches) {
     if (value == null) app.commandLine.appendSwitch(name);
     else app.commandLine.appendSwitch(name, value);
@@ -99,7 +113,7 @@ const goneLog = [];
 app.on('child-process-gone', (e, details) => {
   goneLog.push({ at: new Date().toISOString(), type: details?.type ?? null, reason: details?.reason ?? null, exitCode: details?.exitCode ?? null });
   if (goneLog.length > 20) goneLog.shift();
-  if (details?.type !== 'GPU' || details.reason === 'clean-exit') return;
+  if (details?.type !== 'GPU' || details.reason === 'clean-exit' || gpu.safe) return;
   gpuCrashes++;
   console.warn(`GPU process gone (${details.reason}, ${gpuCrashes}×)`);
   const patch = crashDecision(gpu.backend, gpuCrashes);
@@ -274,16 +288,26 @@ ipcMain.on('titlebar-colors', (e, colors) => {
 });
 
 /**
- * labels: the page's texts in the app language (see 'menu-labels'); German until the page has sent them.
+ * labels: the page's texts in the app language (see 'menu-labels'); until the page has sent them the same texts from
+ * its dictionaries (mainTexts).
  * macOS gets the usual app menu; Windows has no visible menu bar (titleBarOverlay), so there the menu only carries
  * the keyboard shortcuts (Ctrl instead of ⌘, F11 for fullscreen) – Settings and Quit move into "File". Linux: the same
  * menu as Windows, hidden until Alt is pressed (autoHideMenuBar).
  */
 function buildMenu(labels = {}) {
   const l = (key, fallback) => (typeof labels[key] === 'string' && labels[key] ? labels[key].slice(0, 80) : fallback);
+  const t = mainTexts();
   const nav = (route) => () => send('navigate', route);
   const emu = (action) => () => send('emu', action);
-  const settings = { label: l('settings', 'Einstellungen …'), accelerator: 'CmdOrCtrl+,', click: nav('settings') };
+  // The emulator's shortcuts are the player's (Settings › Controls – any key, or none): the page sends them as
+  // accelerators and handles the keys itself, so the menu only shows them – it never takes a key from the game.
+  const keys = labels.keys && typeof labels.keys === 'object' ? labels.keys : {};
+  const shown = (id, fallback) => {
+    const k = Object.hasOwn(keys, id) ? keys[id] : fallback;
+    return typeof k === 'string' && /^(?:(?:Cmd|Ctrl|Alt|Shift)\+){0,4}(?:[A-Z0-9]|F(?:[1-9]|1[0-2])|Tab|Return|Space|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|Plus|num[0-9]|numadd|numsub|nummult|numdiv|numdec|[;=,\-./`[\]\\'])$/.test(k)
+      ? { accelerator: k, registerAccelerator: false } : {};
+  };
+  const settings = { label: l('settings', t('menu.settings', 'Settings …')), accelerator: 'CmdOrCtrl+,', click: nav('settings') };
   const template = [
     ...(MAC ? [{
       label: 'souldew',
@@ -298,48 +322,49 @@ function buildMenu(labels = {}) {
       ],
     }] : []),
     {
-      label: l('file', 'Ablage'),
+      label: l('file', t('menu.file', 'File')),
       submenu: [
-        { label: l('addGames', 'Spiele hinzufügen …'), accelerator: 'CmdOrCtrl+O', click: () => send('menu', 'add-games') },
-        { label: l('revealLibrary', MAC ? 'Bibliotheksordner im Finder' : WIN ? 'Bibliotheksordner im Explorer' : 'Bibliotheksordner im Dateimanager'), click: () => send('menu', 'reveal-library') },
+        { label: l('addGames', t('menu.addGames', 'Add games …')), accelerator: 'CmdOrCtrl+O', click: () => send('menu', 'add-games') },
+        { label: l('revealLibrary', MAC ? t('menu.revealLibrary', 'Show library folder in Finder') : WIN ? t('menu.revealLibraryWin', 'Show library folder in Explorer')
+          : t('menu.revealLibraryLinux', 'Show library folder in the file manager')), click: () => send('menu', 'reveal-library') },
         { type: 'separator' },
         // Windows: no Ctrl+W – it would close the window and with it the app; Alt+F4 does that the Windows way
-        ...(MAC ? [{ role: 'close' }] : [settings, { type: 'separator' }, { role: 'quit', label: l('quit', 'Beenden') }]),
+        ...(MAC ? [{ role: 'close' }] : [settings, { type: 'separator' }, { role: 'quit', label: l('quit', t('menu.quit', 'Quit')) }]),
       ],
     },
     { role: 'editMenu' },
     {
-      label: l('go', 'Gehe zu'),
+      label: l('go', t('menu.go', 'Go')),
       submenu: [
-        { label: l('library', 'Bibliothek'), accelerator: 'CmdOrCtrl+1', click: nav('library') },
-        { label: l('soullink', 'SoulLink'), accelerator: 'CmdOrCtrl+2', click: nav('soullink') },
-        { label: l('nuzlocke', 'Nuzlocke'), accelerator: 'CmdOrCtrl+3', click: nav('nuzlocke') },
-        { label: l('link', 'Verbindung'), accelerator: 'CmdOrCtrl+4', click: nav('link') },
-        { label: l('stream', 'Stream'), accelerator: 'CmdOrCtrl+5', click: nav('stream') },
+        { label: l('library', t('nav.library', 'Library')), accelerator: 'CmdOrCtrl+1', click: nav('library') },
+        { label: l('soullink', t('nav.soullink', 'SoulLink')), accelerator: 'CmdOrCtrl+2', click: nav('soullink') },
+        { label: l('nuzlocke', t('nav.nuzlocke', 'Nuzlocke')), accelerator: 'CmdOrCtrl+3', click: nav('nuzlocke') },
+        { label: l('link', t('nav.link', 'Connection')), accelerator: 'CmdOrCtrl+4', click: nav('link') },
+        { label: l('stream', t('nav.stream', 'Stream')), accelerator: 'CmdOrCtrl+5', click: nav('stream') },
       ],
     },
     {
-      label: l('emulator', 'Emulator'),
+      label: l('emulator', t('menu.emulator', 'Emulator')),
       submenu: [
-        { label: l('pause', 'Pause / Weiter'), accelerator: 'P', registerAccelerator: false, click: emu('pause') },
-        { label: l('turbo', 'Turbo umschalten'), accelerator: 'T', registerAccelerator: false, click: emu('turbo') },
-        { label: l('faster', 'Schneller'), accelerator: 'CmdOrCtrl+Plus', click: emu('faster') },
-        { label: l('slower', 'Langsamer'), accelerator: 'CmdOrCtrl+-', click: emu('slower') },
+        { label: l('pause', t('keys.pause', 'Pause / resume')), ...shown('pause', 'P'), click: emu('pause') },
+        { label: l('turbo', t('menu.turbo', 'Toggle turbo')), ...shown('turbo', 'T'), click: emu('turbo') },
+        { label: l('faster', t('menu.faster', 'Faster')), ...shown('faster', MAC ? 'Cmd+Plus' : 'Ctrl+Plus'), click: emu('faster') },
+        { label: l('slower', t('menu.slower', 'Slower')), ...shown('slower', MAC ? 'Cmd+-' : 'Ctrl+-'), click: emu('slower') },
         { type: 'separator' },
-        { label: l('quicksave', 'Schnellspeichern'), accelerator: 'F5', registerAccelerator: false, click: emu('quicksave') },
-        { label: l('quickload', 'Schnellladen'), accelerator: 'F8', registerAccelerator: false, click: emu('quickload') },
-        { label: l('screenshot', 'Screenshot'), accelerator: 'F12', registerAccelerator: false, click: emu('screenshot') },
-        { label: l('mute', 'Ton an/aus'), accelerator: 'M', registerAccelerator: false, click: emu('mute') },
+        { label: l('quicksave', t('menu.quicksave', 'Quick save')), ...shown('quicksave', 'F5'), click: emu('quicksave') },
+        { label: l('quickload', t('menu.quickload', 'Quick load')), ...shown('quickload', 'F8'), click: emu('quickload') },
+        { label: l('screenshot', t('keys.screenshot', 'Screenshot')), ...shown('screenshot', 'F12'), click: emu('screenshot') },
+        { label: l('mute', t('keys.mute', 'Sound on/off')), ...shown('mute', 'M'), click: emu('mute') },
         { type: 'separator' },
-        { label: l('fullscreen', 'Vollbild'), accelerator: MAC ? 'Ctrl+Cmd+F' : 'F11', role: 'togglefullscreen' },
+        { label: l('fullscreen', t('menu.fullscreen', 'Fullscreen')), accelerator: MAC ? 'Ctrl+Cmd+F' : 'F11', role: 'togglefullscreen' },
       ],
     },
     ...(MAC ? [{ role: 'windowMenu' }] : []),
     {
       role: 'help',
       submenu: [
-        { label: l('shortcuts', 'Tastenkürzel'), accelerator: 'CmdOrCtrl+/', click: () => send('menu', 'shortcuts') },
-        { label: l('guide', 'Anleitung'), click: nav('guide') },
+        { label: l('shortcuts', t('menu.shortcuts', 'Keyboard shortcuts')), accelerator: 'CmdOrCtrl+/', click: () => send('menu', 'shortcuts') },
+        { label: l('guide', t('menu.guide', 'Guide')), click: nav('guide') },
         ...(app.isPackaged ? [] : [{ type: 'separator' }, { role: 'toggleDevTools' }, { role: 'reload' }]),
       ],
     },
@@ -349,11 +374,12 @@ function buildMenu(labels = {}) {
 
 handle('pick-files', async (e, opts) => {
   if (!opts || typeof opts !== 'object') opts = {};
+  const t = mainTexts();
   const r = await dialog.showOpenDialog(win, {
-    title: typeof opts.title === 'string' && opts.title ? opts.title.slice(0, 200) : 'Spiele hinzufügen',
+    title: typeof opts.title === 'string' && opts.title ? opts.title.slice(0, 200) : t('lib.addTitle', 'Add games to souldew'),
     properties: opts.folder ? ['openDirectory'] : ['openFile', 'multiSelections'],
     filters: opts.folder ? undefined : [
-      { name: 'ROMs, Patches & Archive', extensions: ['gb', 'gbc', 'gba', 'nds', '3ds', 'cci', 'cxi', 'cia', '3dsx', 'zcci', 'zcxi', 'z3dsx', 'zip', 'xdelta', 'vcdiff', 'bps', 'ups', 'ips', 'json'] },
+      { name: t('dialog.fileTypes', 'ROMs, patches & archives'), extensions: ['gb', 'gbc', 'sgb', 'gba', 'nds', '3ds', 'cci', 'cxi', 'cia', '3dsx', 'zcci', 'zcxi', 'z3dsx', 'zip', 'xdelta', 'vcdiff', 'bps', 'ups', 'ips', 'json'] },
     ],
   });
   if (r.canceled) return [];
@@ -382,10 +408,12 @@ handle('gpu-info', async () => {
   try {
     featureStatus = app.getGPUFeatureStatus();
   } catch {}
-  return { backend: gpu.backend, switches: gpu.switches.map(([n, v]) => (v == null ? `--${n}` : `--${n}=${v}`)), featureStatus, info, processesGone: goneLog.slice() };
+  return { backend: gpu.backend, safe: gpu.safe, switches: gpu.switches.map(([n, v]) => (v == null ? `--${n}` : `--${n}=${v}`)), featureStatus, info, processesGone: goneLog.slice() };
 });
 // "Restart now" (e.g. after changing the graphics backend): quit as usual – the unsaved-progress question may still
-// keep the game open – and start again once quitting is final. Linux: the AppImage file, as the updater does.
+// keep the game open – and start again once quitting is final. Linux: the AppImage file, as the updater does. After a
+// safe start the new one is a normal start (the same arguments without --safe-graphics; SOULDEW_SAFE_GRAPHICS isn't
+// passed on either).
 let relaunching = false;
 handle('relaunch', () => {
   relaunching = true;
@@ -397,8 +425,10 @@ app.on('sls-quit-cancelled', () => {
 app.on('will-quit', () => {
   if (!relaunching) return;
   const appImage = app.isPackaged && LINUX ? appImageFromEnv() : null;
-  if (appImage) app.relaunch(appImageRelaunch(appImage));
-  else app.relaunch();
+  if (gpu.safe) delete process.env.SOULDEW_SAFE_GRAPHICS;
+  const argv = gpu.safe ? withoutSafeGraphics(process.argv) : process.argv;
+  if (appImage) app.relaunch(appImageRelaunch(appImage, argv));
+  else app.relaunch(gpu.safe ? { args: argv.slice(1) } : undefined);
 });
 
 app.on('second-instance', () => {
@@ -409,6 +439,19 @@ app.on('second-instance', () => {
   }
 });
 app.on('window-all-closed', () => app.quit());
+
+// Quitting with a game running: the anonymous "playing now" count (server/lib/presence.mjs) hears "stopped" first –
+// at most 1.5 s, offline it gives up silently. Called off ("keep playing"): the next quit tells it again.
+let presenceStopped = false;
+app.on('before-quit', (e) => {
+  if (presenceStopped || !serverUrl) return; // (no server, no game)
+  presenceStopped = true;
+  e.preventDefault();
+  import('../server/lib/presence.mjs').then((m) => m.stopPresence(1500)).catch(() => {}).finally(() => app.quit());
+});
+app.on('sls-quit-cancelled', () => {
+  presenceStopped = false;
+});
 app.on('activate', () => {
   if (!win && serverUrl) createWindow();
 });
@@ -436,7 +479,8 @@ app.whenReady().then(async () => {
     await boot();
   } catch (e) {
     gpuStartOk(); // not the graphics backend's fault – it doesn't count as a failed start
-    dialog.showErrorBox('souldew konnte nicht starten', String(e?.stack || e));
+    const t = mainTexts();
+    dialog.showErrorBox(t('app.startFailed', 'souldew couldn’t start'), String(e?.stack || e));
     app.quit();
   }
 });

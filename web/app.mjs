@@ -1,12 +1,13 @@
 import { html, render, useState, useEffect, useRef, useCallback, useMemo, useErrorBoundary } from '/vendor/htm-preact.mjs';
 import { api, events } from './lib/api.mjs';
+import { serverErrorText } from './lib/errors.mjs';
 import { RunDoc } from './lib/doc.mjs';
 import { loadData, RunData, speciesName } from './lib/data.mjs';
 import { SyncLink, PARTNER_TTL } from './lib/sync.mjs';
 import { setLang, guessLang, t, onLangChange } from './lib/i18n.mjs';
 import { applyTheme, applyStoredTheme } from './lib/theme.mjs';
-import { detectLayout } from './lib/controls.mjs';
-import { applySnapshot, snapshotFromSave, players as getPlayers, areaName, feedText, othersOf, slotsOf, runMode, checks, loadLocationTables, genOfRun, wipedSlot, failRun } from './lib/run.mjs';
+import { detectLayout, resolveHotkeys, accelerator } from './lib/controls.mjs';
+import { applySnapshot, snapshotFromSave, players as getPlayers, areaName, feedText, othersOf, slotsOf, runMode, checks, loadLocationTables, genOfRun, wipedSlot, failRun, lives as getLives, livesFor, settleLives } from './lib/run.mjs';
 import { play } from './lib/sound.mjs';
 import { Ctx, Toasts, Led, Modal, openExternal } from './lib/ui.mjs';
 import { LINKS } from './lib/links.mjs';
@@ -33,7 +34,8 @@ import { useCoffeeFx, CoffeeFx } from './views/coffee.mjs';
 import { LicenseNag } from './views/nag.mjs';
 import { countLaunch, shouldNag } from './lib/nag.mjs';
 import { mySlotIn } from './lib/restart.mjs';
-import { IS_MAC, IS_WIN, shortcut } from './lib/platform.mjs';
+import { initRules, setupHostRules } from './lib/hostrules.mjs';
+import { IS_MAC, IS_WIN, PLATFORM, shortcut } from './lib/platform.mjs';
 import { TrophiesView, TrophyToasts } from './views/trophies.mjs';
 import { syncTrophies, rememberSlots, watchRun, onTrophyUnlock } from './lib/trophies.mjs';
 
@@ -57,9 +59,20 @@ const pref = {
   },
 };
 
+/** The emulator's shortcuts as the menu shows them (Settings › Controls): config.controls, set once the status is known. */
+let menuControls = null;
+const menuKeys = () => {
+  const hot = resolveHotkeys(menuControls);
+  // '' = no key: the menu entry shows none
+  return Object.fromEntries(['pause', 'turbo', 'faster', 'slower', 'quicksave', 'quickload', 'screenshot', 'mute'].map((id) => [id, accelerator(hot[id][0]) || '']));
+};
+
 /** The desktop menu bar in the UI language (electron/main.mjs builds it from these). */
-function sendMenuLabels() {
-  window.sls?.setMenuLabels?.({
+function sendMenuLabels(controls = menuControls) {
+  menuControls = controls;
+  if (!window.sls?.setMenuLabels) return;
+  window.sls.setMenuLabels({
+    keys: menuKeys(),
     settings: t('menu.settings', 'Settings …'), file: t('menu.file', 'File'), addGames: t('menu.addGames', 'Add games …'),
     revealLibrary: IS_MAC ? t('menu.revealLibrary', 'Show library folder in Finder') : IS_WIN ? t('menu.revealLibraryWin', 'Show library folder in Explorer')
       : t('menu.revealLibraryLinux', 'Show library folder in the file manager'),
@@ -316,7 +329,7 @@ function App() {
       setStatus(s);
       applyTheme(s.config?.theme);
       const lang = await setLang(s.config?.lang || guessLang());
-      sendMenuLabels();
+      sendMenuLabels(s.config?.controls || null);
       await detectLayout(lang); // key names in Help / Settings › Controls
       await Promise.all([loadData(), loadLocationTables(), reloadLibrary()]);
       const id = s.config?.lastRun && s.runs?.some((r) => r.id === s.config.lastRun) ? s.config.lastRun : s.runs?.[0]?.id || null;
@@ -333,6 +346,9 @@ function App() {
     bootUp();
     return onLangChange((l) => { detectLayout(l); sendMenuLabels(); setLangTick((x) => x + 1); });
   }, []);
+  // re-bound shortcuts (Settings › Controls): the menu shows the new keys
+  const controlsSig = JSON.stringify(status?.config?.controls || null);
+  useEffect(() => { if (status) sendMenuLabels(status.config?.controls || null); }, [controlsSig]);
 
   // ---- active run ----------------------------------------------------------------
   // a name typed when joining can arrive after the run's doc is open (the build finishes later): apply it then too
@@ -351,6 +367,7 @@ function App() {
     if (!runId) return;
     let cancelled = false;
     let unsub = null;
+    let stopHost = () => {};
     (async () => {
       const m = await reloadManifest(runId);
       if (!m || cancelled) return;
@@ -362,7 +379,7 @@ function App() {
       setMeState(mySlotIn(m));
       for (const s of slotsOf(m)) if (!d.get(`player:${s}`) && m.players?.[s]) d.set(`player:${s}`, m.players[s]);
       applyJoinName(d, m);
-      if (!d.get('rules') && m.rules) d.set('rules', m.rules);
+      initRules(d, m);
       // Older versions kept the Discord webhook in the shared rules: hand it to the server once (it moves it into
       // this computer's config) and drop it from the doc, so it no longer syncs to the partner.
       const legacy = d.get('rules');
@@ -372,7 +389,13 @@ function App() {
         api.post(`/api/runs/${runId}/meta`, { rules: legacy }).catch(() => {});
         d.set('rules', clean);
       }
-      unsub = d.subscribe(() => setDocVersion((v) => v + 1));
+      // a SoulLink's rules are the host's: signed by its computer, checked when they come in (lib/hostrules.mjs)
+      stopHost = setupHostRules(d, m, { me: mySlotIn(m), reload: () => !cancelled && reloadManifest(runId) });
+      const unsubDoc = d.subscribe(() => setDocVersion((v) => v + 1));
+      unsub = () => {
+        unsubDoc();
+        stopHost();
+      };
       setDoc(d);
       setRunData(rd);
       setDocVersion((v) => v + 1);
@@ -398,15 +421,32 @@ function App() {
     toast({ kind: 'warn', title: t('set.gpuFallbackTitle', 'Graphics backend reset'), text: gpuFallbackText(gpuFallback), ttl: 20000 });
     api.post('/api/config', { gpuFallback: null }).catch(() => {});
   }, [gpuFallback?.from, gpuFallback?.reason]);
+  // A safe graphics start (--safe-graphics, electron/main.mjs): say what it is and where the backend is changed.
+  useEffect(() => {
+    if (!ready || boot || typeof window.sls?.gpuInfo !== 'function') return;
+    window.sls.gpuInfo().then((g) => {
+      if (!g?.safe) return;
+      const choose = PLATFORM === 'win32' || PLATFORM === 'linux';
+      toast({ kind: 'warn', title: t('set.gpuSafeTitle', 'Safe graphics mode'), ttl: 20000,
+        text: choose ? t('set.gpuSafeToast', 'souldew draws without the graphics card this time (slower). Pick another graphics backend in Settings › General, then restart normally.')
+          : t('set.gpuSafeToastMac', 'souldew draws without the graphics card this time (slower). Quit and start it again for the normal mode.') });
+    }).catch(() => {});
+  }, [ready, boot]);
 
   // ---- partner events → toasts & sounds --------------------------------------------
   useEffect(() => {
     if (!runDoc) return;
     const doc = runDoc;
+    // deaths that came in while the run wasn't open (see below) – once the notice below is listening
+    queueMicrotask(() => settleLives(doc, manifest));
     return doc.subscribe((keys, remote, info) => {
       const names = getPlayers(doc, manifest);
       // The partner's timestamps come from their clock, which may be minutes off: shift them by the measured offset.
       const age = (at) => Date.now() - at - (remote ? info?.offset || 0 : 0);
+      // The lives rule for deaths that didn't go through this app's spendLife: a 2.7.4 partner doesn't know the rule,
+      // and two deaths made offline only use up a pool once they meet. Settled from the doc – once, and with the same
+      // log line on every computer (lib/run.mjs settleLives); after this change has gone to every subscriber.
+      if (keys.some((k) => k.startsWith('pair:') || k.startsWith('extra:'))) queueMicrotask(() => settleLives(doc, manifest));
       for (const k of keys) {
         // The run just ended (a wipe here or at the partner's, or marked failed / won): the notice for both.
         if (k === 'run:status') {
@@ -427,6 +467,25 @@ function App() {
             shownDeaths.current.add(id);
             setDeathAlert({ area: k.slice(5), by: p.by || othersOf(me, manifest)[0] || me });
             sfx('death');
+          }
+        }
+        // The lives rule: a death left few lives in its pool – a quiet warning for everyone, once per death.
+        if (k.startsWith('pair:') || k.startsWith('extra:')) {
+          const v = doc.get(k);
+          const at = (k.startsWith('pair:') ? v?.state === 'dead' : v?.dead) ? v.diedAt : 0;
+          const id = `lives:${k}:${at}`;
+          if (at && age(at) < 120000 && !shownDeaths.current.has(id)) {
+            shownDeaths.current.add(id);
+            const slot = k.startsWith('pair:') ? v.by : k.split(':')[1];
+            const pool = livesFor(doc, manifest, slot);
+            // (none left: the run is over – that notice says it)
+            if (pool?.low) {
+              const vars = { n: pool.left, count: pool.left, name: names[slot]?.name || '' };
+              toast({ kind: 'warn', title: t('lives.lowTitle', 'Lives running low'), text: getLives(doc, manifest).pool !== 'player'
+                ? t('lives.lowText', 'Only {n} life left.|Only {n} lives left.', vars)
+                : slot === me ? t('lives.lowMine', 'You have only {n} life left.|You have only {n} lives left.', vars)
+                  : t('lives.lowOther', '{name} has only {n} life left.|{name} has only {n} lives left.', vars) });
+            }
           }
         }
         if (!remote) continue;
@@ -525,7 +584,7 @@ function App() {
     save: (p) => p.runId === runId && applySnapRef.current(snapshotFromSave(p.save)),
     live: (frame) => setLiveInfo({ ...frame, at: Date.now() }),
     'live-status': (s) => setLiveInfo((x) => ({ ...(x || {}), status: s })),
-    'save-error': (p) => p.runId === runId && toast({ kind: 'death', title: t('toast.saveError', 'Save file unreadable'), text: p.error }),
+    'save-error': (p) => p.runId === runId && toast({ kind: 'death', title: t('toast.saveError', 'Save file unreadable'), text: serverErrorText(p) }),
     // a zipped 3DS game being unpacked into the library (server/lib/library.mjs unpackZipGames) – what came of it is
     // told by the page that added it (web/lib/libadded.mjs addedMessage, or the error)
     unpack: (p) => toast(unpackToast(p)),
@@ -542,7 +601,8 @@ function App() {
       onStatus: (s) => linkRef.current === link && setLinkStatus({ ...s }),
       onMessage: (msg) => {
         if (msg.payload?.type === 'ping') {
-          toast({ kind: 'soul', title: t('toast.ping', '{name} pings you', { name: names[msg.from]?.name || t('common.partner', 'Partner') }), text: msg.payload.text || '' });
+          // (the ping's text in our language – the partner's own `text` is in theirs)
+          toast({ kind: 'soul', title: t('toast.ping', '{name} pings you', { name: names[msg.from]?.name || t('common.partner', 'Partner') }), text: t('log.pingText', 'Hey, take a look!') });
           sfx('ping');
         }
       },

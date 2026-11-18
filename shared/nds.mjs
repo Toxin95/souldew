@@ -183,8 +183,113 @@ export function blzDecompress(data) {
 }
 
 /**
+ * The tokens of a backward-LZ encoding of `raw` from its end down to `minKeep` – in decode order, [length, distance]
+ * (length 1: a literal). Matches copy 3–18 bytes from 3–0x1002 bytes above; greedy longest match with one step of
+ * lazy evaluation (a literal first when the next position has a match two longer).
+ */
+function blzTokens(raw, minKeep) {
+  const n = raw.length;
+  const m = n - minKeep; // positions counted from the end: x ↔ raw[n - 1 - x]
+  const at = (x) => raw[n - 1 - x];
+  const head = new Int32Array(1 << 16).fill(-1);
+  const prev = new Int32Array(Math.max(0, m)).fill(-1);
+  const key = (x) => ((at(x) << 8) ^ (at(x + 1) << 4) ^ at(x + 2)) & 0xffff;
+  let hashed = 0;
+  const match = (x) => {
+    if (x + 3 > m) return [0, 0];
+    for (; hashed < x && hashed + 2 < m; hashed++) {
+      const k = key(hashed);
+      prev[hashed] = head[k];
+      head[k] = hashed;
+    }
+    const max = Math.min(18, m - x);
+    let len = 0;
+    let dist = 0;
+    for (let c = head[key(x)], chain = 0; c >= 0 && chain < 512; c = prev[c], chain++) {
+      const d = x - c;
+      if (d > 0x1002) break;
+      if (d < 3) continue;
+      let l = 0;
+      while (l < max && at(x + l) === at(x + l - d)) l++;
+      if (l > len) {
+        len = l;
+        dist = d;
+        if (l === max) break;
+      }
+    }
+    return len >= 3 ? [len, dist] : [0, 0];
+  };
+  const tokens = [];
+  for (let x = 0; x < m;) {
+    let [len, dist] = match(x);
+    if (len && len < 18 && match(x + 1)[0] > len + 1) len = 0;
+    tokens.push(len ? [len, dist] : [1, 0]);
+    x += len || 1;
+  }
+  return tokens;
+}
+
+/**
+ * Backward-LZ encodes `raw` (an ARM9 binary) into exactly `size` bytes – the size of the compressed binary it
+ * replaces, so the ROM's layout, the header and the module params stay as they are – keeping at least its first
+ * `minKeep` bytes as they are (the secure area and the start-up code that decompresses the rest). The compressor packs
+ * tighter than Nintendo's, so more of the start stays uncompressed and the footer takes up the last bytes (up to 255).
+ * The result decompresses in place (the write position never passes the unread data). null if it can't fit.
+ */
+export function blzCompressTo(raw, size, minKeep) {
+  const n = raw.length;
+  const tokens = blzTokens(raw, minKeep);
+  let covered = 0; // bytes from the end the first k tokens decode
+  let packed = 0; // their bytes, without the flag bytes
+  let k = 0;
+  for (; ; k++) {
+    const pad = size - (n - covered) - packed - Math.ceil(k / 8);
+    if (pad >= 8 && pad <= 255) break;
+    if (k === tokens.length) return null;
+    covered += tokens[k][0];
+    packed += tokens[k][0] === 1 ? 1 : 2;
+  }
+  const keep = n - covered;
+  const stream = []; // in decode order (stored back to front)
+  for (let i = 0, x = 0; i < k; i += 8) {
+    const flagAt = stream.push(0) - 1;
+    for (let j = 0; j < 8 && i + j < k; j++) {
+      const [len, dist] = tokens[i + j];
+      if (len === 1) stream.push(raw[n - 1 - x]);
+      else {
+        stream[flagAt] |= 0x80 >> j;
+        const v = ((len - 3) << 12) | (dist - 3);
+        stream.push(v >> 8, v & 0xff);
+      }
+      x += len;
+    }
+  }
+  const out = new Uint8Array(size).fill(0xff);
+  out.set(raw.subarray(0, keep));
+  for (let i = 0; i < stream.length; i++) out[keep + stream.length - 1 - i] = stream[i];
+  const enc = size - keep;
+  const inc = n - size;
+  const footer = [enc & 0xff, (enc >> 8) & 0xff, (enc >> 16) & 0xff, size - keep - stream.length, inc & 0xff, (inc >> 8) & 0xff, (inc >> 16) & 0xff, inc >>> 24];
+  out.set(footer, size - 8);
+  // in place: the bytes still to read lie below the next one written
+  let pak = keep + stream.length;
+  let w = n;
+  for (let i = 0; i < k; i += 8) {
+    pak--;
+    for (let j = 0; j < 8 && i + j < k; j++) {
+      const len = tokens[i + j][0];
+      pak -= len === 1 ? 1 : 2;
+      w -= len;
+      if (w < pak) return null;
+    }
+  }
+  return out;
+}
+
+/**
  * The ARM9 binary as it runs (decompressed), plus its RAM address and the NitroSDK module params: { bytes, ram,
- * bssStart, bssEnd } – `bssStart` is where the static data of the main program begins in RAM.
+ * bssStart, bssEnd, packed } – `bssStart` is where the static data of the main program begins in RAM, `packed` the
+ * size of the compressed binary in the ROM (0: stored uncompressed).
  */
 export function ndsArm9(rom) {
   const h = ndsHeader(rom);
@@ -199,8 +304,9 @@ export function ndsArm9(rom) {
     }
   }
   const compEnd = params >= 0 ? u32(bin, params + 0x14) : 0;
-  if (compEnd > ram && compEnd - ram <= bin.length) bin = blzDecompress(bin.subarray(0, compEnd - ram));
-  return { bytes: bin, ram, bssStart: params >= 0 ? u32(bin, params + 0x0c) : null, bssEnd: params >= 0 ? u32(bin, params + 0x10) : null };
+  const packed = compEnd > ram && compEnd - ram <= bin.length ? compEnd - ram : 0;
+  if (packed) bin = blzDecompress(bin.subarray(0, packed));
+  return { bytes: bin, ram, bssStart: params >= 0 ? u32(bin, params + 0x0c) : null, bssEnd: params >= 0 ? u32(bin, params + 0x10) : null, packed };
 }
 
 /** One file of the ROM by its path ("a/0/2/7"), or null. */

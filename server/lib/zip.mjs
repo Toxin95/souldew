@@ -14,6 +14,16 @@ const crc32 = typeof zlib.crc32 === 'function' ? zlib.crc32 : crc32js;
 /** Largest entry we ever decompress into memory (biggest NDS ROMs are 512 MB). Protects against zip bombs. */
 export const MAX_ENTRY_SIZE = 600 * 1024 * 1024;
 
+/** Central directory held in RAM while listing – a zip of ROMs is a few KB; refuse multi-GB directories. */
+export const MAX_CD_BYTES = 4 * 1024 * 1024;
+/** Hard cap on entries we parse from one zip (library zips hold a handful of files). */
+export const MAX_ZIP_ENTRIES = 4096;
+/**
+ * When streaming a deflate entry to disk: refuse if uncompressed/compressed exceeds this.
+ * Real 3DS dumps are encrypted / high-entropy (ratio ≈ 1); a zeros bomb is thousands-to-one.
+ */
+export const MAX_INFLATE_RATIO = 64;
+
 function readAt(fd, pos, len) {
   const buf = Buffer.alloc(len);
   let off = 0;
@@ -55,6 +65,8 @@ export function listZip(path) {
       }
     }
     if (!(cdOffset >= 0 && cdSize >= 0 && cdOffset + cdSize <= size)) throw new Error('Corrupt zip (central directory out of range)');
+    if (cdSize > MAX_CD_BYTES) throw new Error(`Zip central directory too large (${cdSize} bytes)`);
+    if (count > MAX_ZIP_ENTRIES) throw new Error(`Zip has too many entries (${count})`);
     const cd = readAt(fd, cdOffset, cdSize);
     const entries = [];
     let p = 0;
@@ -163,6 +175,17 @@ export function freeBytes(dir, { statfs = statfsSync } = {}) {
 }
 
 /**
+ * True when a deflate entry's declared sizes imply an absurd compression ratio (zip bomb that still matches CRC).
+ * Stored entries are never flagged here.
+ */
+export function inflateRatioTooHigh(entry) {
+  if (entry.method !== 8) return false;
+  if (!(entry.uncompSize > 0)) return false;
+  if (!(entry.compSize > 0)) return true;
+  return entry.uncompSize / entry.compSize > MAX_INFLATE_RATIO;
+}
+
+/**
  * Stream one entry into the file `dest` – never held in memory, any size up to `maxSize` (ZIP64 sizes and offsets
  * come from listZip). Written to a hidden temp file next to `dest` (the library scan skips it) and renamed once the
  * size and the CRC32 match the central directory; on any failure the temp file is removed and nothing is at `dest`.
@@ -174,6 +197,7 @@ export async function extractZipEntry(zipPath, entry, dest, { maxSize = Infinity
   if (entry.flags & 1) throw zipError('method', `Encrypted zip entry: ${entry.name}`);
   if (![0, 8].includes(entry.method)) throw zipError('method', `Unsupported zip compression method ${entry.method} in ${entry.name}`);
   if (!(entry.uncompSize >= 0 && entry.uncompSize <= maxSize)) throw zipError('tooLarge', `Zip entry too large: ${entry.name}`);
+  if (inflateRatioTooHigh(entry)) throw zipError('tooLarge', `Zip entry compression ratio too high: ${entry.name}`);
   if (entry.method === 0 && entry.compSize !== entry.uncompSize) throw zipError('damaged', `Corrupt zip (stored entry sizes differ): ${entry.name}`);
   let dataStart;
   const fd = openSync(zipPath, 'r');

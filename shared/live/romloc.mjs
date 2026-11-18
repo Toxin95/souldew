@@ -8,7 +8,9 @@
 //          (shared/live/location.mjs finds it through the NitroSDK module params, like the party reader).
 //   Gen 5  the zone headers (a/0/1/2, 48 bytes per zone, name index at +0x1A) and the location-name text file of
 //          a/0/0/2 (#89 Black/White, #109 Black 2/White 2) – checked against the US/EU ROMs of all four games: the
-//          names equal PKHeX's Gen 5 met locations.
+//          names equal PKHeX's Gen 5 met locations. All four also hand over the zone headers themselves
+//          (`zoneHeaders`, hex): the game keeps a copy of the current zone's header in RAM, and that copy is how the
+//          live reader finds the zone in every language.
 // The location name index is the same number the game stores as a catch's met location, so a place read this way
 // pairs with catches exactly like the table-based one (shared/live/location.mjs). Tables are found by their
 // structure (signature scans), not by fixed offsets; anything that doesn't validate gives null, never a guess.
@@ -33,6 +35,163 @@ export function prettyName(s) {
   const upper = (s.match(/[A-ZÀ-Þ]/g) || []).length;
   if (lower * 3 >= upper) return s;
   return s.toLowerCase().replace(/(^|[\s.\-(])([a-zà-ÿ])/g, (_, a, b) => a + b.toUpperCase());
+}
+
+// ---------------------------------------------------------------- Gen 1/2 (Game Boy)
+
+// The Game Boy games keep a copy of the current map's header in WRAM, and that copy is how the live reader tells where
+// the player is in every language (shared/live/location.mjs readGen1/readGen2): the header's bytes are the ROM's own,
+// wherever another language keeps its variables. Here: the ROM's headers, found by their structure.
+const gbPtr = (p) => p >= 0x4000 && p < 0x8000;
+const gbAt = (bank, ptr) => bank * 0x4000 + (ptr - 0x4000);
+const gbHex = (b) => Array.from(b, (v) => v.toString(16).padStart(2, '0')).join('');
+
+/**
+ * Gen 1 (Red/Blue/Yellow): the map headers by map id – pokered MapHeaderPointers (dw per map, home bank; Yellow: bank
+ * 0x3F) and MapHeaderBanks (db per map). A header starts with the 10 bytes LoadMapHeader copies to wCurMapHeader
+ * (home/overworld.asm): tileset, height, width, blocks, text and script pointers, connection flags. The two tables are
+ * found by the first nine maps (the towns Pallet … Fuchsia: tileset 0, OVERWORLD, in every game and language) and
+ * kept when nearly every entry is a header. `maps`: how many map ids the game has (NUM_MAPS – pokered 248, pokeyellow
+ * 249: Summer Beach House). → { headers: [hex of the 10 bytes, or null], offset: { pointers, banks } } or null.
+ * ~0.2 s for 1 MB; the work stays bounded for any bytes (a damaged or made-up ROM gives null, it never runs on).
+ */
+export function gen1MapHeaders(rom, maps = 248) {
+  const N = maps;
+  const banks = Math.min(rom.length >> 14, 256); // (a bank is one byte in MapHeaderBanks)
+  const header = (o) => o >= 0 && o + 10 <= rom.length && rom[o] < 0x18 && rom[o + 1] >= 1 && rom[o + 1] <= 0x60 && rom[o + 2] >= 1 && rom[o + 2] <= 0x60 && gbPtr(u16(rom, o + 3)) && gbPtr(u16(rom, o + 5)) && gbPtr(u16(rom, o + 7)) && !(rom[o + 9] & 0xf0);
+  // a header (a town's: tileset 0) in bank k behind pointer ptr
+  const at = (k, ptr) => k >= 1 && k < banks && header(gbAt(k, ptr));
+  const town = (k, ptr) => at(k, ptr) && rom[gbAt(k, ptr)] === 0;
+  // whether any bank holds such a header behind a pointer – worked out once per pointer, so the search stays a pass or
+  // two over the ROM whatever its bytes are (bit 0 known, bit 1 a header, bit 2 a town's)
+  const behind = new Uint8Array(0x4000);
+  const any = (ptr) => {
+    const i = ptr - 0x4000;
+    if (!behind[i]) {
+      behind[i] = 1;
+      for (let k = 1; k < banks && behind[i] !== 7; k++) if (at(k, ptr)) behind[i] |= rom[gbAt(k, ptr)] === 0 ? 6 : 2;
+    }
+    return behind[i];
+  };
+  const TOWNS = 9;
+  const MIN = 200;
+  // A game has one pair of tables – and the same tables a map or more in (Red: 17 pointer tables, 15 pairs). The bounds
+  // keep bytes made to look like many of them from taking minutes (each pointer table costs a pass over the ROM): past
+  // them, no tables – never a guess
+  const MAX_STARTS = 4096;
+  const MAX_TABLES = 64;
+  const MAX_PAIRS = 256;
+  const count = (p, b) => {
+    let n = 0;
+    for (let i = 0; i < N && p + i * 2 + 2 <= rom.length && b + i < rom.length; i++) {
+      const k = rom[b + i];
+      if (k && k < banks && gbPtr(u16(rom, p + i * 2)) && header(gbAt(k, u16(rom, p + i * 2)))) n++;
+    }
+    return n;
+  };
+  let best = null;
+  let tie = false;
+  let starts = 0;
+  let tables = 0;
+  let pairs = 0;
+  for (let p = 0; p + N * 2 <= rom.length; p++) {
+    let i = 0;
+    while (i < TOWNS && gbPtr(u16(rom, p + i * 2)) && any(u16(rom, p + i * 2)) & 4) i++;
+    if (i < TOWNS) continue;
+    if (++starts > MAX_STARTS) return null;
+    // nearly every pointer of the table leads to a header in some bank (before the pass over the ROM for the banks)
+    let led = 0;
+    for (let t = 0; t < N && led + N - t >= MIN; t++) if (gbPtr(u16(rom, p + t * 2)) && any(u16(rom, p + t * 2)) & 2) led++;
+    if (led < MIN) continue;
+    if (++tables > MAX_TABLES) return null;
+    // the banks byte of each town must be one its pointer can be in (a pointer to the start of a bank fits many) –
+    // looked up per byte value, so the pass is a few array reads per ROM byte
+    const ok = new Uint8Array(TOWNS * 256);
+    for (let j = 0; j < TOWNS; j++) for (let k = 1; k < 256; k++) ok[j * 256 + k] = town(k, u16(rom, p + j * 2)) ? 1 : 0;
+    for (let b = 0; b + N <= rom.length; b++) {
+      let j = 0;
+      while (j < TOWNS && ok[j * 256 + rom[b + j]]) j++;
+      if (j < TOWNS) continue;
+      if (++pairs > MAX_PAIRS) return null;
+      const n = count(p, b);
+      // (the same tables a few maps in are a candidate too – with fewer headers: the start has the most)
+      if (!best || n > best.n) [best, tie] = [{ p, b, n }, false];
+      else if (n === best.n && best.p - p !== 2 * (best.b - b)) tie = true;
+    }
+  }
+  if (!best || tie || best.n < MIN) return null;
+  const headers = [];
+  for (let i = 0; i < N; i++) {
+    const k = rom[best.b + i];
+    const o = gbAt(k, u16(rom, best.p + i * 2));
+    headers.push(k && k < banks && gbPtr(u16(rom, best.p + i * 2)) && header(o) ? gbHex(rom.subarray(o, o + 10)) : null);
+  }
+  return { headers, offset: { pointers: best.p, banks: best.b } };
+}
+
+/**
+ * Gen 2 (Gold/Silver/Crystal): every map's 17 bytes that the game copies to wMapPartial + wMapAttributes (pokecrystal
+ * home/map.asm CopyMapPartial, CopyMapAttributes; wram.asm: the two follow each other) – the map's header in
+ * MapGroupPointers' group (bank of the attributes, tileset, environment, attributes pointer) and its 12 bytes of
+ * attributes (border block, height, width, blocks bank + pointer, scripts bank + pointer, events pointer,
+ * connections). Found by the group table's structure: 20+ pointers in one bank, each to 9-byte map headers whose
+ * attributes are valid. → { maps: { 'group.number' (1-based, as pret's constants): hex }, offset } or null.
+ */
+export function gen2MapHeaders(rom) {
+  const banks = rom.length >> 14;
+  const bankOk = (k) => k >= 1 && k < banks;
+  const attrs = (o) => o + 12 <= rom.length && rom[o + 1] >= 1 && rom[o + 1] <= 0x60 && rom[o + 2] >= 1 && rom[o + 2] <= 0x60 && bankOk(rom[o + 3]) && gbPtr(u16(rom, o + 4)) && bankOk(rom[o + 6]) && gbPtr(u16(rom, o + 7)) && gbPtr(u16(rom, o + 9)) && !(rom[o + 11] & 0xf0);
+  // environment 1–7: TOWN … DUNGEON (pokecrystal constants/map_data_constants.asm)
+  const header = (o) => o + 9 <= rom.length && bankOk(rom[o]) && rom[o + 2] >= 1 && rom[o + 2] <= 7 && gbPtr(u16(rom, o + 3)) && attrs(gbAt(rom[o], u16(rom, o + 3)));
+  const MIN = 20;
+  for (let g = 0x4000; g + MIN * 2 <= rom.length; g++) {
+    const bank = g >> 14;
+    let n = 0;
+    while (n < 64 && g + n * 2 + 2 <= (bank + 1) * 0x4000 && gbPtr(u16(rom, g + n * 2)) && header(gbAt(bank, u16(rom, g + n * 2)))) n++;
+    if (n < MIN) continue;
+    const ptrs = Array.from({ length: n }, (_, i) => u16(rom, g + i * 2));
+    const maps = {};
+    ptrs.forEach((p, gi) => {
+      // a group's maps end where the next group's begin
+      const next = ptrs.filter((x) => x > p).sort((a, b) => a - b)[0] ?? 0x8000;
+      for (let m = 0; m < 128 && p + m * 9 < next; m++) {
+        const o = gbAt(bank, p + m * 9);
+        if (!header(o)) break;
+        const a = gbAt(rom[o], u16(rom, o + 3));
+        maps[`${gi + 1}.${m + 1}`] = gbHex(rom.subarray(o, o + 5)) + gbHex(rom.subarray(a, a + 12));
+      }
+    });
+    return { maps, offset: g };
+  }
+  return null;
+}
+
+/**
+ * The map headers of a Game Boy game for the live reader (gen1MapHeaders / gen2MapHeaders), checked against the map
+ * table souldew has for its memory table entry (shared/data/maps.json `table`): Gen 2 must have exactly the maps of
+ * that table – the same groups, the same number of maps in each – so a map's number means the same place; Gen 1's
+ * table has all map ids (Red/Blue 248, Yellow 249 – the unused ones too, which have no header: Red US 226 headers). → { gen: 1, headers } /
+ * { gen: 2, maps } or null (another layout: a hack with maps of its own, or a table not found – the reader then falls
+ * back to the fixed addresses).
+ */
+export function gbMapHeaders(rom, gen, table) {
+  try {
+    if (!rom || !table) return null;
+    const keys = Object.keys(table).filter((k) => !k.startsWith('_'));
+    if (gen === 1) {
+      const g = gen1MapHeaders(rom, keys.length);
+      return g && g.headers.length === keys.length ? { gen: 1, headers: g.headers } : null;
+    }
+    if (gen === 2) {
+      const g = gen2MapHeaders(rom);
+      if (!g) return null;
+      const found = Object.keys(g.maps);
+      return found.length === keys.length && keys.every((k) => g.maps[k]) ? { gen: 2, maps: g.maps } : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------- Gen 3 (GBA)
@@ -179,6 +338,39 @@ export function gen3Names(rom, charset, code = String.fromCharCode(...rom.subarr
  * or null.
  */
 export function gen3MapTable(rom) {
+  const groups = gen3MapGroups(rom);
+  if (!groups) return null;
+  const mapsec = {};
+  for (const [key, h] of groups.maps) mapsec[key] = rom[h + 0x14];
+  const len = rom.length;
+  // IWRAM addresses in the code's literal pools, most used first
+  const count = new Map();
+  for (let o = 0; o + 4 <= len; o += 4) {
+    const v = u32(rom, o);
+    if (v >= 0x03000000 && v < 0x03008000 && (v & 3) === 0) count.set(v, (count.get(v) || 0) + 1);
+  }
+  const iwram = [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, 16).map(([v]) => v);
+  return { mapsec, iwram, party3: partyPair(rom), gMain: gMainOf(rom), flags3: gen3FlagsAt(rom, iwram), offset: groups.offset };
+}
+
+/**
+ * The ROM's map headers for the live reader's check of gMapHeader (shared/live/location.mjs readGen3): the game copies
+ * the current map's header there (pokeemerald src/overworld.c LoadCurrentMapData: gMapHeader =
+ * *Overworld_GetMapHeaderByGroupAndId(…)), so its events pointer (+0x04) and region map section (+0x14) are those of
+ * one of the ROM's maps. (Not the layout pointer at +0x00: LoadCurrentMapData puts in the layout the save names, which
+ * the Trick House, the Battle Pyramid and others change – GetMapLayout.) → hex of 5 bytes per map (events u32 in the
+ * ROM's byte order, section u8), or null. Emerald: 518 maps.
+ */
+export function gen3MapHeaders(rom) {
+  const groups = gen3MapGroups(rom);
+  if (!groups) return null;
+  let out = '';
+  for (const [, h] of groups.maps) for (const o of [4, 5, 6, 7, 0x14]) out += rom[h + o].toString(16).padStart(2, '0');
+  return out;
+}
+
+/** gMapGroups: the group table's offset and every map's header offset ['group.num', offset], or null. */
+function gen3MapGroups(rom) {
   const len = rom.length;
   const isPtr = (v) => v >= 0x08000000 && v < 0x08000000 + len && (v & 3) === 0;
   const header = (v) => {
@@ -203,7 +395,7 @@ export function gen3MapTable(rom) {
   if (table < 0) return null;
   const groups = [];
   for (let i = 0; table + i * 4 < len && groupOk(u32(rom, table + i * 4)); i++) groups.push(u32(rom, table + i * 4));
-  const mapsec = {};
+  const maps = [];
   groups.forEach((g, gi) => {
     // a group's array ends where the next one's begins (they are laid out one after the other)
     const next = groups.filter((x) => x > g).sort((a, b) => a - b)[0];
@@ -212,17 +404,36 @@ export function gen3MapTable(rom) {
       if (next && g + n * 4 >= next) break;
       const h = u32(rom, at);
       if (!header(h)) break;
-      mapsec[`${gi}.${n}`] = rom[h - 0x08000000 + 0x14];
+      maps.push([`${gi}.${n}`, h - 0x08000000]);
     }
   });
-  // IWRAM addresses in the code's literal pools, most used first
+  return { maps, offset: table };
+}
+
+/**
+ * Where SaveBlock1 keeps the event flags, from the code: GetFlagPointer (and the FlagGet/FlagSet it is inlined into)
+ * loads gSaveBlock1Ptr and the offset of `flags` from one literal pool, next to the bound of the special flags (0x3FFF
+ * in the retail build, -0x4000 and gSpecialFlags in a newer compiler's). Retail Emerald: 0x1270 behind 0x03005D8C;
+ * Modern Emerald grew SaveBlock1 in front of them: 0x1364 behind 0x030036F0 (both measured). `iwram`: the IWRAM
+ * addresses the code names most (gSaveBlock1Ptr among them). → { sb1Ptr, flags } (the pair seen most) or null.
+ */
+export function gen3FlagsAt(rom, iwram = []) {
+  const top = new Set(iwram);
   const count = new Map();
-  for (let o = 0; o + 4 <= len; o += 4) {
-    const v = u32(rom, o);
-    if (v >= 0x03000000 && v < 0x03008000 && (v & 3) === 0) count.set(v, (count.get(v) || 0) + 1);
+  for (let o = 12; o + 16 <= rom.length; o += 4) {
+    const p = u32(rom, o);
+    if (!top.has(p)) continue;
+    const near = (d) => u32(rom, o + d);
+    if (![-12, -8, -4, 4, 8].some((d) => near(d) === 0x3fff || near(d) === 0xffffc000)) continue;
+    for (const d of [-4, 4]) {
+      const c = near(d);
+      if (c >= 0x800 && c < 0x8000 && c !== 0x3fff) count.set(`${p}:${c}`, (count.get(`${p}:${c}`) || 0) + 1);
+    }
   }
-  const iwram = [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, 16).map(([v]) => v);
-  return { mapsec, iwram, party3: partyPair(rom), gMain: gMainOf(rom), offset: table };
+  const [best, second] = [...count.entries()].sort((a, b) => b[1] - a[1]);
+  if (!best || (second && second[1] === best[1])) return null;
+  const [sb1Ptr, flags] = best[0].split(':').map(Number);
+  return { sb1Ptr, flags };
 }
 
 /**
@@ -245,7 +456,7 @@ export function gMainOf(rom) {
 
 /**
  * gPlayerParty and gEnemyParty of an expanded Gen 3 engine, from the code: two EWRAM addresses 600 bytes apart (six
- * 100-byte structs) among the ones its literal pools hold most often – the pair used most, the player's party the
+ * 100-byte structs, or twelve with another party array between them) among the ones its literal pools hold most often – the pair used most, the player's party the
  * busier of the two (Too Many Types 2: 0x02032C94 577 times, gEnemyParty 0x02032A3C 275 times). → { player, enemy } or
  * null. Only a hint: the live reader takes it when the RAM there holds a team (parse.mjs findGen3Party).
  */
@@ -257,12 +468,31 @@ export function partyPair(rom) {
   }
   const top = [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, 64);
   let best = null;
-  for (const [a, n] of top) {
-    const m = count.get(a + 600) || 0;
-    if (m < 20 || !top.some(([v]) => v === a + 600)) continue;
-    if (!best || n + m > best.n) best = { n: n + m, player: n >= m ? a : a + 600, enemy: n >= m ? a + 600 : a };
+  // (two arrays apart: Modern Emerald keeps gPlayerPartyBackup between the two – named twice, the parties 600 and 205
+  // times)
+  for (const gap of [600, 1200]) {
+    for (const [a, n] of top) {
+      const m = count.get(a + gap) || 0;
+      if (m < 20 || !top.some(([v]) => v === a + gap)) continue;
+      if (!best || n + m > best.n) best = { n: n + m, player: n >= m ? a : a + gap, enemy: n >= m ? a + gap : a };
+    }
   }
   return best ? { player: best.player, enemy: best.enemy } : null;
+}
+
+/**
+ * Did a Gen 3 ROM move the base game's RAM? The retail code names gPlayerParty (addresses.json `partyAddr`) in hundreds
+ * of literal pools (Emerald 1,091 times), and so does a binary hack built on it (Light Platinum, Emerald Kaizo). A hack
+ * rebuilt from the pret disassembly with variables of its own (Modern Emerald: gPlayerParty 0x0201D9CC instead of
+ * 0x020244EC, gSaveBlock1Ptr and gMain moved too) names it a handful of times at most – its team, its save blocks and
+ * its battle flag have to be found instead of read at the retail addresses.
+ */
+export function gen3RamMoved(rom, entry) {
+  const at = typeof entry?.partyAddr === 'string' ? parseInt(entry.partyAddr, 16) : Number(entry?.partyAddr);
+  if (!(at >= 0x02000000 && at < 0x02040000)) return false;
+  let n = 0;
+  for (let o = 0; o + 4 <= rom.length; o += 4) if (u32(rom, o) === at && ++n >= 16) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------- Gen 4 (DS)
@@ -462,14 +692,19 @@ function gen5(rom, h, files) {
   const zoneNarc = ndsFile(rom, 'a/0/1/2', files);
   const msgNarc = ndsFile(rom, 'a/0/0/2', files);
   if (!zoneNarc || !msgNarc) return null;
-  const map = gen5ZoneLocations(parseNarc(zoneNarc)[0]);
+  const zones = parseNarc(zoneNarc)[0];
+  const map = gen5ZoneLocations(zones);
   const msg = parseNarc(msgNarc)[GEN5[family].msgFile];
   if (!map || !msg) return null;
   const names = gen5PlaceNames(msg);
   // fail closed: nearly every zone must name an existing place, and most places must have a name
   const inRange = map.filter((v) => v < names.length).length;
   if (names.length < 50 || inRange < map.length * 0.95 || names.filter(Boolean).length < names.length * 0.6) return null;
-  return { gen: 5, family, mapLoc: map.map((v) => (v < names.length ? v : 0)), names, source: { zones: 'a/0/1/2#0', msg: `a/0/0/2#${GEN5[family].msgFile}` } };
+  const out = { gen: 5, family, mapLoc: map.map((v) => (v < names.length ? v : 0)), names, source: { zones: 'a/0/1/2#0', msg: `a/0/0/2#${GEN5[family].msgFile}` } };
+  // the games keep a copy of the current zone's header in RAM (shared/live/location.mjs finds it by these bytes) –
+  // Black/White since 2.7.5, Black 2/White 2 since 2.8.0
+  out.zoneHeaders = Array.from(zones, (v) => v.toString(16).padStart(2, '0')).join('');
+  return out;
 }
 
 // ---------------------------------------------------------------- entry point

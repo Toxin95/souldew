@@ -51,7 +51,7 @@ test('the host\'s arguments: the core, the RAM the live reader needs, souldew\'s
   // GBA: EWRAM and IWRAM, as player.html maps them
   assert.deepEqual(hostArgs({ system: 'gba', core: 'c', rom: 'r', saveDir: 's', systemDir: 'y' }).filter((x, i, l) => l[i - 1] === '--ram'), ['0x2000000:0x40000', '0x3000000:0x8000']);
   assert.ok(!hostArgs({ system: 'gb', core: 'c', rom: 'r', saveDir: 's', systemDir: 'y' }).includes('--sram')); // no save: none given
-  assert.throws(() => hostArgs({ system: '3ds', core: 'c', rom: 'r', saveDir: 's', systemDir: 'y' }), /nativer Kern/);
+  assert.throws(() => hostArgs({ system: '3ds', core: 'c', rom: 'r', saveDir: 's', systemDir: 'y' }), { code: 'nativeSystem' });
   // every core has its own id for save states (a browser-emulator state can't be loaded here)
   assert.equal(new Set(Object.values(NATIVE_CORES).map((c) => c.id)).size, 3);
 });
@@ -70,7 +70,7 @@ test('the commands a page may send: known types, sane sizes, nothing left over',
     Buffer.concat([command(NCMD.RESET), Buffer.from([1, 2, 3])]), // a cut-off message after it
     Buffer.alloc(0),
   ];
-  for (const b of bad) assert.throws(() => checkNativeCommands(b), (e) => e.code === 'badCommand' || /Befehl/.test(e.message));
+  for (const b of bad) assert.throws(() => checkNativeCommands(b), (e) => e.code === 'badCommand');
 });
 
 /** A stand-in host: records how it was started and what it was sent. */
@@ -98,16 +98,16 @@ test('a session: the battery save goes to the host as a file, commands are check
   assert.equal(sram, join(nativeSaveDir('solo-red'), 'boot.sav'));
   assert.deepEqual([...readFileSync(sram)], [1, 2, 3, 4]);
   s.send(id, command(NCMD.RESET));
-  assert.throws(() => s.send(id, command(77)), /Befehl/);
-  assert.throws(() => s.send('nope', command(NCMD.RESET)), /Keine laufende Sitzung/);
+  assert.throws(() => s.send(id, command(77)), { code: 'badCommand' });
+  assert.throws(() => s.send('nope', command(NCMD.RESET)), { code: 'noNativeSession' });
   // no save the next time: the old one doesn't come back
   s.startNative({ rom: '/r/red.gb', key: 'solo-red', system: 'gb', tools, save: null });
   assert.ok(!calls[1].args.includes('--sram'));
   assert.equal(existsSync(sram), false);
   // the first host was told to quit
   assert.ok(Buffer.concat(calls[0].child.sent).includes(command(NCMD.QUIT)));
-  assert.throws(() => s.startNative({ rom: 'r', key: 'k', system: 'nds', tools }), /fehlt/);
-  assert.throws(() => s.startNative({ rom: 'r', key: 'k', system: 'gb', tools, save: Buffer.alloc(5 * 1024 * 1024) }), /zu groß/);
+  assert.throws(() => s.startNative({ rom: 'r', key: 'k', system: 'nds', tools }), { code: 'nativeMissing' });
+  assert.throws(() => s.startNative({ rom: 'r', key: 'k', system: 'gb', tools, save: Buffer.alloc(5 * 1024 * 1024) }), { code: 'saveTooLarge' });
   // the battery save is kept for a page that connects late, like events and save states
   assert.ok(s.keepTypes.includes(9));
   s.stop();
@@ -137,7 +137,14 @@ test('a battery save that comes after the page has gone is stored where the play
 
 // ---- the real host --------------------------------------------------------------------------------------------------
 const hosts = []; // the real hosts started here – killed when a test failed half way
-test.after(() => hosts.forEach((p) => p.exitCode === null && p.kill('SIGKILL')));
+test.afterEach(() => hosts.splice(0).forEach((p) => p.exitCode === null && p.signalCode === null && p.kill('SIGKILL')));
+/** The exit code of a host that should end now – a test fails (instead of waiting forever) when it doesn't. */
+const exitOf = (p, exit = new Promise((res) => p.once('exit', (code) => res(code))), ms = 10000) => {
+  if (p.exitCode !== null) return Promise.resolve(p.exitCode);
+  let t;
+  const late = new Promise((_, rej) => (t = setTimeout(() => rej(new Error(`the host didn't end within ${ms / 1000} s`)), ms)));
+  return Promise.race([exit, late]).finally(() => clearTimeout(t));
+};
 const toolsDir = nativeDirs().find((d) => existsSync(join(d, EXE)) && existsSync(join(d, `gambatte_libretro.${EXT}`)));
 
 /**
@@ -271,7 +278,7 @@ test('the real host: RAM mirror, exact steps, cheats, save states, the battery s
 
     // a header that announces more than the host takes: it ends cleanly (as when souldew goes away)
     h.p.stdin.write(Buffer.concat([u32(1), u32(0x7fffffff)]));
-    assert.equal(await h.exit, 0);
+    assert.equal(await exitOf(h.p, h.exit), 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -286,7 +293,7 @@ test('the real host: QUIT hands over the last battery save; a ROM it can\'t load
     h.send(NCMD.STEP, u32(10));
     await h.until(() => h.events.some((e) => e.event === 'stepped'));
     h.send(NCMD.QUIT);
-    assert.equal(await h.exit, 0);
+    assert.equal(await exitOf(h.p, h.exit), 0);
     assert.ok(h.srams.length >= 1); // the counter changed the save: it came before the host left
 
     const bad = join(dir, 'bad.gb');
@@ -295,7 +302,8 @@ test('the real host: QUIT hands over the last battery save; a ROM it can\'t load
     let out = Buffer.alloc(0);
     p.stdout.on('data', (c) => (out = Buffer.concat([out, c])));
     p.stderr.on('data', () => {});
-    const code = await new Promise((res) => p.on('exit', res));
+    hosts.push(p);
+    const code = await exitOf(p);
     assert.equal(code, 1);
     const ev = splitMessages(out).messages.filter((m) => m.type === 7).map((m) => JSON.parse(m.payload.toString()));
     assert.ok(ev.some((e) => e.event === 'error'));

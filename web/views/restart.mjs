@@ -3,13 +3,14 @@
 // players; a solo Nuzlocke has nobody to tell.
 import { html, useState, useEffect } from '/vendor/htm-preact.mjs';
 import { useApp, Modal, Sprite, Led } from '../lib/ui.mjs';
-import { counts, players as getPlayers, live, resumeRun, runMode, slotsOf, runStats } from '../lib/run.mjs';
+import { counts, players as getPlayers, live, resumeRun, runMode, slotsOf, runStats, lives as getLives } from '../lib/run.mjs';
 import { speciesName } from '../lib/data.mjs';
 import { Icon } from '../lib/icons.mjs';
 import { t } from '../lib/i18n.mjs';
 import { restartRun, mySlotIn } from '../lib/restart.mjs';
 import { api } from '../lib/api.mjs';
-import { ShareButton } from './liveshare.mjs';
+import { ShareButton, HallOfFame } from './liveshare.mjs';
+import { IntroSaveOption, useIntroSave } from './introsave.mjs';
 import { endEvent } from '../lib/liveshare.mjs';
 import { numberedName, baseName, newAttempt, restartPlan, RESTART_KEY, CLAIM_TTL } from '/shared/restart.mjs';
 
@@ -23,6 +24,9 @@ export function RestartModal({ r, rules, onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [lost, setLost] = useState(false); // our build lost a same-moment race and was set aside
+  // the intro save kept for this game (server/lib/introsave.mjs): the new attempt starts from it unless unticked
+  const [intro, forgetIntro] = useIntroSave(`run=${r.id}`);
+  const [fromIntro, setFromIntro] = useState(true);
   const next = numberedName(baseName(r.name), status?.runs);
   const solo = runMode(r) === 'nuzlocke';
   const n = slotsOf(r).length;
@@ -68,7 +72,7 @@ export function RestartModal({ r, rules, onClose }) {
       // open the old run – their app offers to join the new one
       const out = await newAttempt({
         doc: live, entry: live ? null : saved ?? null, me: mine, byName: myName, runs: status?.runs,
-        build: () => restartRun(r, { runs: status?.runs, ...(rules ? { rules } : {}) }),
+        build: () => restartRun(r, { runs: status?.runs, ...(rules ? { rules } : {}), introSave: !!intro && fromIntro }),
         discard: (id) => api.del(`/api/runs/${id}`),
       });
       if (!out.started) {
@@ -130,7 +134,10 @@ export function RestartModal({ r, rules, onClose }) {
       ${randomized === false && html`<li>${t('restart.same2NoRnd', 'no randomizer – the same Pokémon as last time')}</li>`}
       ${!solo && html`<li>${n > 2 ? t('restart.same3Group', 'the other players get an invitation to join right away') : t('restart.same3', 'your partner gets an invitation to join right away')}</li>`}
     </ul>
-    <p class="small faint">${t('restart.note', 'Saves, encounters and the board start empty. “{old}” stays in your list as it is.', { old: r.name })}</p>
+    <${IntroSaveOption} intro=${intro} forget=${forgetIntro} on=${fromIntro} onChange=${setFromIntro} disabled=${busy} />
+    <p class="small faint">${intro && fromIntro ? t('restart.noteIntro', 'Encounters and the board start empty, your game starts from your intro save. “{old}” stays in your list as it is.', { old: r.name })
+      : t('restart.note', 'Saves, encounters and the board start empty. “{old}” stays in your list as it is.', { old: r.name })}</p>
+    ${intro === null && html`<p class="small faint">${t('restart.introTip', 'Tip: save in the game before you pick your starter and choose Files › “Use as my intro save” on the board – new attempts can then skip the intro.')}</p>`}
     ${busy && html`<p class="small muted" role="status">${t('restart.building', 'Building the new games – this can take a minute …')}</p>`}`}
     ${error && html`<div class="warning error" role="alert">${error}</div>`}
   <//>`;
@@ -175,6 +182,13 @@ export function RestartOffer({ offer, onClose }) {
   <//>`;
 }
 
+/** The run ran out of lives (the lives rule): the last shared life, or one player's own last one. */
+function livesOverText(doc, manifest, status, me, who) {
+  if (runMode(manifest) === 'nuzlocke') return t('over.livesSolo', 'The last life is gone – the Nuzlocke is over.');
+  if (getLives(doc, manifest)?.pool !== 'player') return t('over.livesShared', 'The last life is gone – the run is over for everyone.');
+  return status.by === me ? t('over.livesMine', 'You have no lives left – the run is over for everyone.') : t('over.livesOther', '{name} has no lives left – the run is over for everyone.', { name: who });
+}
+
 /**
  * The run just ended (a team wiped – in a Nuzlocke a blackout or a death in a deathless run –, or someone marked
  * it failed / won): a notice for every player with the next steps – a new attempt, the board, or (if it was a
@@ -196,6 +210,7 @@ export function RunOverNotice({ status, onClose }) {
   const text = won ? (solo ? t('over.wonTextSolo', 'Champion beaten – congratulations, you made it!')
     : n > 2 ? t('over.wonTextGroup', 'Champion beaten – congratulations to all of you!') : t('over.wonText', 'Champion beaten – congratulations to both of you!'))
     : !status.auto ? (status.by === me ? t('over.failedMine', 'You ended the run as failed.') : t('over.failedText', '{name} ended the run as failed.', { name: who }))
+      : status.reason === 'lives' ? livesOverText(doc, manifest, status, me, who)
       : solo ? (status.reason === 'deathless' ? t('over.deathlessSolo', 'A Pokémon died – in a deathless run that ends the Nuzlocke.')
         : t('over.blackoutSolo', 'Your team blacked out – the Nuzlocke is over.'))
         : status.by === me ? (n > 2 ? t('over.wipedMineGroup', 'Your team blacked out – the run is over for everyone.') : t('over.wipedMine', 'Your whole team is down – the SoulLink is over.'))
@@ -205,7 +220,7 @@ export function RunOverNotice({ status, onClose }) {
   const st = solo ? runStats(doc, manifest, 'p1') : null;
   const killer = st?.deadliest?.[0];
   return html`<${Modal} open=${true} onClose=${onClose} title=${won ? t('over.wonTitle', 'Run won!') : t('over.failedTitle', 'Run failed')}
-    footer=${html`<${ShareButton} event=${endEvent(manifest, status)} />${!won && html`<button class="btn ghost" onClick=${() => { resumeRun(doc, me); onClose(); }}
+    footer=${html`${!won && html`<${ShareButton} event=${endEvent(manifest, status)} />`}${!won && html`<button class="btn ghost" onClick=${() => { resumeRun(doc, me); onClose(); }}
         title=${t('over.resumeHint', 'Undo: the run goes on as before, tracking resumes.')}>${t('over.resume', 'Mistake – play on')}</button>`}
       <button class="btn ghost" onClick=${() => { onClose(); navigate('soullink', { run: manifest.id }); }}>${t('over.board', 'To the board')}</button>
       ${!won && html`<button class="btn primary" onClick=${() => setRestart(true)}><${Icon} name="reset" size=${14} />${t('over.again', 'New attempt …')}</button>`}`}>
@@ -220,6 +235,7 @@ export function RunOverNotice({ status, onClose }) {
         killer ? t('over.deadliest', 'Deadliest opponent: {name} ({n}×)', { name: speciesName(killer.species), n: killer.kills }) : null,
       ].filter(Boolean).join(' · ')}</p>`}
       ${!won && html`<p class="small faint">${t('over.stopped', 'Tracking is stopped – nothing is recorded anymore until you start a new attempt or play on.')}</p>`}
+      ${won && html`<${HallOfFame} status=${status} onLeave=${onClose} />`}
     </div>
   <//>`;
 }
