@@ -1,5 +1,6 @@
 // Pokémon HeartGold / SoulSilver battery save parser (512 KB .sav, also DeSmuME .dsv).
 // Spec: research/gen4_formats.md (offsets verified against PKHeX + pokeheartgold decomp).
+import { summaryPk45 } from './monstats.mjs';
 
 const PARTITION = 0x40000;
 const GENERAL_SIZE = 0xf628;
@@ -167,6 +168,8 @@ function parseMon(raw, data, { party }) {
     originGame: d[0x5f],
     shiny: (((pid >>> 16) ^ (pid & 0xffff) ^ tid ^ sid) >>> 0) < (data?.shinyOdds ?? 8), // (a run's own rate: shared/shiny.mjs)
     checksumOk,
+    // nature, ability, IVs, EVs as the live readers give them (shared/monstats.mjs)
+    summary: summaryPk45(d, 4),
   };
   if (party && raw.length >= PK_PARTY) {
     mon.status = u32(d, 0x88) & 0xff;

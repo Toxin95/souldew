@@ -14,17 +14,18 @@
 // Older apps read the pack as before (they ignore `host`/`hostKey` and the two extra fields in the rules): no new pack
 // format.
 import { ALL_SLOTS, runMode } from './slots.mjs';
-import { DEFAULT_RULES } from './rules.mjs';
+import { DEFAULT_RULES, NEW_RUN_RULES } from './rules.mjs';
 
 /** The doc key that announces the run's host: { slot, key } (runs from before 2.8.2 learn the key from it). */
 export const HOST_DOC_KEY = 'run:host';
 
 /** Every rule of a SoulLink – what the host sets in the wizard and on the board (all of them in the shared `rules`). */
-export const SOULLINK_RULE_KEYS = ['typeClause', 'dupes', 'missedDupes', 'failKillsPair', 'shinyClause', 'gifts', 'levelCaps', 'cheats',
-  'lives', 'livesPool', 'typeHelp', 'autoAssign', 'autoDeath'];
+export const SOULLINK_RULE_KEYS = ['typeClause', 'dupes', 'missedDupes', 'failKillsPair', 'shinyClause', 'gifts', 'levelCaps', 'cheats', 'cheatSet',
+  'lives', 'livesPool', 'typeHelp', 'autoAssign', 'autoDeath', 'startAtBalls', 'linkTrades', 'linkBattles', 'linkBattleDeaths',
+  'linkWagers', 'linkWagerCap', 'itemGifts', 'raids', 'raidDeaths', 'saveImports'];
 
-/** A new SoulLink's rules (the wizard's start): the defaults of every rule. */
-export const soulLinkDefaults = () => Object.fromEntries(SOULLINK_RULE_KEYS.map((k) => [k, DEFAULT_RULES[k]]));
+/** A new SoulLink's rules (the wizard's start): the defaults of every rule – a new run's where they differ (NEW_RUN_RULES). */
+export const soulLinkDefaults = () => Object.fromEntries(SOULLINK_RULE_KEYS.map((k) => [k, k in NEW_RUN_RULES ? NEW_RUN_RULES[k] : DEFAULT_RULES[k]]));
 
 /**
  * A SoulLink's rules to start a new run from (a new attempt: the old run's), every rule present: the old values where
@@ -36,6 +37,8 @@ export function soulLinkRulesFrom(old) {
   for (const k of SOULLINK_RULE_KEYS) if (o[k] !== undefined && o[k] !== null) r[k] = o[k];
   // `giftsCount` (true/false) came before `gifts`
   if (o.gifts === undefined && o.giftsCount !== undefined) r.gifts = o.giftsCount ? 'area' : 'free';
+  // a run from before 3.0 had no choice of cheats: its new attempt keeps the two it allowed (shared/rules.mjs cheatGroups)
+  if (old && typeof old === 'object' && !Array.isArray(old) && (o.cheatSet === undefined || o.cheatSet === null)) r.cheatSet = null;
   return r;
 }
 

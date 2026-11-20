@@ -9,8 +9,9 @@ import { listZip, readZipEntry, extractZipEntry, entryFileName, freeBytes, infla
 import { APP_ROOT, DATA_DIR, DEV, LIBRARY_DIR, SHARED_DIR } from './paths.mjs';
 import { crc32Hex } from '../../shared/checksum.mjs';
 import { writeFileAtomic, httpError, safeFileName, isInside, samePath, renameRetry } from './fsutil.mjs';
-import { identifyRom, matchCatalog, ROM_EXTENSIONS, PATCH_EXTENSIONS, CTR_EXTENSIONS, isCtrExt } from '../../shared/romid.mjs';
+import { identifyRom, matchCatalog, matchHackHeader, ROM_EXTENSIONS, PATCH_EXTENSIONS, CTR_EXTENSIONS, isCtrExt } from '../../shared/romid.mjs';
 import { identifyCtr, identifyCtrBytes } from '../../shared/ctr.mjs';
+import { gameTitleIdOf, updateStatus, pickUpdate } from '../../shared/ctr/update.mjs';
 import { wasPicked, insideAny } from './grants.mjs';
 import { describePatch, detectPatchFormat } from '../../shared/patchers.mjs';
 import { nameVersion, compareVersions, patchFamily } from '../../shared/patchname.mjs';
@@ -96,11 +97,12 @@ function headOf(path, len = 0x200) {
 }
 
 /**
- * A 3DS file: identified from a few header reads (shared/ctr.mjs) – no CRC32, these files are 1–4 GB. null for
- * anything that isn't a playable 3DS game file: no 3DS header, or an update / DLC / system title (those are installed
- * in Azahar, not played from the library); undefined when the file can't be read right now.
+ * A 3DS file: identified from a few header reads (shared/ctr.mjs) – no CRC32, these files are 1–4 GB. A game, or a
+ * game's update (kind 'update': attached to its game – scanLibrary's ctrUpdates, installed by souldew's player, see
+ * server/lib/ctrupdate.mjs); null for anything else (no 3DS header, DLC, a system title); undefined when the file can't
+ * be read right now.
  */
-export function ctrInfo(path, ext) {
+export function ctrEntry(path, ext) {
   let fd;
   let ioError = null;
   try {
@@ -118,7 +120,7 @@ export function ctrInfo(path, ext) {
     // (a file that couldn't be read – a scanner holding it, a copy still running: undefined, not "no game" – the index
     // must not remember that, or the game stays missing from the library until the file changes)
     if (ioError) return undefined;
-    if (!info || notPlayable(info)) return null;
+    if (!info || ['dlc', 'system'].includes(info.kind)) return null;
     return { ...info, crc: null };
   } catch {
     return undefined;
@@ -127,17 +129,48 @@ export function ctrInfo(path, ext) {
   }
 }
 
-/** Updates, DLC and system titles: installed in Azahar, not played from the library. */
+/** A playable 3DS game file (ctrEntry without updates); null / undefined as there. */
+export function ctrInfo(path, ext) {
+  const info = ctrEntry(path, ext);
+  return info && notPlayable(info) ? null : info;
+}
+
+/** Updates, DLC and system titles: not played from the library (an update goes with its game). */
 const notPlayable = (info) => ['update', 'dlc', 'system'].includes(info?.kind);
+
+/**
+ * A 3DS update file as the library lists it (scanLibrary's ctrUpdates): which game it belongs to (`gameTitleId`, the
+ * catalog's `gameId`), its title version ("v2.2.0") and – for the latest update of a Pokémon game – the version the game
+ * shows ("1.2"), whether souldew can install it (`encrypted`: no), and `detached` (the player took it off the game).
+ */
+function updateEntry(info, { id, name, file, size, container = null }, cat, detached) {
+  const gameTitleId = gameTitleIdOf(info.titleId);
+  const status = updateStatus(gameTitleId, info.version ?? null);
+  return {
+    id, name, file, size, container, system: '3ds', format: info.format, titleId: info.titleId, gameTitleId,
+    version: info.version ?? null, versionText: status.versionText, gameVersion: status.gameVersion, latest: status.latest,
+    encrypted: !!info.encrypted,
+    gameId: matchCatalog({ system: '3ds', code: info.code, titleId: gameTitleId }, cat)?.game?.id || null,
+    detached: !!detached,
+  };
+}
+
+/** What a 3DS game in the library shows of its update (null: none in the library). */
+export function updateSummary(u) {
+  if (!u) return null;
+  const { id, name, version, versionText, gameVersion, latest, encrypted, format } = u;
+  return { id, name, version, versionText, gameVersion, latest, encrypted, format, tracking: updateStatus(u.gameTitleId, version).tracking };
+}
 
 /** How much of a zipped 3DS game is inflated to identify it: its NCSD header and the game's NCCH header (at 0x4000). */
 const CTR_HEAD = 0x10000;
 
 /**
  * The 3DS games inside a zip (a 3DS game is 1–4 GB – only its first 64 KB are inflated): [{ entry, ext, info }], info as
- * ctrInfo gives it. Updates / DLC, entries that aren't 3DS files and entries souldew can't unpack are left out.
+ * ctrInfo gives it. DLC, entries that aren't 3DS files and entries souldew can't unpack are left out – updates too,
+ * unless `updates` (a zip the player adds: its update is unpacked into the library like a game).
  */
-export function zipCtrGames(path, entries = null) {
+export function zipCtrGames(path, entries = null, { updates = false } = {}) {
   if (!entries) {
     try {
       entries = listZip(path);
@@ -152,7 +185,7 @@ export function zipCtrGames(path, entries = null) {
     try {
       const head = readZipEntry(path, e, { prefix: CTR_HEAD });
       const info = identifyCtrBytes(new Uint8Array(head.buffer, head.byteOffset, head.length), ext);
-      if (info && !notPlayable(info)) out.push({ entry: e, ext, info: { ...info, crc: null } });
+      if (info && (!notPlayable(info) || (updates && info.kind === 'update'))) out.push({ entry: e, ext, info: { ...info, crc: null } });
     } catch {
       // damaged entry – not offered
     }
@@ -237,8 +270,9 @@ function unpackError(e, name, size, dir) {
 function describeRom(info, cat) {
   const m = matchCatalog(info, cat);
   // a ROM that was patched before it was added (Too Many Types from a download site): its CRC32 is a known version
-  // of a hack – the run gets the hack, not only the base game it shares its header with
-  const hack = info.crc ? (cat.hacks || []).find((h) => (h.romCrc32 || []).includes(info.crc)) : null;
+  // of a hack – the run gets the hack, not only the base game it shares its header with. A hack that names itself in
+  // the header (Pokémon Quetzal: "PKM QUETZAL" with Emerald's code) is that hack in every version.
+  const hack = (info.crc ? (cat.hacks || []).find((h) => (h.romCrc32 || []).includes(info.crc)) : null) || matchHackHeader(info, cat);
   return { ...info, gameId: m?.game?.id || null, exact: !!m?.exact, hackId: hack?.id || null };
 }
 
@@ -250,6 +284,8 @@ export function scanLibrary(config = {}) {
   const roms = [];
   const patches = [];
   const zipped = []; // 3DS games inside zips – played once unpacked (unpackZipGames)
+  const updates = []; // 3DS game updates – each goes with its game (souldew's player installs it, server/lib/ctrupdate.mjs)
+  const detached = new Set((Array.isArray(config.ctrUpdatesDetached) ? config.ctrUpdatesDetached : []).map((p) => resolve(String(p))));
   const seen = new Set(); // nested / overlapping library folders would list files twice
   const patchTime = new Map(); // patch → mtime of its file (or zip), to tell which of two versions came later
 
@@ -278,9 +314,11 @@ export function scanLibrary(config = {}) {
       const ext = extname(name).slice(1).toLowerCase();
       const cacheKey = `${path}|${st.size}|${st.mtimeMs}`;
       if (isCtrExt(ext)) {
-        const info = index[cacheKey] !== undefined ? index[cacheKey] : ctrInfo(path, ext);
+        // (indexes before 2.8.3 kept null for update files – a null is read again, a few header bytes)
+        const info = index[cacheKey] != null ? index[cacheKey] : ctrEntry(path, ext);
         nextIndex[cacheKey] = info;
-        if (info) roms.push(describeRom({ id: makeId(path), name, file: path, size: st.size, container: null, ...info }, cat));
+        if (info?.kind === 'update') updates.push(updateEntry(info, { id: makeId(path), name, file: path, size: st.size }, cat, detached.has(resolve(path))));
+        else if (info) roms.push(describeRom({ id: makeId(path), name, file: path, size: st.size, container: null, ...info }, cat));
       } else if (ROM_EXTENSIONS.includes(ext)) {
         let info = index[cacheKey];
         if (!info) {
@@ -376,7 +414,9 @@ export function scanLibrary(config = {}) {
     // a hack the catalog doesn't know: its versions are told together by the file name ("Crest v1.bps", "Crest v2.bps")
     if (!p.hackId) p.family = patchFamily(p.name);
   }
-  return { roms, patches: newestFirst(patches, patchTime), zipped: zipped.filter((z) => !unpacked.has(ctrKey(z))), roots: libraryRoots(config), libraryDir: LIBRARY_DIR };
+  // each 3DS game with the update it plays with (the newest one souldew can install)
+  for (const r of roms) if (r.system === '3ds' && r.kind === 'game') r.update = updateSummary(pickUpdate(updates, r.titleId));
+  return { roms, patches: newestFirst(patches, patchTime), zipped: zipped.filter((z) => !unpacked.has(ctrKey(z))), ctrUpdates: updates, roots: libraryRoots(config), libraryDir: LIBRARY_DIR };
 }
 
 /**
@@ -724,7 +764,7 @@ export function importFiles(paths, config = {}, { roots, onUnpack = null, skippe
         } catch {
           // not readable as a zip: copied as before, the scan skips it
         }
-        const games = zipCtrGames(p, entries);
+        const games = zipCtrGames(p, entries, { updates: true });
         if (games.length) {
           added.push(...await unpackZipGames(p, { games, onUnpack }));
           if (!zipHasOther(entries)) continue;
@@ -736,6 +776,23 @@ export function importFiles(paths, config = {}, { roots, onUnpack = null, skippe
     }
     return added;
   })();
+}
+
+/**
+ * Take a 3DS update off its game ("Remove" in the game's details): souldew's own copy in the library folder is deleted
+ * (the player's original stays where it was), a file in an included folder – the player's own – is only marked
+ * (config.ctrUpdatesDetached, by path). → { deleted, ctrUpdatesDetached: the new list }. Throws 400 for anything that
+ * isn't a 3DS update in the library.
+ */
+export function removeCtrUpdate(id, config = {}) {
+  const { abs, entry } = resolveId(id, config);
+  if (entry || ctrEntry(abs, extname(abs).slice(1).toLowerCase())?.kind !== 'update') throw httpError(400, 'Not a 3DS game update', 'notCtrUpdate');
+  const list = (Array.isArray(config.ctrUpdatesDetached) ? config.ctrUpdatesDetached : []).filter((p) => typeof p === 'string' && existsSync(p));
+  if (isInside(abs, LIBRARY_DIR)) {
+    rmSync(abs, { force: true });
+    return { deleted: true, ctrUpdatesDetached: list.filter((p) => !samePath(p, abs)) };
+  }
+  return { deleted: false, ctrUpdatesDetached: [...new Set([...list, abs])] };
 }
 
 /** Archives souldew can't unpack (a 3DS game often comes in one): said so instead of skipped without a word. */
@@ -844,7 +901,7 @@ export async function placeUploadedZip(tmp, target, { onUnpack = null } = {}) {
     } catch {
       // not readable as a zip: kept as it came, the scan skips it
     }
-    const games = zipCtrGames(tmp, entries);
+    const games = zipCtrGames(tmp, entries, { updates: true });
     const added = games.length ? await unpackZipGames(tmp, { games, onUnpack }) : [];
     if (!games.length || zipHasOther(entries)) {
       renameSync(tmp, target);

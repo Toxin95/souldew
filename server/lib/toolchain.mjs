@@ -1,8 +1,8 @@
 // Java + Universal Pokemon Randomizer ZX detection, download and invocation.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync, renameSync, rmSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, renameSync, rmSync, readdirSync, statfsSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
-import { join, delimiter } from 'node:path';
+import { join, delimiter, dirname, resolve, sep } from 'node:path';
 import { listZip, readZipEntry } from './zip.mjs';
 import { TOOLS_DIR, BUNDLED_TOOLS, CACHE_DIR } from './paths.mjs';
 import { httpError, removeQuietly } from './fsutil.mjs';
@@ -205,13 +205,31 @@ export async function inspectRom(path, { gen = null, run = runBridge, dir = CACH
  * A randomizer run that failed, as the answer the page shows: in words, with a code it translates – never the
  * randomizer's own output (#43). UPR ZX stopping with a Java exception (data it doesn't expect – a ROM hack, a release
  * it doesn't know) → 422 'randoFailed', naming only the exception's class for a bug report ("Index 1286 out of bounds
- * for length 1268" and the like say nothing to a player); a timeout → 504 'randoTimeout'. Errors that are answers
- * already (Java or the randomizer missing, an invalid seed …) pass through. The bridge's output stays on the error
- * (`details`) for the server's log.
+ * for length 1268" and the like say nothing to a player); a timeout → 504 'randoTimeout'; a file it couldn't read or
+ * write → 'randoNoSpace' / 'randoNoAccess' / 'randoReadFailed' / 'randoIoFailed' with the system's reason, which file and
+ * the free space then (ioFailure). Errors that are answers already (Java or the randomizer missing, an invalid seed …)
+ * pass through. The bridge's output stays on the error (`details`) for the server's log. `statfs`: tests.
  */
-export function randomizerError(e) {
+export function randomizerError(e, { statfs = statfsSync } = {}) {
   if (!e || e.status || !e.details) return e;
   if (e.code === 'timeout') return Object.assign(httpError(504, 'The randomizer took too long and was stopped', 'randoTimeout'), { details: e.details });
+  // a file it couldn't read or write (UPR's RandomizerIOException and the like): that, in words – not "its data isn't
+  // where the randomizer expects it", which sent a player whose build stopped at a file looking for a broken game (Discord,
+  // Alpha Sapphire on a Mac: "Randomizer error: RandomizerIOException")
+  const io = ioFailure(e.details);
+  if (io) {
+    const files = e.details.files || {};
+    const free = freeGb(files.output ? dirname(files.output) : files.work, statfs);
+    const vars = { what: io.error, where: io.where, op: io.op, ...(free != null ? { free } : {}), trace: randomizerTrace(e.details) };
+    const file = { game: 'the game file', output: 'the new game in the run folder', work: 'the randomizer’s working files' }[io.where] || 'a file';
+    const text = {
+      randoNoSpace: [507, `The disk ran full while the randomizer was writing ${file} (${io.error})`],
+      randoNoAccess: [403, `souldew isn’t allowed to use ${file} (${io.error})`],
+      randoReadFailed: [422, `The game file couldn’t be read completely (${io.error})`],
+      randoIoFailed: [422, `The randomizer stopped at a file error: ${io.error} (${file})`],
+    }[io.code];
+    return Object.assign(httpError(text[0], text[1], io.code, vars), { details: e.details });
+  }
   const cls = String(e.details.error || e.details.stderr || '').match(/\b(?:[a-z]\w*\.)+([A-Z]\w*(?:Exception|Error))\b/)?.[1] || null;
   return Object.assign(httpError(422, `The randomizer can’t build this game${cls ? ` (${cls})` : ''} – play it without the randomizer`, 'randoFailed', {
     what: cls || `exit ${e.details.exitCode}`,
@@ -244,12 +262,144 @@ export function randomizerTrace(details = {}) {
     .slice(0, 200);
   const frames = [];
   for (const l of lines) {
+    if (l.startsWith('Caused by: ')) break; // (the cause has its own lines below)
     const m = l.match(/^\s*at\s+(?:[\w$]+\.)*([\w$]+\.[\w$<>]+)\((?:[\w$]+\.java:(\d+)|[^)]*)\)/);
     if (!m) continue;
     frames.push(m[2] ? `${m[1]}:${m[2]}` : m[1]);
     if (frames.length >= 8) break;
   }
-  return msg || frames.length ? [msg, ...frames].filter(Boolean) : undefined;
+  // the innermost cause – for a wrapped error the one that names what really went wrong: "Error when building romfs: File:
+  // a/0/8/2" alone hid the "No space left on device" behind it – with its first frames, Java's own too (they say
+  // whether it was reading or writing: RandomAccessFile.writeBytes)
+  const chain = javaExceptions(details);
+  const root = chain.length > 1 && chain[chain.length - 1].frames.length ? chain[chain.length - 1] : null; // (a stack trace's "Caused by:")
+  const cause = root ? [`Caused by: ${root.cls}${root.message ? `: ${root.message}` : ''}`.replace(PATH_IN_TEXT, '…').trim().slice(0, 200), ...root.frames.filter((f, i, a) => a.indexOf(f) === i).slice(0, 4)] : [];
+  return msg || frames.length ? [msg, ...frames, ...cause].filter(Boolean) : undefined;
+}
+
+const EXCEPTION_LINE = /^(?:Caused by: )?((?:[a-z_$][\w$]*\.)+[A-Z][\w$]*)(?::\s?(.*))?$/;
+const FRAME_LINE = /^\s+at\s+(?:[\w.$-]+\/)?(?:[\w$]+\.)*([\w$]+\.[\w$<>]+)\((?:[\w$]+\.java:(\d+)|[^)]*)\)/;
+
+/**
+ * The exceptions of the bridge's failure, outermost first: { cls, message, frames } – from the stack trace on stderr (the
+ * outer exception, then every "Caused by:"), else from the @@ERROR text (String(t): "…RandomizerIOException:
+ * java.io.IOException: No space left on device"). Frames as "Class.method" or "Class.method:line"; Java's own classes
+ * (java.base/java.io.RandomAccessFile.writeBytes) too.
+ */
+export function javaExceptions(details = {}) {
+  const chain = [];
+  let current = null;
+  for (const l of String(details.stderr || '').split(/\r?\n/)) {
+    const frame = current && l.match(FRAME_LINE);
+    if (frame) {
+      current.frames.push(frame[2] ? `${frame[1]}:${frame[2]}` : frame[1]);
+      continue;
+    }
+    const ex = (chain.length === 0 || l.startsWith('Caused by: ')) && l.match(EXCEPTION_LINE);
+    if (ex && /(?:Exception|Error)$/.test(ex[1])) chain.push((current = { cls: ex[1], message: (ex[2] || '').trim(), frames: [] }));
+    else if (/^\S/.test(l)) current = null; // (another line: "Suppressed:", the bridge's own output …)
+  }
+  // an exception made from its cause (UPR's new RandomizerIOException(e)) carries the cause as its message – when the
+  // trace has no "Caused by:" line for it, that message is the cause
+  for (let last = chain[chain.length - 1], i = 0; last && i < 5; last = chain[chain.length - 1], i++) {
+    const inner = last.message.match(EXCEPTION_LINE);
+    if (!inner || !/(?:Exception|Error)$/.test(inner[1])) break;
+    chain.push({ cls: inner[1], message: (inner[2] || '').trim(), frames: [] });
+  }
+  if (chain.length) return chain;
+  // no stack trace: the @@ERROR text, split at each "pkg.Class(Exception|Error): "
+  const text = String(details.error || '').trim();
+  const parts = text.split(/:\s(?=(?:[a-z_$][\w$]*\.)+[A-Z][\w$]*(?:Exception|Error)\b)/);
+  for (const p of parts) {
+    const ex = p.match(EXCEPTION_LINE);
+    if (!ex || !/(?:Exception|Error)$/.test(ex[1])) break;
+    chain.push({ cls: ex[1], message: (ex[2] || '').trim(), frames: [] });
+  }
+  return chain;
+}
+
+const IO_CLASS = /(?:IOException|FileNotFoundException|EOFException|CannotWriteToLocationException|AccessDeniedException|NoSuchFileException|FileSystemException)$/;
+// the system's words (Java passes them on – macOS/Linux in English, Windows in the system's language: English, German)
+const NO_SPACE = /No space left on device|not enough space on the disk|Disk quota exceeded|nicht genügend Speicherplatz/i;
+const NO_ACCESS = /Permission denied|Operation not permitted|Access is denied|Read-only file system|Zugriff verweigert/i;
+const UNREADABLE = /Input\/output error|Resource deadlock avoided|Operation timed out|Device not configured|Stale NFS file handle|No such device|Bad file descriptor|No such file or directory|cannot find the (?:file|path) specified|kann die angegebene (?:Datei|Pfad)/i;
+
+/**
+ * A randomizer run that stopped at a file – UPR ZX wraps every IOException in its RandomizerIOException (Windows' "Access
+ * is denied" on the output in CannotWriteToLocationException) – as { code, error, where, op }, else null:
+ *   error  the system's words ("No space left on device", "Permission denied", "EOFException" when a file ended early) –
+ *          never a path
+ *   where  which file: 'game' (the game it reads), 'output' (the game, log or data it writes into the run folder), 'work'
+ *          (its working files, UPR's unpacked game files in the cache) or null – by the path in the message
+ *          (`details.files`, runBridge) or else by the frames (who was reading or writing)
+ *   op     'read' | 'write' | null
+ *   code   'randoNoSpace' | 'randoNoAccess' | 'randoReadFailed' (the game file can't be read: an external drive, a
+ *          network folder, an iCloud file not on the Mac, a damaged copy) | 'randoIoFailed'
+ */
+export function ioFailure(details = {}) {
+  const chain = javaExceptions(details);
+  // (the innermost one counts: a RandomizerIOException around data UPR choked on – "Error when building romfs" around
+  // a NegativeArraySizeException – is no file error)
+  const root = chain[chain.length - 1];
+  if (!root || !IO_CLASS.test(root.cls)) return null;
+  const simple = root.cls.split('.').pop();
+  const winDenied = simple === 'CannotWriteToLocationException';
+  // "<path> (Permission denied)": the path, and the reason Java puts after it
+  let path = null;
+  let reason = root.message;
+  const m = root.message.match(/^(.*\S)\s\(([^()]+)\)$/);
+  if (m && /[\\/]/.test(m[1])) [path, reason] = [m[1], m[2]];
+  else if (/^(?:[A-Za-z]:)?[\\/]/.test(root.message) && !/\s\(/.test(root.message)) [path, reason] = [root.message, ''];
+  // UPR on Windows: "The randomizer cannot write to this location: C:\…" – thrown for "Access is denied" only
+  if (winDenied) [path, reason] = [root.message.replace(/^.*?location:\s*/, '') || null, 'Access is denied'];
+  const error = (reason.replace(PATH_IN_TEXT, '…').trim() || simple).slice(0, 120);
+  const { op, where } = locate(path, details.files, root.frames, chain.flatMap((x) => x.frames), winDenied);
+  const code = NO_SPACE.test(reason) ? 'randoNoSpace'
+    : NO_ACCESS.test(reason) || winDenied ? 'randoNoAccess'
+      : where === 'game' && (UNREADABLE.test(reason) || simple === 'EOFException') ? 'randoReadFailed'
+        : 'randoIoFailed';
+  return { code, error, where, op };
+}
+
+const samePath = (a, b) => !!a && !!b && resolve(a).normalize('NFC') === resolve(b).normalize('NFC');
+const isUnder = (p, dir) => !!p && !!dir && (resolve(p).normalize('NFC') + sep).startsWith(resolve(dir).normalize('NFC') + sep);
+
+/**
+ * Which file and what it was doing: the path in the message first; else Java's own frames on top of the cause – a
+ * RandomAccessFile read is the game (UPR keeps it open), a RandomAccessFile write the new .cxi, FileInput/OutputStream
+ * UPR's working files (RomfsFile, the code in NCCH) or, from a save (Gen 1–5) or the bridge, the run folder.
+ */
+function locate(path, files = {}, rootFrames = [], allFrames = [], winDenied = false) {
+  const top = rootFrames.join(' ');
+  const all = allFrames.join(' ');
+  let op = /FileOutputStream\.|RandomAccessFile\.write/.test(top) ? 'write' : /FileInputStream\.|RandomAccessFile\.read|readFileFullyIntoBuffer/.test(top) ? 'read' : null;
+  let where = null;
+  if (path) {
+    if (samePath(path, files.game)) where = 'game';
+    else if (isUnder(path, files.work)) where = 'work';
+    else if (files.output && isUnder(path, dirname(files.output))) where = 'output';
+  }
+  if (!where) {
+    if (/RandomAccessFile\.read/.test(top)) where = 'game';
+    else if (/RandomAccessFile\.write/.test(top)) where = 'output';
+    else if (/File(?:Input|Output)Stream\./.test(top)) {
+      where = /RomfsFile\.|NCCH\.(?:getCode|writeCode)/.test(all) ? 'work' : /saveRom|SoulLinkBridge\.randomize/.test(all) ? 'output' : /loadRom|isLoadable|FromFile/.test(all) ? 'game' : null;
+    } else if (/NCCH\.<init>|readFileSystem|getCXIOffsetInFile|FromFile|loadRom|isLoadable/.test(all)) where = 'game';
+    else if (winDenied) where = 'output';
+  }
+  if (!op && where) op = where === 'game' ? 'read' : 'write';
+  return { op, where };
+}
+
+/** Free GB on the drive of `dir` ("1.2"), or null when the system can't tell. */
+function freeGb(dir, statfs = statfsSync) {
+  if (!dir) return null;
+  try {
+    const s = statfs(dir);
+    return ((Number(s.bavail) * Number(s.bsize)) / 1024 ** 3).toFixed(1);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -313,6 +463,8 @@ export function runBridge(args, { timeoutMs, ctr = false, onLine = null, spawnFn
       // `code`: the code the bridge named (@@CODE), `exitCode`: the process' exit code
       const result = { ...parseBridgeOutput(out), exitCode: code, stdout: out, stderr: err };
       if (code !== 0 || result.error) {
+        // the files of this call, so a file error can say which one (ioFailure) – they stay on the server
+        result.files = { game: args[1] || null, output: args[0] === 'randomize' ? args[2] || null : null, work: workDir };
         const detail = timedOut ? `timed out after ${Math.round(limit / 1000)} s` : result.error || err.split(/\r?\n/).find((l) => l.trim())?.trim() || `exit code ${code}`;
         const e = new Error(`Randomizer error: ${detail}`);
         e.details = result;

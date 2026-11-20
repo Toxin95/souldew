@@ -326,3 +326,96 @@ test('Platinum in another language: the English battle flag\'s address counts on
   r2.u16(0x0224a55a, 0x2800);
   assert.equal(poll(e, r2, s2), null, 'over the poll the flag says so');
 });
+
+// ---- #80 (SoulSilver US, built-in player, solo Nuzlocke, 2.8.1): a wild Pokémon knocked out or fled, the player walks
+// straight on into an area whose first encounter is still open – and about one time in three souldew asked whether
+// THAT area was spent. 2.8.1 checked the place sign as the battle ended and put the place the player stood at when the
+// question came up (10 s later) first in the prompt. The question is about the place of the battle, captured while it
+// runs; when that isn't known in a game that shows places, nothing is asked.
+
+const SS = { id: 'ss80', mode: 'nuzlocke', game: { id: 'pokemon-soulsilver', code: 'IPGE', system: 'nds' }, players: { p1: { name: 'Ash' } } };
+const R32 = { gen: 4, id: 180, name: 'Route 32' };
+const R33 = { gen: 4, id: 181, name: 'Route 33' };
+
+test('#80: knocked out on Route 32 (its encounter entered), straight on into Route 33 (open) – no question; asked about Route 32 only', () => {
+  const d = mkDoc();
+  R.setEncounter(d, SS, 'route-32', 'p1', { outcome: 'caught', species: 418, key: 'buizel' }, { quiet: true });
+  const tr = new MissedTracker();
+  let t = play(tr, [[null, 3]], 1000, R32);
+  t = play(tr, [[wild(19), 8], [wild(19, 0), 4]], t, R32); // the Rattata knocked out
+  t = play(tr, [[null, 2]], t, R32); // (the battle is over the poll after)
+  t = play(tr, [[null, 4]], t, R33); // a few steps on: Route 33
+  const [r] = tr.due(t + MISSED_WAIT);
+  assert.deepEqual(r.here, R32, 'the place of the battle, not the one after it');
+  const ask = (here) => R.missedQuestion(d, SS, rd, 'p1', { foe: r.foe, wild: true, from: r.from, newMonAt: 0, boxes: true, partySize: 4, here });
+  assert.equal(ask(r.here), false, 'Route 32 has its encounter: nothing to ask');
+  assert.equal(ask(R33), true, '(what asking about the place the player is at now did)');
+  // the same where the battle's area is open: the question names Route 32
+  const d2 = mkDoc();
+  R.setEncounter(d2, SS, 'route-33', 'p1', { outcome: 'caught', species: 41, key: 'zubat' }, { quiet: true });
+  assert.equal(R.missedQuestion(d2, SS, rd, 'p1', { foe: r.foe, wild: true, from: r.from, newMonAt: 0, boxes: true, partySize: 4, here: r.here }), true);
+  assert.equal(R.areaForPlace(d2, SS, 4, r.here), 'route-32');
+});
+
+test('#80: the place of a battle is read in it or the moment before it – never after it; two places, or none, is no place', () => {
+  // no place sign during the battle: the one read on the overworld right before it began
+  let tr = new MissedTracker();
+  let t = play(tr, [[null, 3]], 1000, R32);
+  t = play(tr, [[wild(19), 8]], t, null);
+  play(tr, [[null, 3]], t, R33);
+  assert.deepEqual(tr.records[0].here, R32);
+  assert.equal(tr.records[0].placeLost, undefined);
+  // … but not one read long before it, and never the one read after it (2.8.2 took that one)
+  tr = new MissedTracker();
+  t = play(tr, [[null, 1]], 1000, R32);
+  t = play(tr, [[null, 16]], t, null); // (a menu, a cut scene: no place for a while)
+  t = play(tr, [[wild(19), 8]], t, null);
+  play(tr, [[null, 3]], t, R33);
+  assert.equal(tr.records[0].here, null);
+  assert.equal(tr.records[0].placeLost, true, 'the game shows places: ask nothing rather than guess');
+  // a reader that sees the battle go on after it ended (no battle flag), while the player walks on: two places
+  tr = new MissedTracker();
+  t = play(tr, [[wild(19), 8]], 1000, R32);
+  play(tr, [[wild(19), 6], [null, 2]], t, R33);
+  assert.equal(tr.records[0].here, null);
+  assert.equal(tr.records[0].placeLost, true);
+  // a game without a place sign at all: the solo question offers the open areas, as before
+  tr = new MissedTracker();
+  play(tr, [[null, 3], [wild(19), 8], [null, 3]], 1000, null);
+  assert.equal(tr.records[0].here, null);
+  assert.equal(tr.records[0].placeLost, undefined);
+});
+
+test('#80 end to end: Platinum in another language (no battle flag), Bidoof fled without a hit – the copies keep the battle going while the player walks on', () => {
+  const e = findEntry(TABLE, { platform: 'nds', code: 'CPUD' });
+  const r = ram();
+  const base = 0x02270000;
+  const me = { pid: 0x0a0a0001, species: 387, level: 6, hp: 23, maxHp: 23 };
+  saveImage(r, e, base, [pk4(me)]);
+  r.u16(0x0224a55a, 0x2800); // not the flag in this language
+  const state = {};
+  const tr = new MissedTracker();
+  let t = 0;
+  const step = (here) => {
+    const b = poll(e, r, state);
+    tr.see(b, t, here);
+    t += 700;
+    return b;
+  };
+  for (let i = 0; i < 3; i++) step(R201);
+  partyAt(r, 0x02302000, [pk4(me)]); // the battle's copy of the player's party – no hit taken
+  partyAt(r, 0x02300000, [pk4({ pid: 0x5eed0001, species: 399, level: 2, hp: 14, maxHp: 14 })]);
+  for (let i = 0; i < 8; i++) step(R201);
+  assert.equal(tr.fighting, true);
+  // "Got away safely!" – the save party is as it was, the copies stay in RAM: the reader still sees the battle while the
+  // player walks into Route 202
+  const R202 = { gen: 4, id: 17, name: 'Route 202' };
+  for (let i = 0; i < 4; i++) assert.equal(step(R202)?.enemy?.species, 399);
+  // the blocks are reused: the battle is over
+  r.put(0x02300000, new Uint8Array(0x200));
+  r.put(0x02302000, new Uint8Array(0x200));
+  for (let i = 0; i < 5; i++) step(R202); // (a copy that can't be read is held for a few polls)
+  assert.equal(tr.records.length, 1);
+  assert.equal(tr.records[0].here, null, '2.8.2 asked about Route 202 here');
+  assert.equal(tr.records[0].placeLost, true);
+});

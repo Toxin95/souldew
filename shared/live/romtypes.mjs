@@ -20,6 +20,7 @@
 // rate" shows what the game really uses.
 import { listNdsFiles, ndsFile, parseNarc, ndsArm9, blzDecompress } from '../nds.mjs';
 import { retailSingle } from '../typechart.mjs';
+import { nameKey } from './romspecies.mjs';
 
 const u32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
 
@@ -135,6 +136,93 @@ export function gbaBaseStats(rom, count) {
     }
   }
   return best && best.ok >= Math.min(count, 386) * 0.9 ? { offset: best.offset, stride: best.stride, types: best.types, rates: best.rates } : null;
+}
+
+// ---------------------------------------------------------------- abilities (GBA)
+
+/**
+ * Gen 3's ability numbers: Stench (1) … Air Lock – which the games number 77, after the unused Cacophony (76), where
+ * the app (PokeAPI, Gen 4 on) has Air Lock at 76 and no Cacophony (pokeemerald include/constants/abilities.h).
+ */
+const GEN3_ABILITIES = 77;
+const GEN3_RETAIL_IDS = { 76: 0, 77: 76 };
+
+/**
+ * The ability-name table of a GBA ROM (pokeemerald gAbilityNames: 13 bytes per name in the retail games, "-------"
+ * first): ability 1's name in one of the games' languages (`firsts`, any case), ability 2's (`seconds`) one entry on.
+ * → { offset, stride, names } (names[0] = the "none" entry) or null.
+ */
+export function gbaAbilityNames(rom, charset, firsts = [], seconds = []) {
+  const table = charset?.table || charset || {};
+  const code = codes(table);
+  const enc = (w) => [...w].map((c) => code[c]);
+  const words = [...new Set(firsts.flatMap((w) => [w, w.toUpperCase()]))].map(enc).filter((b) => b.length && b.every((x) => x !== undefined));
+  const second = new Set(seconds.map(nameKey).filter(Boolean));
+  if (!words.length || !second.size) return null;
+  const lead = new Set(words.map((b) => b[0]));
+  for (let o = 0; o + 64 < rom.length; o++) {
+    if (!lead.has(rom[o])) continue;
+    const w = words.find((b) => b.every((x, k) => rom[o + k] === x) && rom[o + b.length] === 0xff);
+    if (!w) continue;
+    for (let stride = w.length + 1; stride <= 32; stride++) {
+      const next = text3(rom, o + stride, stride, table);
+      if (next === null || !second.has(nameKey(next)) || o < stride) continue;
+      const start = o - stride;
+      const names = [];
+      for (let i = 0; i < 400 && start + (i + 1) * stride <= rom.length; i++) {
+        const n = text3(rom, start + i * stride, stride, table);
+        if (n === null) break;
+        names.push(n.trim());
+      }
+      if (names.length > GEN3_ABILITIES) return { offset: start, stride, names };
+    }
+  }
+  return null;
+}
+
+/**
+ * Each species' two abilities from a GBA base stats table in the retail layout (28 bytes: pokeemerald BaseStats
+ * .abilities[2] at +0x16, the growth rate 0–5 at +0x13), by the game's species number – the ability bit of a Pokémon
+ * picks one (shared/live/parse.mjs). `names` (gbaAbilityNames): the game's names, which tell the app's number of each
+ * of its abilities (`ids`: game number → the app's, where they differ; 0: none the app knows) – one it renamed or added
+ * is named as the game names it (`own`). Without the names: the retail numbers. `official` = the app's ability names
+ * per language. → { slots: [[a, b] | null], ids, own, max } or null (another layout, or numbers no game has).
+ */
+export function gbaAbilities(rom, base, names = null, official = []) {
+  if (!base || base.stride !== 28) return null;
+  const max = names ? names.names.length - 1 : GEN3_ABILITIES;
+  const slots = [null];
+  let n = 0;
+  let ok = 0;
+  for (let i = 1; i < base.types.length; i++) {
+    if (!base.types[i]) {
+      slots[i] = null;
+      continue;
+    }
+    const e = base.offset + i * 28;
+    const a = rom[e + 0x16];
+    const b = rom[e + 0x17];
+    n++;
+    if (a >= 1 && a <= max && b <= max && rom[e + 0x13] <= 5) ok++;
+    slots[i] = [a <= max ? a : 0, b <= max ? b : 0];
+  }
+  if (!n || ok < n * 0.9) return null;
+  if (!names) return { slots, ids: { ...GEN3_RETAIL_IDS }, own: {}, max };
+  const ids = {};
+  const own = {};
+  const top = Math.max(0, ...official.map((l) => (l ? l.length - 1 : 0)));
+  const known = (id, k) => official.some((l) => nameKey(l?.[id]) === k);
+  for (let id = 1; id <= max; id++) {
+    const k = nameKey(names.names[id]);
+    if (!k) ids[id] = 0;
+    else if (!known(id, k)) {
+      let other = 0;
+      for (let j = 1; j <= top && !other; j++) if (known(j, k)) other = j;
+      if (other) ids[id] = other;
+      else own[id] = names.names[id];
+    }
+  }
+  return { slots, ids, own, max };
 }
 
 /**
@@ -571,9 +659,14 @@ function gbaTypes(rom, opts) {
     });
   }
   const own = Object.keys(labels).length;
+  // each species' abilities – the retail engine's base stats only (an expanded engine keeps three, a hidden one among
+  // them, and its Pokémon pick theirs another way)
+  const official = opts.abilityNames || [];
+  const abilities = sp?.engine === 'expanded' ? null : gbaAbilities(rom, base, gbaAbilityNames(rom, opts.gen3Charset, official.map((l) => l?.[1]).filter(Boolean), official.map((l) => l?.[2]).filter(Boolean)), official);
   return {
     gen: 3, keys, labels, species, catchRates: catchRatesBy(base.rates, national, species), chart, moves, fairy: keys.includes('fairy') && Object.values(species).some((t) => t.includes('fairy')), own,
-    source: { baseStats: base.offset, stride: base.stride, names: names?.offset ?? null, chart: c ? c.offset : null, moves: mt?.offset ?? null, shift },
+    ...(abilities ? { abilities } : {}),
+    source: { baseStats: base.offset, stride: base.stride, names: names?.offset ?? null, chart: c ? c.offset : null, moves: mt?.offset ?? null, shift, abilities: abilities ? abilities.max : null },
   };
 }
 

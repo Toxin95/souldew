@@ -349,6 +349,31 @@ test('digest: savestate rewinds, the partner’s deaths, a solo run’s bonus Po
   assert.equal(T.digestRun(solo('bbbb0013', { game: { system: '3ds' } }), docOf({}), 'p1').gen, 6);
 });
 
+test('Honest Work: any cheat spoils it – Max Repels as much as Rare Candies; Candy Crush counts candies only', () => {
+  const winWith = (id, ...cheats) => T.digestRun(solo(id), docOf({
+    'run:status': { state: 'won', at: T0 + H },
+    // switching the rule is logged as a cheat entry too, but isn't one
+    'feed:r': { type: 'cheat', slot: 'p1', at: T0 },
+    ...Object.fromEntries(cheats.map((c, i) => [`feed:c${i}`, { type: 'cheat', slot: 'p1', at: T0 + i + 1, ...c }])),
+  }), 'p1');
+  const clean = winWith('hhhh0001');
+  assert.deepEqual([clean.cheats, clean.cheatUses], [0, 0]);
+  assert.equal(evalOf([clean]).noCheatWin.ok, true, 'a rule change alone is no cheat');
+  const repels = winWith('hhhh0002', { cheat: 'maxRepel', count: 10 });
+  assert.deepEqual([repels.cheats, repels.cheatUses], [0, 1]);
+  assert.equal(evalOf([repels]).noCheatWin.ok, false, 'Max Repels are a cheat');
+  const candies = winWith('hhhh0003', { cheat: 'rareCandy', count: 20 }, { cheat: 'maxRepel', count: 10 });
+  assert.deepEqual([candies.cheats, candies.cheatUses], [20, 2]);
+  assert.equal(evalOf([candies]).noCheatWin.ok, false);
+  assert.equal(evalOf([repels, candies]).candyCrush.n, 20, 'Candy Crush counts Rare Candies, not Max Repels');
+  // the partner's cheats are theirs
+  const theirs = T.digestRun(pair('hhhh0004'), docOf({ 'run:status': { state: 'won', at: T0 + H }, 'feed:c': { type: 'cheat', slot: 'p2', cheat: 'maxRepel', count: 10, at: T0 } }), 'p1');
+  assert.equal(evalOf([theirs]).noCheatWin.ok, true);
+  // a digest stored before Max Repels existed (no cheatUses): its Rare Candies still decide
+  assert.equal(evalOf([{ ...candies, cheatUses: undefined }]).noCheatWin.ok, false);
+  assert.equal(evalOf([{ ...clean, cheatUses: undefined }]).noCheatWin.ok, true);
+});
+
 test('medals: tiers per category, per regional dex and the champion’s medal', () => {
   const states = T.ACHIEVEMENTS.map((a) => ({ id: a.id, cat: a.cat, hidden: !!a.hidden, ok: a.cat === 'randomizer' || (a.cat === 'fun' && !a.hidden) }));
   const totals = T.dexTotals(Object.fromEntries(Array.from({ length: 151 }, (_, i) => [i + 1, { caught: 1, shiny: 0, seenAt: 0 }])));
@@ -418,7 +443,7 @@ test('syncTrophies: back-fills quietly on the first start, then unlocks live; ke
   assert.deepEqual(syncTrophies({ moments: [{ type: 'hp1', species: 16, runId: 'eeee0001' }] }).fresh, [], 'reported once');
 
   // the slot this computer plays decides whose catches count
-  writeRun(pair('eeee0002', { imported: true }), docOf({ 'enc:r1:p1': caught(25, T0), 'enc:r1:p2': caught(133, T0) }));
+  writeRun(pair('eeee0002', { imported: true, outputs: { p2: { rom: 'p2.nds' } } }), docOf({ 'enc:r1:p1': caught(25, T0), 'enc:r1:p2': caught(133, T0) }));
   let r = syncTrophies({});
   assert.equal(r.dex[133]?.caught, 1, 'an imported invite plays p2 by default');
   assert.ok(!r.dex[25]?.caught);
@@ -465,6 +490,51 @@ test('syncTrophies: digests of an older version are made again; a deleted run ge
   assert.equal(gen('ffff0202'), 5, 'the deleted run: from its game id');
   assert.equal(r.runs.find((x) => x.id === 'ffff0202').archived, true);
   rmSync(join(DATA, 'runs', 'ffff0201'), { recursive: true });
+});
+
+test('runStarted: a run made here, or an invite once this computer built its game – not an invite only opened', () => {
+  assert.equal(T.runStarted(pair('abcd0001')), true, 'created here (only written by a build)');
+  assert.equal(T.runStarted(pair('abcd0002', { imported: true })), false, 'invite opened');
+  assert.equal(T.runStarted(pair('abcd0003', { imported: true, outputs: {} })), false);
+  assert.equal(T.runStarted(pair('abcd0004', { imported: true, outputs: { p2: { rom: 'p2.nds' } } })), true, 'joined: the seat\'s game is built');
+  assert.equal(T.runStarted(null), false);
+});
+
+test('syncTrophies: an invite opened (and declined) unlocks nothing – joining it unlocks Press Start and Linked Souls once', () => {
+  // a clean slate that isn't a first start (no back-fill): no runs, an empty trophy file
+  rmSync(join(DATA, 'runs'), { recursive: true, force: true });
+  writeFileSync(TROPHY_PATH, JSON.stringify(T.migrate({ schema: T.SCHEMA, createdAt: Date.now() })));
+  const unlocked = (r) => r.achievements.filter((a) => a.ok).map((a) => a.id);
+  // a 3-player randomized invite with the host's catches already in the synced doc, and a live moment of its open doc
+  const invite = pair('abab0001', { imported: true, outputs: {}, randomizer: { enabled: true }, players: { p1: { name: 'Lou' }, p2: { name: 'Robin' }, p3: { name: 'Tim' } } });
+  writeRun(invite, docOf({ 'enc:r1:p1': caught(25, Date.now()), 'enc:r1:p2': caught(133, Date.now()), 'feed:c1': feedCatch('p2', 'r1', 133, Date.now()) }));
+  let r = syncTrophies({ slots: { abab0001: 'p2' }, moments: [{ type: 'hp1', species: 133, runId: 'abab0001' }] });
+  assert.deepEqual(r.fresh, [], 'nothing from the preview');
+  assert.deepEqual(unlocked(r), []);
+  assert.equal(r.runs.length, 0, 'not one of this computer\'s runs');
+  assert.ok(!r.dex[133]?.caught, 'the doc\'s catches don\'t fill the Pokédex');
+  // declined: the invite run is deleted – it doesn't come back as a deleted (archived) run either
+  rmSync(join(DATA, 'runs', 'abab0001'), { recursive: true });
+  r = syncTrophies({});
+  assert.deepEqual(unlocked(r), []);
+  assert.equal(r.runs.length, 0);
+  // a digest an older version made of an unbuilt invite is dropped
+  writeRun(invite, docOf({}));
+  const st = JSON.parse(readFileSync(TROPHY_PATH, 'utf8'));
+  st.runs.abab0001 = { sig: 'old', digest: T.digestRun(invite, {}, 'p2') };
+  writeFileSync(TROPHY_PATH, JSON.stringify(st));
+  r = syncTrophies({});
+  assert.deepEqual(unlocked(r), []);
+  assert.ok(!JSON.parse(readFileSync(TROPHY_PATH, 'utf8')).runs.abab0001);
+
+  // joined: the game for the seat is built
+  writeRun({ ...invite, outputs: { p2: { rom: 'p2.nds' } } }, docOf({}));
+  r = syncTrophies({});
+  for (const id of ['firstRun', 'firstLink', 'groupLink', 'randoStart']) assert.ok(r.fresh.includes(id), id);
+  assert.deepEqual(syncTrophies({}).fresh, [], 'once');
+  // the moment the preview sent wasn't kept for later either
+  assert.ok(!unlocked(syncTrophies({})).includes('oneHp'));
+  rmSync(join(DATA, 'runs', 'abab0001'), { recursive: true });
 });
 
 test('rules: the classic memes – Miltank, Garchomp, Selfdestruct, Abra, roamers, Gyarados, Feebas, Helix, Bird Jesus, too much water', () => {

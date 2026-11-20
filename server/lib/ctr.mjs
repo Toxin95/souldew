@@ -418,7 +418,18 @@ export class CtrSessions {
   /** Spawn the session's host (again, after relaunch: the page's stream goes on). */
   run(s) {
     const env = this.hostEnv?.();
-    const child = this.spawn(s.exe, s.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, ...(env ? { env } : {}) });
+    let child;
+    try {
+      child = this.spawn(s.exe, s.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, ...(env ? { env } : {}) });
+    } catch (e) {
+      // (Windows: a file that isn't a program fails right here, not with an 'error' event – the session just ends)
+      Object.assign(s, { child: null, exit: { error: e.message }, held: false, events: [], heldErrors: [], startedAt: Date.now() });
+      this.ended(s, s.exit);
+      s.closed = true;
+      clearTimeout(s.orphan);
+      s.stream?.end();
+      return;
+    }
     Object.assign(s, { child, exit: null, recorded: false, held: false, events: [], heldErrors: [], startedAt: Date.now() });
     // the host may still step down (3DS, "auto"): its error event waits until it is clear the session doesn't go on
     // with another renderer – the page would show "the game has stopped" for a game that is about to run
@@ -513,7 +524,7 @@ export class CtrSessions {
     s.scale = 1;
     s.args = withArg(withRenderer(s.args, next), '--scale', 1);
     this.run(s);
-    for (const b of Object.values(s.lastCmds)) s.child.stdin.write(b);
+    for (const b of Object.values(s.lastCmds)) s.child?.stdin.write(b);
     return true;
   }
 
@@ -527,7 +538,7 @@ export class CtrSessions {
   /** Let the host write again (the page caught up, or another page / none reads now). */
   release(s) {
     s.held = false;
-    s.child.stdout.resume();
+    s.child?.stdout.resume();
   }
 
   /** Remember the host's events (loaded, title, errors) for the status. `data`: one whole EVENT message. Returns it. */
@@ -614,7 +625,7 @@ export class CtrSessions {
     // (a host held back by a page that no longer reads couldn't see the QUIT – let it write)
     this.release(s);
     s.stream?.end();
-    if (s.exit) return;
+    if (s.exit || !s.child) return;
     const kill = setTimeout(() => s.child.kill('SIGKILL'), 3000);
     kill.unref?.();
     s.child.once('exit', () => clearTimeout(kill));

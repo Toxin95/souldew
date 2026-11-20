@@ -15,7 +15,12 @@ export const BUTTONS = [
   { id: 'r', ejs: 11, keyCode: 69, key: 'e', systems: ['nds', 'gba'] },
   { id: 'start', ejs: 3, keyCode: 13, key: 'Enter' },
   { id: 'select', ejs: 2, keyCode: 86, key: 'v' },
+  // 3DS only, no joypad button (no ejs): held, the Circle Pad goes only part of the way – a key gives full tilt, and
+  // some games walk slowly on a light tilt (Omega Ruby / Alpha Sapphire sneak). shared/ctrinput.mjs CTR_SNEAK_TILT.
+  { id: 'sneak', keyCode: 67, key: 'c', systems: ['3ds'] },
 ];
+/** A button of the console's joypad (EmulatorJS / RetroArch index) – not the 3DS half tilt. */
+export const isJoypad = (b) => Number.isInteger(b?.ejs);
 
 const NAMED = { 8: 'Backspace', 13: 'Enter', 32: 'Space', 33: 'Page ↑', 34: 'Page ↓', 35: 'End', 36: 'Home', 37: '←', 38: '↑', 39: '→', 40: '↓',
   45: 'Insert', 46: 'Delete', 106: 'Num *', 107: 'Num +', 109: 'Num -', 110: 'Num ,', 111: 'Num /' };
@@ -33,10 +38,12 @@ export function bindable(keyCode) {
 // (test/controls.test.mjs), so picking one leaves the shortcuts where they are.
 export const PRESETS = [
   // the classic default: D-pad on the arrows (right hand), buttons under the left hand
-  { id: 'arrows', keys: { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', a: 'KeyZ', b: 'KeyX', x: 'KeyA', y: 'KeyS', l: 'KeyQ', r: 'KeyE', start: 'Enter', select: 'KeyV' } },
+  // (the 3DS half tilt on C, next to A and B: held by the left hand while the right one walks)
+  { id: 'arrows', keys: { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', a: 'KeyZ', b: 'KeyX', x: 'KeyA', y: 'KeyS', l: 'KeyQ', r: 'KeyE', start: 'Enter', select: 'KeyV', sneak: 'KeyC' } },
   // D-pad under the left hand, face buttons as the console has them (B left of A, Y left of X) under the right;
-  // R stays off the R key (reset) – Q/E sit right next to WASD anyway
-  { id: 'wasd', keys: { up: 'KeyW', left: 'KeyA', down: 'KeyS', right: 'KeyD', b: 'KeyJ', a: 'KeyK', y: 'KeyU', x: 'KeyI', l: 'KeyQ', r: 'KeyE', start: 'Enter', select: 'Space' } },
+  // R stays off the R key (reset) – Q/E sit right next to WASD anyway; the 3DS half tilt on L, next to A, for the right
+  // hand while the left one walks
+  { id: 'wasd', keys: { up: 'KeyW', left: 'KeyA', down: 'KeyS', right: 'KeyD', b: 'KeyJ', a: 'KeyK', y: 'KeyU', x: 'KeyI', l: 'KeyQ', r: 'KeyE', start: 'Enter', select: 'Space', sneak: 'KeyL' } },
 ];
 
 // What a layout prints on the keys where it differs from QWERTY – the fallback when the browser can't tell (no Keyboard Map API).
@@ -128,15 +135,35 @@ export const defaults = (lay = current) => presetMap(PRESETS[0].id, lay);
 export const NONE = Object.freeze({ none: true });
 const isNone = (s) => !!s && typeof s === 'object' && s.none === true;
 
+const storedKey = (s) => !!s && typeof s === 'object' && Number.isInteger(s.keyCode);
+
+/**
+ * Whose defaults a stored mapping falls back on: the preset all its joypad buttons are – a mapping saved before a button
+ * existed (2.8.2 had no 3DS half tilt) gets that button's key from the preset the player picked – else the first one.
+ */
+function fallbackPreset(saved, lay) {
+  const joy = BUTTONS.filter(isJoypad);
+  if (!joy.every((b) => storedKey(saved?.[b.id]) || isNone(saved?.[b.id]))) return PRESETS[0].id;
+  return PRESETS.find((p) => {
+    const pm = presetMap(p.id, lay);
+    return joy.every((b) => storedKey(saved[b.id]) && live(saved[b.id], lay).keyCode === pm[b.id].keyCode);
+  })?.id || PRESETS[0].id;
+}
+
 /**
  * Stored mapping → complete, valid mapping (unknown, unbindable or doubled keys fall back to the default; a button the
  * player left without a key – { none: true } – stays null). The game buttons may have any key a shortcut has by
- * default: the shortcut then gives way (resolveHotkeys).
+ * default: the shortcut then gives way (resolveHotkeys). The 3DS half tilt (new in 2.8.3) never takes a key the player
+ * gave a shortcut by default – it has no key then, instead of quietly taking the player's one (a joypad button's
+ * default still does, as it always did).
  */
 export function resolve(saved, lay = current) {
   const out = {};
   const used = new Set();
-  const def = defaults(lay);
+  const def = presetMap(fallbackPreset(saved, lay), lay);
+  // the plain keys the player gave shortcuts (one with modifiers doesn't clash with a game button's key)
+  const chosen = new Set(HOTKEYS.flatMap((h) => (Array.isArray(saved?.[h.id]) ? saved[h.id] : [saved?.[h.id]]))
+    .filter((c) => storedKey(c) && !c.mod && !MODS.some((m) => c[m])).map((c) => live(c, lay).keyCode));
   for (const b of BUTTONS) {
     if (isNone(saved?.[b.id])) {
       out[b.id] = null;
@@ -144,16 +171,20 @@ export function resolve(saved, lay = current) {
     }
     const s = live(saved?.[b.id], lay);
     let v = s && Number.isInteger(s.keyCode) && bindable(s.keyCode) && !used.has(s.keyCode) ? s : null;
-    if (!v && !used.has(def[b.id].keyCode)) v = def[b.id];
+    if (!v && !used.has(def[b.id].keyCode) && (isJoypad(b) || !chosen.has(def[b.id].keyCode))) v = def[b.id];
     if (v) used.add(v.keyCode);
     out[b.id] = v ? { keyCode: v.keyCode, key: v.key || '', ...(v.code ? { code: v.code } : {}) } : null;
   }
   return out;
 }
 
-/** Stored mapping → { keyCode: button } – how the native players (lib/nativeplayer.mjs, lib/ctrplayer.mjs) read keys. */
+/**
+ * Stored mapping → { keyCode: button } – how the native players (lib/nativeplayer.mjs, lib/ctrplayer.mjs) read keys: the
+ * joypad buttons (the 3DS player reads the half tilt's key itself, resolve().sneak).
+ */
 export function keyButtons(saved, lay = current) {
-  return Object.fromEntries(Object.entries(resolve(saved, lay)).filter(([, v]) => v).map(([b, v]) => [v.keyCode, b]));
+  const m = resolve(saved, lay);
+  return Object.fromEntries(BUTTONS.filter((b) => isJoypad(b) && m[b.id]).map((b) => [m[b.id].keyCode, b.id]));
 }
 
 /** EmulatorJS controls table (EJS_defaultControls): the 12 game buttons on keyboard and controller. */
@@ -161,7 +192,7 @@ export function ejsControls(saved, lay = current, pads = null) {
   const m = resolve(saved, lay);
   const pm = padMap(pads);
   const p1 = {};
-  for (const b of BUTTONS) p1[b.ejs] = { value: m[b.id]?.keyCode ?? -1, value2: pm[b.id] || '' };
+  for (const b of BUTTONS.filter(isJoypad)) p1[b.ejs] = { value: m[b.id]?.keyCode ?? -1, value2: pm[b.id] || '' };
   return { 0: p1, 1: {}, 2: {}, 3: {} };
 }
 
@@ -237,7 +268,8 @@ export const sameCombo = (a, b) => !!a && !!b && a.keyCode === b.keyCode && MODS
 
 // What the system or souldew's own menu does with a combo – refused for the shortcuts (Settings › Controls says why).
 // mac: ⌘Q / ⌘W / ⌘H / ⌘M / ⌘Tab / ⌘Space …; Windows and Linux: Alt+F4, Alt+Tab, Ctrl+Alt+Del, Ctrl+Esc, the Windows /
-// Super key … – and the app menu's own (⌘, settings, ⌘1–5, ⌘O, ⌘B, ⌘/, the edit menu's ⌘Z / X / C / V / A, fullscreen).
+// Super key … – and the app menu's own (⌘, settings, ⌘1–5, ⌘O, ⌘B, ⌘/, the edit menu's ⌘Z / X / C / V / A, fullscreen) and
+// the play view's ⌘I (the dock).
 const L = (ch) => ch.toUpperCase().charCodeAt(0);
 const SYS_MAC = [
   [{ meta: 1 }, [L('q'), L('w'), L('h'), L('m'), TAB, 32, 192]], // quit, close, hide, minimize, app switcher, Spotlight, window switcher
@@ -254,7 +286,8 @@ const SYS_PC = [
   [{ alt: 1, shift: 1 }, [TAB]],
 ];
 const MENU = (mac) => [
-  [{ [mac ? 'meta' : 'ctrl']: 1 }, [188, 49, 50, 51, 52, 53, L('o'), L('b'), 191, L('z'), L('x'), L('c'), L('v'), L('a'), L('q'), L('w'), ...(mac ? [] : [L('y')])]],
+  // (⌘I / Ctrl+I: the play view's dock – views/play.mjs folds it before any shortcut sees the key)
+  [{ [mac ? 'meta' : 'ctrl']: 1 }, [188, 49, 50, 51, 52, 53, L('o'), L('b'), L('i'), 191, L('z'), L('x'), L('c'), L('v'), L('a'), L('q'), L('w'), ...(mac ? [] : [L('y')])]],
   [{ [mac ? 'meta' : 'ctrl']: 1, shift: 1 }, [L('z')]],
   ...(mac ? [] : [[{}, [122]]]), // F11: fullscreen (Windows, Linux)
 ];
@@ -439,7 +472,8 @@ export function changedBindings(a, b, skip = null, lay = current, mac = isMac())
 // config.pads = { preset: 'nintendo'|'xbox', map?: { [button]: label } } – map holds what the player re-bound.
 export const PAD_LABELS = ['BUTTON_1', 'BUTTON_2', 'BUTTON_3', 'BUTTON_4', 'LEFT_TOP_SHOULDER', 'RIGHT_TOP_SHOULDER',
   'LEFT_BOTTOM_SHOULDER', 'RIGHT_BOTTOM_SHOULDER', 'SELECT', 'START', 'LEFT_STICK', 'RIGHT_STICK', 'DPAD_UP', 'DPAD_DOWN', 'DPAD_LEFT', 'DPAD_RIGHT'];
-const SHARED_PAD = { up: 'DPAD_UP', down: 'DPAD_DOWN', left: 'DPAD_LEFT', right: 'DPAD_RIGHT', l: 'LEFT_TOP_SHOULDER', r: 'RIGHT_TOP_SHOULDER', start: 'START', select: 'SELECT' };
+// (the 3DS half tilt has no button unless the player picks one: the stick already tilts part of the way)
+const SHARED_PAD = { up: 'DPAD_UP', down: 'DPAD_DOWN', left: 'DPAD_LEFT', right: 'DPAD_RIGHT', l: 'LEFT_TOP_SHOULDER', r: 'RIGHT_TOP_SHOULDER', start: 'START', select: 'SELECT', sneak: '' };
 export const PAD_PRESETS = [
   // where the buttons sit on a Game Boy Advance / DS: A right, B bottom, X top, Y left
   { id: 'nintendo', map: { ...SHARED_PAD, a: 'BUTTON_2', b: 'BUTTON_1', x: 'BUTTON_4', y: 'BUTTON_3' } },
@@ -516,7 +550,7 @@ export function assignPad(pads, id, label) {
   const old = all[id];
   map[id] = label;
   const keep = { preset: (PAD_PRESETS.find((p) => p.id === pads?.preset) || PAD_PRESETS[0]).id, ...(pads?.device ? { device: pads.device } : {}) };
-  const tidy = (m) => Object.fromEntries(Object.entries(m).filter(([k, v]) => !(v === PAD_NONE && PAD_HOTKEY_DEFAULTS[k] === '')));
+  const tidy = (m) => Object.fromEntries(Object.entries(m).filter(([k, v]) => !(v === PAD_NONE && (PAD_HOTKEY_DEFAULTS[k] === '' || SHARED_PAD[k] === ''))));
   const next = { ...keep, map: tidy(map) };
   const swap = lost.length === 1 && old ? { ...keep, map: tidy({ ...map, [lost[0].id]: old }) } : null;
   return { next, lost, swap };

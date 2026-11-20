@@ -6,18 +6,22 @@ import { catalog, gameTitle } from './data.mjs';
 import { patchTitle } from '/shared/patchname.mjs';
 
 /** The content of a library entry: CRC32 of a ROM (3DS: title + size, no CRC), SHA-1 of a patch. */
-const sig = (kind, e) => (kind === 'patch' ? `p:${e.sha1 || e.id}` : `r:${e.crc || `${e.system}|${e.titleId || e.code || ''}|${e.size}`}`);
+const sig = (kind, e) => (kind === 'patch' ? `p:${e.sha1 || e.id}` : kind === 'update' ? `u:${e.titleId}|${e.version}|${e.size}` : `r:${e.crc || `${e.system}|${e.titleId || e.code || ''}|${e.size}`}`);
 
 /**
  * before / after: scanLibrary() results; paths: the library files the server reported as added ({ added } of
  * /api/library/import and /upload), or null for a whole folder (then every entry new since `before` counts).
- * → { added: [{ kind: 'rom'|'patch', entry }], already: [...], unusable: number of files with nothing usable }
+ * → { added: [{ kind: 'rom'|'patch'|'update', entry }], already: [...], unusable: number of files with nothing usable }
+ * (a 3DS game update: `hasGame` – its game is in the library)
  */
 export function addedToLibrary(before, after, paths) {
   const had = new Set();
   for (const r of before?.roms || []) had.add(sig('rom', r));
   for (const p of before?.patches || []) had.add(sig('patch', p));
-  const entries = [...(after?.roms || []).map((entry) => ({ kind: 'rom', entry })), ...(after?.patches || []).map((entry) => ({ kind: 'patch', entry }))];
+  for (const u of before?.ctrUpdates || []) had.add(sig('update', u));
+  const games = new Set((after?.roms || []).filter((r) => r.system === '3ds' && r.titleId).map((r) => r.titleId));
+  const entries = [...(after?.roms || []).map((entry) => ({ kind: 'rom', entry })), ...(after?.patches || []).map((entry) => ({ kind: 'patch', entry })),
+    ...(after?.ctrUpdates || []).map((entry) => ({ kind: 'update', entry, hasGame: games.has(entry.gameTitleId) }))];
   const added = [];
   const already = [];
   let unusable = 0;
@@ -65,6 +69,10 @@ export function unpackToast(p, cat = catalog()) {
 
 /** A name for an entry in the "added" message: the game or hack it is (with the patch's version), else its file name. */
 function addedName({ kind, entry }, cat) {
+  if (kind === 'update') {
+    const g = entry.gameId ? (cat.games || []).find((x) => x.id === entry.gameId) : null;
+    return t('lib.addedUpdateName', 'Update {version} for {game}', { version: entry.versionText || '', game: g ? gameTitle(g) : entry.gameTitleId || entry.name });
+  }
   if (kind === 'patch') {
     const h = entry.hackId ? (cat.hacks || []).find((x) => x.id === entry.hackId) : null;
     const { title, version } = patchTitle(entry.name);
@@ -87,7 +95,11 @@ export function addedMessage({ added, already, unusable }, cat = catalog()) {
   if (added.length && already.length) extra.push(t('lib.addedAlready', 'Already in your library: {names}', { names: names(already) }));
   if (unusable) extra.push(t('lib.addedUnusable', '{count} file has no game or patch souldew can use.|{count} files have no game or patch souldew can use.', { count: unusable }));
   if (added.length === 1) {
-    const hint = added[0].kind === 'patch' ? t('lib.addedPatchHint', 'You’ll find it under ROM hacks.') : t('lib.addedGameHint', 'It’s on the shelf now.');
+    const u = added[0].kind === 'update' ? added[0] : null;
+    const hint = u ? (u.entry.encrypted ? t('lib.addedUpdateEncrypted', 'It’s encrypted, so souldew can’t use it – add a decrypted copy of the update.')
+      : u.hasGame ? t('lib.addedUpdateHint', 'souldew’s player starts the game with it now.') : t('lib.addedUpdateWaiting', 'souldew uses it as soon as you add the game.'))
+      : added[0].kind === 'patch' ? t('lib.addedPatchHint', 'You’ll find it under ROM hacks.') : t('lib.addedGameHint', 'It’s on the shelf now.');
+    if (u?.entry.encrypted) return { kind: 'warn', title: t('lib.addedOne', 'Added: {name}', { name: name(added[0]) }), text: [hint, ...extra].join('\n') };
     // an already-patched ROM whose file name looks like a catalog hack ("kaizo-emerald.gba", server/lib/library.mjs):
     // the page offers to link it (`suggest`, a button on the toast)
     const e = added[0].entry;
@@ -100,9 +112,11 @@ export function addedMessage({ added, already, unusable }, cat = catalog()) {
   }
   if (added.length) {
     const games = added.filter((x) => x.kind === 'rom').length;
-    const patches = added.length - games;
-    const parts = [games && t('lib.addedGames', '{count} game|{count} games', { count: games }), patches && t('lib.addedPatches', '{count} patch|{count} patches', { count: patches })].filter(Boolean);
-    const what = parts.length === 2 ? t('lib.addedAnd', '{a} and {b}', { a: parts[0], b: parts[1] }) : parts[0];
+    const updates = added.filter((x) => x.kind === 'update').length;
+    const patches = added.length - games - updates;
+    const parts = [games && t('lib.addedGames', '{count} game|{count} games', { count: games }), patches && t('lib.addedPatches', '{count} patch|{count} patches', { count: patches }),
+      updates && t('lib.addedUpdates', '{count} update|{count} updates', { count: updates })].filter(Boolean);
+    const what = parts.length >= 2 ? t('lib.addedAnd', '{a} and {b}', { a: parts.slice(0, -1).join(', '), b: parts.at(-1) }) : parts[0];
     return { kind: 'ok', title: t('lib.addedMany', '{what} added', { what }), text: [names(added), ...extra].join('\n') };
   }
   if (already.length) return { kind: 'ok', title: t('lib.alreadyIn', 'Already in your library'), text: [names(already), ...extra].join('\n') };

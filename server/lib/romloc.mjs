@@ -12,12 +12,13 @@ import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import zlib from 'node:zlib';
 import { romLocations, gen3MapTable, gen3MapHeaders, gen3RamMoved, gbMapHeaders } from '../../shared/live/romloc.mjs';
-import { romSpecies, gen3ItemNames, gen3MoveNames, gen3MoveMap } from '../../shared/live/romspecies.mjs';
+import { romSpecies, gen3Forms, gen3ItemNames, gen3MoveNames, gen3MoveMap } from '../../shared/live/romspecies.mjs';
 import { romTypes } from '../../shared/live/romtypes.mjs';
 import { romCaps } from '../../shared/live/romcaps.mjs';
 import { gbWramShift } from '../../shared/live/romwram.mjs';
 import { findEntry } from '../../shared/live/parse.mjs';
 import { identifyRom } from '../../shared/romid.mjs';
+import { isQuetzal } from '../../shared/live/quetzal.mjs';
 import { crc32 } from '../../shared/checksum.mjs';
 import { resolveId } from './library.mjs';
 import { isCtrExt } from '../../shared/romid.mjs';
@@ -25,7 +26,7 @@ import { identifyCtr } from '../../shared/ctr.mjs';
 import { ctrZonePlaces } from '../../shared/live/ctrzones.mjs';
 import { musicIndex } from '../../shared/ctr/musicindex.mjs';
 
-const VERSION = 22; // bump when romData() / ctrData() change what they find or the shape of the result (13: types and level caps from the ROM, 14: 3DS zone tables, 15: their header, 16: Gen 3 hacks with moved RAM, badge flags by the leaders' order, 17: Black/White zone headers, 18: catch rates with the types, the Game Boy enemy's status / catch rate / battle type moved with a hack's RAM, 19: the Game Boy map headers, Gen 3 map headers, Black 2/White 2 zone headers – the place sign checks the game's copy of the current map's header against them, 20: Yellow's map headers (249 maps) and its memory table entry found from its ROM header, 21: Gen 5 forms' types, 22: a 3DS game's music streams – shared/ctr/musicindex.mjs)
+const VERSION = 25; // bump when romData() / ctrData() change what they find or the shape of the result (13: types and level caps from the ROM, 14: 3DS zone tables, 15: their header, 16: Gen 3 hacks with moved RAM, badge flags by the leaders' order, 17: Black/White zone headers, 18: catch rates with the types, the Game Boy enemy's status / catch rate / battle type moved with a hack's RAM, 19: the Game Boy map headers, Gen 3 map headers, Black 2/White 2 zone headers – the place sign checks the game's copy of the current map's header against them, 20: Yellow's map headers (249 maps) and its memory table entry found from its ROM header, 21: Gen 5 forms' types, 22: a 3DS game's music streams – shared/ctr/musicindex.mjs, 23: GBA species' abilities and the ability names – romtypes.mjs gbaAbilities, 24: an expanded GBA engine's species after a gap of left-out ones and its Megas / Primal forms – romspecies.mjs gen3Forms, 25: Pokémon Quetzal – its own party struct (`layout3`), place names, item names and one species table, not two)
 const memo = new Map(); // ROM id → { result, failedAt? }
 /** A scan that failed is tried again after this long (a file a scanner held, a drive that slept). */
 const RETRY_FAILED_MS = (process.env.NODE_TEST_CONTEXT && Number(process.env.SLS_ROMDATA_RETRY_MS)) || 30000;
@@ -45,7 +46,7 @@ function opts(sharedDir) {
       const k = past ? Object.keys(past).map(Number).sort((a, b) => a - b).find((x) => x >= gen) : undefined;
       return k !== undefined ? past[k] : api.types?.[id] || [];
     };
-    tables = { gen3Charset: j('charset_gen3.json'), gen4Chars: j('gen4.json').chars, retail, gen3Index, dexNames: api.names?.en || [], dexNamesOther: ['de', 'fr', 'es', 'it'].map((l) => api.names?.[l]).filter(Boolean), addresses: j('addresses.json'), maps: j('maps.json'), baseTypes, moveNames: ['en', 'de', 'fr', 'es', 'it'].map((l) => api.moves?.[l]).filter(Boolean) };
+    tables = { gen3Charset: j('charset_gen3.json'), gen4Chars: j('gen4.json').chars, retail, gen3Index, dexNames: api.names?.en || [], dexNamesOther: ['de', 'fr', 'es', 'it'].map((l) => api.names?.[l]).filter(Boolean), addresses: j('addresses.json'), maps: j('maps.json'), baseTypes, moveNames: ['en', 'de', 'fr', 'es', 'it'].map((l) => api.moves?.[l]).filter(Boolean), abilityNames: ['en', 'de', 'fr', 'es', 'it'].map((l) => api.abilities?.[l]).filter(Boolean) };
   }
   return tables;
 }
@@ -84,14 +85,23 @@ export function romData(u8, sharedDir) {
   const own = species?.engine === 'expanded' ? ownTables3(u8, o) : { items: null, moves: null };
   // the game's types – names, each Pokémon's, the chart, the moves' (shared/live/romtypes.mjs): any ROM, so a hack that
   // changed them shows what it uses; a retail ROM reads as the app's own data
-  const types = romTypes(u8, { gen3Charset: o.gen3Charset, speciesMap: species?.map ? species : null, vanillaIndex: o.gen3Index, baseTypes: o.baseTypes, moveMap: own.moves?.map || null });
+  const types = romTypes(u8, { gen3Charset: o.gen3Charset, speciesMap: species?.map ? species : null, vanillaIndex: o.gen3Index, baseTypes: o.baseTypes, moveMap: own.moves?.map || null, abilityNames: o.abilityNames });
+  // an expanded engine's alternate forms are species of their own, mapped to their species by name: which of them are
+  // Megas and Primal forms (shown as such – the rules go by the species) comes from the base stats romTypes found
+  if (species?.engine === 'expanded') {
+    const forms = gen3Forms(u8, species, types?.source?.baseStats != null ? { offset: types.source.baseStats, stride: types.source.stride } : null);
+    if (forms) species.forms = forms;
+  }
   // level caps from the game's trainers (shared/live/romcaps.mjs) – only a clean result; `capsWhy` says why not
   const c = romCaps(u8, { gen3Charset: o.gen3Charset, gen4Chars: o.gen4Chars });
   const caps = c.caps ? { caps: c.caps, leaders: c.leaders, final: c.final, badgeFlags: c.badgeFlags ?? null } : null;
   // the header (system, game code, title): which memory table entry reads it (shared/live/features.mjs)
   const h = identifyRom(u8.subarray(0, 0x200));
   const header = h?.system ? { system: h.system, code: h.code || '', title: h.title || '' } : null;
-  return { data, species, wram: vanilla ? null : gbShift(u8, o), gbMaps: gbMaps(u8, o), types, caps, capsWhy: caps ? null : c.why || null, ...own, header, vanilla };
+  // an engine whose party struct isn't the base game's (Pokémon Quetzal: 104 bytes – shared/live/quetzal.mjs): the live
+  // readers convert it (parse.mjs LiveTables.withRom)
+  const layout3 = isQuetzal(header) ? 'quetzal' : null;
+  return { data, species, wram: vanilla ? null : gbShift(u8, o), gbMaps: gbMaps(u8, o), types, caps, capsWhy: caps ? null : c.why || null, ...own, header, vanilla, layout3 };
 }
 
 /**
@@ -182,7 +192,7 @@ export function ctrData(file) {
 export const isCtrFile = (file) => Boolean(file) && isCtrExt(extname(file).slice(1));
 
 /** What romDataFor finds when there's nothing to find – also the list of fields the disk cache must give back. */
-export const ROMDATA_NONE = Object.freeze({ data: null, species: null, wram: null, gbMaps: null, types: null, caps: null, capsWhy: null, items: null, moves: null, header: null, vanilla: null, music: null });
+export const ROMDATA_NONE = Object.freeze({ data: null, species: null, wram: null, gbMaps: null, types: null, caps: null, capsWhy: null, items: null, moves: null, header: null, vanilla: null, music: null, layout3: null });
 /** A disk-cache entry back into romDataFor's result (every field of ROMDATA_NONE – a missing one would be lost on the
  * next start, as the own types of Too Many Types were). */
 export const fromRomCache = (v) => Object.fromEntries(Object.keys(ROMDATA_NONE).map((k) => [k, v[k] ?? null]));

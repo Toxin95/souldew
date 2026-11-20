@@ -59,7 +59,7 @@ New visible text always goes through `t('area.key', 'English default', { vars })
 ## Fast player (DS, GBA, Game Boy)
 
 DS, GBA and Game Boy games play in the fast player when its part is there: a native host
-(`native/retro-host/retrohost.c`) runs melonDS DS (with its JIT), mGBA or Gambatte as a native program, and
+(`native/retro-host/retrohost.c`) runs melonDS DS (with its JIT), mGBA or SameBoy as a native program, and
 `web/playernative.html` / `web/lib/nativeplayer.mjs` offer the play view the same `window.__emu` API as the
 EmulatorJS player. The host speaks the 3DS host's protocol plus a few messages (header of `retrohost.c`): the game's RAM
 regions are mirrored in the page (what changed, ten times a second, between two frames – the live reader reads them
@@ -67,11 +67,13 @@ synchronously as before), the battery save comes out when the game saved (and se
 cheats are written between frames, `STEP n` runs exactly n frames (the ROM matrix). `server/lib/native.mjs` knows the
 cores, their RAM and options and reuses the 3DS sessions (`/api/native/*`). Settings › "Fast player" switches it off
 (`config.nativeCore`); when the host can't start a game the play view falls back to `player.html` by itself. Save
-states carry the core id (`melonds-native`, `mgba-native`, `gambatte-native`) – the other player's states aren't offered.
+states carry the core id (`melonds-native`, `mgba-native`, `sameboy-native`) – the other player's states aren't offered (nor
+the older Game Boy player's, `gambatte-native`). The GBA and Game Boy cores are built from the link host's mGBA commit and
+SameBoy version: a link session starts from the running game's state and hands it back (docs/MULTIPLAYER.md › "Seamless").
 
 ```sh
-brew install cmake ninja                        # (Windows cross build: brew install mingw-w64)
-npm run native                                  # host + melonDS DS v1.4.0 + mGBA 0.10.5 + Gambatte, into tools/native/<platform>-<arch>/
+brew install cmake ninja rgbds                  # (rgbds: SameBoy's boot ROM for the link host; Windows cross build: brew install mingw-w64)
+npm run native                                  # host + melonDS DS v1.4.0 + mGBA (d58ea8a) + SameBoy v1.0.5 + link host, into tools/native/<platform>-<arch>/
 node scripts/build-native.mjs --host-only       # only the host (after changing retrohost.c)
 node scripts/build-native.mjs --platform win32-x64   # the Windows part, cross-compiled and statically linked
 node --test test/native.test.mjs                # the real host on a Game Boy ROM the test makes (skipped when not built)
@@ -79,7 +81,11 @@ node scripts/rom-matrix.mjs <roms> --live --native   # the ROM matrix in the fas
 node scripts/native-e2e.mjs <roms>              # the app UI: native player taken, speeds 1×/2×/4×/Max, save states
 ```
 
-Sources are cloned at their tags into `_ref/native/` (not in the repository). The cores are built without OpenGL (the
+Sources are cloned at their tags into `_ref/native/` (not in the repository). Two small patches are applied to them:
+`native/melonds-patch/` (melonDS's software renderer keeps the depth of the 3D frame on screen while asked) and
+`native/melonds-ds-patch/` (melonDS DS exports it as `souldew_depth`) – Shared World hides DS partners behind the map
+with it (docs/MULTIPLAYER.md › 9). The DS core is built against the link host's melonDS checkout (the same pinned commit
+of the fork's branch melonDS DS fetches), so both carry the patch. The cores are built without OpenGL (the
 page draws the picture), the DS core with its Wi-Fi switched off at run time. `npm run dist` checks the folder
 (`build-native.mjs --check`); `SLS_NO_NATIVE=1 npm run dist` builds without it – everything then plays in the browser
 emulator. Windows and Linux: `.github/workflows/native.yml` (Ubuntu 22.04 for Linux, MinGW-w64 cross build for Windows,
@@ -143,6 +149,18 @@ UPR loads but can't randomize (a ROM hack or release whose data isn't where UPR 
 `reason: 'randoCrash'` and the wizard turns the randomizer off with that reason; a build that fails anyway answers
 `randoFailed` with only the Java exception's class name (`randomizerError`), the bridge's output stays in the server log.
 
+**TM compatibility follows the TM moves** (`@tmsFollowMoves`, #81 – souldew's own option, not UPR's): UPR keeps a random
+TM's compatibility tied to its slot. With the option on, `SoulLinkBridge` loads the game through its handler subclass
+(Gen 1–3 and 6–7 `FollowGenN`, Gen 4/5 the `SafeGen4/5RomHandler`; without it the load is unchanged), `TmFollow.snapshot`
+reads every Pokémon's original TM/HM, tutor and level-up moves (with those of its pre-evolutions) before UPR runs, and
+right after UPR's `randomizeTMMoves` every TM whose move changed goes to the Pokémon that could learn the new move – a
+move nobody could learn to the Pokémon of its type, and with none of those the slot keeps its list. HMs and unchanged TMs
+stay; UPR's own compatibility options run afterwards (the switch is only offered with "Unchanged"). The spoiler log gets
+a "TM Compatibility Follows The TM Moves" section. A run with it travels as run pack `@4` (2.8.2 would build without it);
+`SoulLinkBridge tmcompat <case.json>` runs the computation on test data (`test/tmfollow.test.mjs`). Gen 4's alternate
+forms (Rotom, Giratina, Shaymin, Deoxys, Wormadam) are a UPR limit for every compatibility change: its Gen 4 handler
+writes their compatibility to the personal-data file of their number, not their own file.
+
 **Randomizing 3DS games** uses the same bundled UPR ZX 4.6.1 jar and `SoulLinkBridge` as Gen 1–5 – UPR's own
 Gen6/Gen7RomHandler (`server/lib/ctrrando.mjs`, the 3DS branch of `server/lib/build.mjs`). Input: a decrypted `.3ds`/
 `.cci`/`.cxi`/`.cia` (UPR reads the game's NCCH; an encrypted one ends with `@@CODE "encrypted"` → `ctrEncrypted` –
@@ -154,10 +172,28 @@ out of the app (Gen 1–5 runs get `<cache>/upr-work/<id>` the same way – two 
 build, no longer take each other's unpacked files). UPR writes the `.cxi` with
 `RandomAccessFile("rw")`, which doesn't truncate, so the build always deletes the target first (it may be a hard link
 to the library's game). Rebuild the bridge after changing it:
-`javac --release 8 -cp tools/upr/PokeRandoZX.jar:tools/upr-bridge -d tools/upr-bridge tools/upr-bridge/SoulLinkBridge.java tools/upr-bridge/com/dabomstew/pkrandom/SysConstants.java`.
+`javac --release 8 -cp tools/upr/PokeRandoZX.jar:tools/upr-bridge -d tools/upr-bridge tools/upr-bridge/SoulLinkBridge.java tools/upr-bridge/TmFollow.java tools/upr-bridge/com/dabomstew/pkrandom/SysConstants.java`.
 Determinism: Sun built byte-identical with Temurin 17, OpenJDK 21 and 27 ("Nuzlocke hard mode" and "Chaos"); the Gen 6/7
 handlers' only enum-keyed map iteration is the weakness-berry table behind `Effectiveness.against`, already fixed.
-Game updates aren't loaded (UPR could only write them as LayeredFS).
+Game updates aren't loaded (UPR could only write them as LayeredFS – it refuses one .cxi with an update loaded), and a
+randomized game never gets its update in the player either (Azahar runs an installed update's code, which would undo
+the randomization).
+
+**3DS game updates** (title ID 0004000E + the game's low half, usually a `.cia`; a bare NCCH `.cxi`/`.3ds` works too):
+the library lists them in `ctrUpdates`, never as games, and puts the newest one souldew can install on its game
+(`rom.update`; `shared/ctr/update.mjs` `pickUpdate`) – an update added before its game waits for it. "Remove" in the
+game's details deletes souldew's copy in the library folder or marks a file in an included folder
+(`config.ctrUpdatesDetached`). The core finds an installed update on the emulated SD card of the save folder ctrhost
+points it at (`<save>/Azahar/sdmc/Nintendo 3DS/<id0>/<id1>/title/0004000e/<low>/content/` – the smallest `.tmd` there and
+the `.app` its first content record names), so `POST /api/ctr/start` installs it there before the host starts
+(`server/lib/ctrupdate.mjs`): the update file is unpacked once into `<data>/ctr/updates/<stamp>/` (the CIA's TMD and
+each content as it is – what Azahar's own "Install CIA" writes for a decrypted CIA; a bare NCCH gets a TMD souldew
+writes) and hard-linked (copied where links fail) into the save folder, with `souldew-update.json` saying which update
+it is; a save folder whose game has no update in the library any more loses the one souldew put there. Encrypted
+updates (title-key content or NCCH crypto) are refused – souldew has no keys. The start's answer carries `update`
+(`versionText`, `gameVersion`, `tracking` – `older` for an update before the latest, whose addresses the live data
+doesn't know) for the play view. The external Azahar app is unchanged: there the player installs the update with
+File › Install CIA.
 
 Notes: New 3DS mode is on (the core's default; a savestate from Old 3DS mode would crash the core, so the play view
 stores states as core `azahar-n3ds` and refuses others). The host exits with `_exit` – the core's unload crashes.

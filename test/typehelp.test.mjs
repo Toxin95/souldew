@@ -91,6 +91,6 @@ test('type matchup help: the battle helper hides the matchups when it is off, th
   assert.match(board, /allowedRulesPatch\(asked, manifest\)/);
   assert.match(board, /<\$\{TypeHelpRule\} value=\$\{r\.typeHelp\} solo=\$\{solo\} locked=\$\{locked\}/);
   const wizard = readFileSync(new URL('../web/views/soullink.mjs', import.meta.url), 'utf8');
-  assert.match(wizard, /rules: solo \? \{ \.\.\.nzRules, \.\.\.lives, typeHelp \} : slRules,/);
+  assert.match(wizard, /rules: solo \? \{ \.\.\.nzRules, \.\.\.lives, typeHelp, startAtBalls \} : slRules,/);
   assert.match(wizard, /<\$\{TypeHelpRule\} value=\$\{slRules\.typeHelp\}/);
 });

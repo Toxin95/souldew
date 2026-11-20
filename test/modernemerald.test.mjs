@@ -231,10 +231,12 @@ test('Modern Emerald: badges and boxes stay unread where they don\'t check out',
   b.m.put(STORAGE + 4 + 80, new Uint8Array(80).fill(0x5a));
   const r2 = readLiveParty(expandedEntry(emerald, maps3, items), b.m.read, T, { sb1PtrAddr: SB1P });
   assert.equal(r2.boxes, undefined);
-  // an engine that numbers its items its own way (Run & Bun: Master Ball 4, Calcium 68): no PC, no cheats
+  // an engine that numbers its items its own way (Run & Bun: Master Ball 4, Calcium 68): no cheats – but its PC is read
+  // where it checks out like any other (the bag and the boxes are separate things, #77)
   const rb = expandedEntry(emerald, maps3, Object.assign([], { 4: 'Master Ball', 68: 'Calcium' }));
   assert.equal(rb.retail3, undefined);
-  assert.equal(readLiveParty(rb, modernEmerald().m.read, T, { sb1PtrAddr: SB1P }).boxes, undefined);
+  assert.deepEqual(readLiveParty(rb, modernEmerald().m.read, T, { sb1PtrAddr: SB1P }).boxes.map((x) => [x.species, x.box, x.slot]), [[265, 14, 0]]);
+  assert.equal(readLiveParty(rb, b.m.read, T, { sb1PtrAddr: SB1P }).boxes, undefined, 'and not where a slot doesn’t read');
   assert.equal(cheatSupported(rb), false);
 });
 

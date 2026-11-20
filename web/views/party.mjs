@@ -7,11 +7,13 @@
 //   <PartyGrid party=${mons} gen=${4} layout="row" />                  overlay strip (6 in a row, 3 × 2 when narrow)
 //   <TeamColumns slots=${['p1','p2','p3']} teams=${{ p1: [...] }} … />  one party menu per player (1–4 columns)
 //
+//   <TeamColumns … onPick=${(mon, slot) => …} />                       panels as buttons (the board: a Pokémon's details)
+//
 // Mon shape: { species, nickname|nick, level, hp, maxHp, shiny, gender ('M'|'F'|'-'|null),
 //              status (raw status byte or 'slp'|'psn'|'brn'|'frz'|'par'|'tox'|'fnt'), item, area? }
 import { html } from '/vendor/htm-preact.mjs';
 import { Sprite, HpBar, Types } from '../lib/ui.mjs';
-import { speciesName, itemName } from '../lib/data.mjs';
+import { speciesName, speciesFormName, itemName } from '../lib/data.mjs';
 import { t } from '../lib/i18n.mjs';
 
 const nameOf = (m) => m.nickname || m.nick || speciesName(m.species);
@@ -67,7 +69,8 @@ export function PartyPanel({ mon, gen = 4, lead, compact, accent, dead, types, c
   const st = statusOf(mon);
   const fainted = st === 'fnt' || dead;
   const name = nameOf(mon);
-  const species = speciesName(mon.species);
+  // (with the form it is in right now: "Charizard (Mega Y)")
+  const species = speciesFormName(mon.species, mon.form, gen);
   const showSpecies = species && name.toLowerCase() !== species.toLowerCase();
   const g = mon.gender === 'M' || mon.gender === 'F' ? mon.gender : null;
   const holds = !noItems && mon.item !== undefined && mon.item !== null && mon.item !== 0 && mon.item !== '';
@@ -131,16 +134,17 @@ export function PartyGrid({ party, gen = 4, compact, accent, emptySlots = true, 
  * colour (`--p1` … `--p4`) as the accent and a header with name and team size; four columns fall back to
  * 2 × 2 when the board is narrow, a solo run is one column.
  * Props: slots (['p1', …]), teams ({ slot: [mon] }), names ({ slot: name }), gen, typesOf(species, slot),
- * caption(mon, slot), isDead(mon, slot), me (marks the own column), head (false → no header).
+ * caption(mon, slot), isDead(mon, slot), me (marks the own column), head (false → no header), onPick(mon, slot).
  */
-export function TeamColumns({ slots, teams, names, gen = 4, typesOf, caption, isDead, me, head = true }) {
+export function TeamColumns({ slots, teams, names, gen = 4, typesOf, caption, isDead, me, head = true, onPick }) {
   return html`<div class=${`team-cols n${slots.length}`}>
     ${slots.map((s) => html`<div class="team-col stack-s" key=${s}>
       ${head && html`<div class=${`pair-who who-${s}`}><span>${names?.[s] || s.toUpperCase()}</span>
         ${s === me && slots.length > 1 && html`<span class="tiny faint">(${t('common.you', 'you')})</span>`}
         <span class="tiny faint">${(teams?.[s] || []).filter((m) => m?.species && !unhatched(m)).length}/6</span></div>`}
       <${PartyGrid} party=${teams?.[s] || []} gen=${gen} accent=${`var(--${s})`} label=${names?.[s] || ''}
-        typesOf=${typesOf ? (id) => typesOf(id, s) : null} caption=${caption ? (m) => caption(m, s) : null} isDead=${isDead ? (m) => isDead(m, s) : null} />
+        typesOf=${typesOf ? (id) => typesOf(id, s) : null} caption=${caption ? (m) => caption(m, s) : null} isDead=${isDead ? (m) => isDead(m, s) : null}
+        onPick=${onPick ? (m) => onPick(m, s) : null} />
     </div>`)}
   </div>`;
 }

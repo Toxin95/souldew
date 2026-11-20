@@ -40,8 +40,10 @@ test('a randomizer crash becomes a translated answer naming only the exception\'
   assert.ok(!body.includes('/Users/someone'));
   const io = randomizerError(bridgeFailure('java.io.FileNotFoundException: /Users/someone/Library/Caches/souldew/a/0/1/6 (No such file)'));
   assert.equal(io.vars.trace[0], 'java.io.FileNotFoundException: … (No such file)');
-  // a wrapped one (UPR's RandomizerIOException) and one without an @@ERROR line
-  assert.equal(randomizerError(bridgeFailure('com.dabomstew.pkrandom.exceptions.RandomizerIOException: java.io.FileNotFoundException: /x/a002')).vars.what, 'RandomizerIOException');
+  // a wrapped file error (UPR's RandomizerIOException): the file error, not "the game's data" (test/randoio.test.mjs) –
+  // and one without an @@ERROR line
+  const wrapped = randomizerError(bridgeFailure('com.dabomstew.pkrandom.exceptions.RandomizerIOException: java.io.FileNotFoundException: /x/a002'));
+  assert.deepEqual([wrapped.code, wrapped.vars.what], ['randoIoFailed', 'FileNotFoundException']);
   const bare = randomizerError(Object.assign(new Error('Randomizer-Fehler: Exit-Code 137'), { details: { error: null, exitCode: 137, stdout: '', stderr: '' } }));
   assert.deepEqual([bare.code, bare.vars.what], ['randoFailed', 'exit 137']);
   assert.equal(randomizerError(bridgeFailure('x', { code: 'timeout' })).code, 'randoTimeout');

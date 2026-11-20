@@ -75,15 +75,18 @@ export function checkCtrSpace(dir, ncchSize, count = 1, { free = freeBytes(dir) 
   }
 }
 
-/** The bridge's error codes as messages the app translates (web/lib/errors.mjs); other randomizer failures as for Gen 1–5. */
-export function ctrRandoError(e) {
+/**
+ * The bridge's error codes as messages the app translates (web/lib/errors.mjs); other randomizer failures as for Gen 1–5
+ * (a file it couldn't read or write among them – toolchain.mjs ioFailure). `opts`: randomizerError's (tests).
+ */
+export function ctrRandoError(e, opts) {
   if (e?.status) return e;
   if (e?.code === 'encrypted') {
     return httpError(422, 'This 3DS game is encrypted. The randomizer needs a decrypted copy (.3ds/.cci/.cxi) – souldew doesn’t decrypt games.', 'ctrEncrypted');
   }
   if (e?.code === 'memory') return httpError(507, 'Not enough memory for the 3DS randomizer (it needs up to 4.5 GB)', 'ctrMemory');
   if (e?.code === 'timeout') return httpError(504, 'The 3DS randomizer took too long and was stopped', 'ctrTimeout');
-  return randomizerError(e);
+  return randomizerError(e, opts);
 }
 
 /**

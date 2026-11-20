@@ -23,10 +23,19 @@ const MAX_QUEUE = 6;
  */
 export const wildBattle = (c) => c.wild > 0 && c.wild >= 3 * c.trainer;
 
+/**
+ * The place sign read on the overworld this long before a battle's first reading (with an opponent) still says where it
+ * began – nobody walks during the transition and while the battle is set up.
+ */
+const BEFORE_BATTLE = 10000;
+const samePlace = (a, b) => a.gen === b.gen && a.id === b.id;
+
 export class MissedTracker {
   constructor({ wait = MISSED_WAIT } = {}) {
     this.wait = wait;
-    this.cur = null; // the battle going on: { from, foe, here, wild, trainer }
+    this.cur = null; // the battle going on: { from, foe, here, before, mixed, wild, trainer }
+    this.last = null; // the place sign last read outside a battle: { here, at }
+    this.placed = false; // this game has shown a place sign this session
     // wild battles that ended and aren't settled yet – not asked about, or the battle after them not over yet (a catch
     // of theirs can still show up): { id, foe, from, end, until, here, asked }
     this.records = [];
@@ -38,22 +47,35 @@ export class MissedTracker {
    * A battle reading at `now` (playerBattle: null outside battle – a catching demo is none of the player's), `here` the
    * place sign then. A reading without an opponent (a switch, the battle being set up or torn down) keeps the battle
    * going: only "no battle" ends it. → the record of a wild battle that just ended (else null)
+   *
+   * The record's place (`here`) is where the battle was: the place sign read in it – the first one, nobody walks during a
+   * battle –, else the one read on the overworld the moment before it began. Never the place read after it: the player
+   * may have walked on into an area whose first encounter is still open, and the question asked about that one (#80).
+   * A battle whose readings name two places (a reader that saw the battle go on after it ended, a place sign still
+   * catching up at its start) has no known place; `placeLost` then says this game does show places – ask nothing.
    */
   see(battle, now, here = null) {
+    if (here) this.placed = true;
     if (battle) {
       if (!battle.enemy?.species) return null;
-      if (!this.cur) this.cur = { from: now, foe: null, here: null, wild: 0, trainer: 0 };
+      if (!this.cur) {
+        const before = this.last && now - this.last.at <= BEFORE_BATTLE ? this.last.here : null;
+        this.cur = { from: now, foe: null, here: null, before, mixed: false, wild: 0, trainer: 0 };
+      }
       this.cur[battle.kind === 'wild' ? 'wild' : 'trainer']++;
       this.cur.foe = battle.enemy;
-      if (here) this.cur.here = here;
+      if (here && !this.cur.here) this.cur.here = here;
+      else if (here && !samePlace(this.cur.here, here)) this.cur.mixed = true;
       return null;
     }
+    if (here) this.last = { here, at: now };
     const c = this.cur;
     if (!c) return null;
     this.cur = null;
     // the battles before this one: a catch of theirs shows up before this one is over, never later
     for (const r of this.records) if (r.until === null) r.until = now;
-    const r = wildBattle(c) ? { id: ++this.n, foe: c.foe, from: c.from, end: now, until: null, here: c.here || here, asked: false } : null;
+    const at = c.mixed ? null : c.here || c.before;
+    const r = wildBattle(c) ? { id: ++this.n, foe: c.foe, from: c.from, end: now, until: null, here: at, ...(!at && this.placed ? { placeLost: true } : {}), asked: false } : null;
     if (r) this.records.push(r);
     this.prune();
     return r;

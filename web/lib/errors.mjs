@@ -3,9 +3,57 @@
 // English and only shows for a code these tables don't know. test/i18n-leaks.test.mjs keeps every code the server
 // sends in TEXTS.
 import { t } from './i18n.mjs';
+import { IS_MAC } from './platform.mjs';
+
+/** Which file a randomizer file error is about (toolchain.mjs ioFailure `where`). */
+const randoFile = (where) => where === 'game' ? t('err.randoFile.game', 'the game file')
+  : where === 'output' ? t('err.randoFile.output', 'the new game in the run folder')
+    : where === 'work' ? t('err.randoFile.work', 'the randomizer’s working files')
+      : t('err.randoFile.other', 'a file');
+
+/** The accounts service's error codes (souldew-accounts docs/API.md §0.3), passed on by the local server as vars.code. */
+function accountError({ code, field, retryAfter } = {}) {
+  const fields = {
+    friends: t('acctErr.limitFriends', 'Your friends list is full.'),
+    outgoing_requests: t('acctErr.limitRequests', 'You have too many open friend requests – wait until some are answered.'),
+    invites: t('acctErr.limitInvites', 'You have too many open invites – cancel one first.'),
+  };
+  return {
+    rate_limited: retryAfter ? t('acctErr.rateIn', 'Slow down a little – try again in {n} s.', { n: retryAfter }) : t('acctErr.rate', 'Too many tries – try again a bit later.'),
+    locked_out: t('acctErr.locked', 'Too many tries – this is locked for a while. Try again tomorrow.'),
+    text_rejected: t('acctErr.text', 'That text isn’t allowed – links, mentions and some words are filtered.'),
+    handle_taken: t('acctErr.handleTaken', 'That handle is taken – try another one.'),
+    already_friends: t('acctErr.alreadyFriends', 'You’re already friends.'),
+    limit_reached: fields[field] || t('acctErr.limit', 'A limit is reached.'),
+    not_found: t('acctErr.notFound', 'Nobody found – check the handle or friend code.'),
+    not_friends: t('acctErr.notFriends', 'You can only do that with friends.'),
+    not_entitled: t('acctErr.notEntitled', 'That needs souldew+.'),
+    forbidden: t('acctErr.forbidden', 'That isn’t possible – you may have blocked this player.'),
+    account_suspended: t('acctErr.suspended', 'This souldew account is suspended.'),
+    conflict: t('acctErr.conflict', 'That isn’t possible any more – it may have expired.'),
+    invalid_field: t('acctErr.invalid', 'That doesn’t look right – check what you typed.'),
+    opt_in_required: t('acctErr.optIn', 'Turn on “Show my runs on my profile” first.'),
+    not_configured: t('acctErr.notConfigured', 'The account service isn’t ready yet – try again later.'),
+    signed_in: t('acctErr.signedIn', 'You’re already signed in – sign out first to use another account.'),
+  }[code] || t('acctErr.other', 'The account service had a problem – try again later.');
+}
 
 const TEXTS = {
+  acct: (v) => accountError(v),
+  acctOffline: () => t('acctErr.offline', 'Can’t reach the souldew account service. Check your internet connection.'),
+  acctSignedOut: () => t('acctErr.signedOut', 'You’re signed out of your souldew account.'),
+  acctBrowser: () => t('acctErr.browser', 'Your browser couldn’t be opened for signing in.'),
   requestTooLarge: () => t('err.requestTooLarge', 'Request too large'),
+  // souldew+ pack (server/lib/pluspack.mjs) – the pack client handles these itself, the texts are for diagnostics
+  plusDownload: () => t('err.plusDownload', 'The souldew+ download failed'),
+  plusTooLarge: () => t('err.plusTooLarge', 'The souldew+ download is too large'),
+  plusUrl: () => t('err.plusUrl', 'This souldew+ download address isn’t allowed'),
+  plusFormat: () => t('err.plusFormat', 'The download is not a souldew+ pack'),
+  plusSignature: () => t('err.plusSignature', 'The souldew+ pack is not signed by souldew'),
+  plusNone: () => t('err.plusNone', 'No souldew+ pack on this computer'),
+  plusPreviews: () => t('err.plusPreviews', 'The souldew+ previews can’t be loaded right now'),
+  plusNoDev: () => t('err.plusNoDev', 'No test pack configured'),
+  plusAnswer: () => t('err.plusAnswer', 'The account service’s souldew+ answer was incomplete'),
   fileTooLarge: () => t('err.fileTooLarge', 'File too large'),
   emptyFile: () => t('err.emptyFile', 'Empty file'),
   badJson: () => t('err.badJson', 'Invalid JSON'),
@@ -13,9 +61,26 @@ const TEXTS = {
   idMissing: () => t('err.idMissing', 'ID missing'),
   emptySave: () => t('err.emptySave', 'Empty save file – not saved'),
   noSaveYet: () => t('err.noSaveYet', 'No save file yet'),
+  // importing a save (server/lib/saveimport.mjs, shared/savefile.mjs)
+  saveImportSize: (v) => t('err.saveImportSize', 'This file is {size} – no cartridge of this system saves that much. Save files here are {sizes}.', v),
+  saveImportEmpty: () => t('err.saveImportEmpty', 'This file holds no save – nothing was ever saved in it.'),
+  saveImportNocash: () => t('err.saveImportNocash', 'This is a No$GBA save in its own format. Export it as a raw .sav in No$GBA first.'),
+  saveImportFormat: () => t('err.saveImportFormat', 'This file can’t be read as a save.'),
+  saveImportSystem: () => t('err.saveImportSystem', 'Saves of this system can’t be imported.'),
+  saveImportCtrFiles: (v) => t('err.saveImportCtrFiles', 'The backup has {n} files – too many for a game’s save. Pick the folder of one backup.', v),
+  saveImportZip: () => t('err.saveImportZip', 'The zip should hold exactly one save file.'),
+  saveImportConfirm: () => t('err.saveImportConfirm', 'Importing a save into a run needs your confirmation.'),
+  saveGameRunning: () => t('err.saveGameRunning', 'The game is still running – close it first, then import the save.'),
+  saveFileLocked: (v) => t('err.saveFileLocked', 'The save file is locked – another program may be using it ({detail}). Close it and try again.', v),
+  saveDiskProblem: (v) => t('err.saveDiskProblem', 'The disk refused the save ({detail}) – it may be full or failing. Your old save is untouched.', v),
+  saveWriteFailed: (v) => t('err.saveWriteFailed', 'The save couldn’t be written ({detail}). Your old save is untouched.', v),
+  noImportToUndo: () => t('err.noImportToUndo', 'There is no import to undo any more.'),
+  importBackupGone: () => t('err.importBackupGone', 'The backup to go back to is gone.'),
+  ctrSaveNotStarted: () => t('err.ctrSaveNotStarted', 'Start this game in souldew once and save in it first – then its save can be replaced.'),
   introEmpty: () => t('err.introEmpty', 'There is no game save in this file yet – save in the game first'),
   introUnsupported: () => t('err.introUnsupported', 'Intro saves don’t work for this game'),
   runNotFound: () => t('err.runNotFound', 'Run not found'),
+  backupGone: () => t('err.backupGone', 'The backup folder is gone – it was moved or deleted.'),
   runBuilding: () => t('err.runBuilding', 'This run is being built right now'),
   runIsLocal: () => t('err.runIsLocal', 'This run was created on this computer and can’t be replaced by a run pack'),
   notHost: () => t('err.notHost', 'Only the host can change the rules of this run'),
@@ -45,12 +110,12 @@ const TEXTS = {
   emuUnpack: (v) => t('err.emuUnpack', 'Unpacking {emu} failed ({detail}). Nothing was changed – try again.', v),
   emuWrite: (v) => t('err.emuWrite', '{emu} couldn’t be saved in souldew’s tools folder ({detail}) – is the disk full or the folder protected?', v),
   emuInUse: (v) => t('err.emuInUse', '{emu} is still running or its files are in use – close {emu} and try again', v),
-  emuNotInstalled: (v) => t('err.emuNotInstalled', '{emu} isn’t installed – install it in Settings › Emulators', v),
+  emuNotInstalled: (v) => t('err.emuNotInstalled', '{emu} isn’t installed – install it in Settings › Games', v),
   emuLaunch: (v) => t('err.emuLaunch', '{emu} couldn’t be started ({detail})', v),
   confirmMissing: () => t('err.confirmMissing', 'Please confirm first'),
   badRomUrl: () => t('err.badRomUrl', 'Invalid game address'),
   romNotFound: () => t('err.romNotFound', 'Game file not found'),
-  ctrMissing: () => t('err.ctrMissing', 'The 3DS part of souldew is missing – reinstall souldew, or play 3DS games in Azahar (Settings › Emulators)'),
+  ctrMissing: () => t('err.ctrMissing', 'The 3DS part of souldew is missing – reinstall souldew, or play 3DS games in Azahar (Settings › Games)'),
   badKey: () => t('err.badKey', 'Invalid save key'),
   noCtrSession: () => t('err.noCtrSession', 'No 3DS game is running'),
   ctrEnded: () => t('err.ctrEnded', 'The 3DS game has stopped'),
@@ -58,8 +123,24 @@ const TEXTS = {
   nativeMissing: () => t('err.nativeMissing', 'The fast player is missing for this system – the built-in emulator plays it instead'),
   nativeSystem: () => t('err.nativeSystem', 'The fast player doesn’t play this system'),
   noNativeSession: () => t('err.noNativeSession', 'No game is running in the fast player'),
+  linkSystem: () => t('linkplay.system', 'Linking isn’t available for this game yet.'),
+  linkHack: () => t('linkplay.hack', 'Trades and battles over the link aren’t available for this ROM hack – it changed its Pokémon and its link too much to be sure they work.'),
+  linkSeats: () => t('err.linkSeats', 'These players can’t be linked'),
+  linkMissing: () => t('linkplay.missing', 'This version of souldew can’t link games yet – update it on both computers.'),
+  // Play together (shared/playtogether.mjs)
+  togetherBuiltIn: () => t('err.togetherBuiltIn', 'Play together runs in souldew’s own player – that way your game keeps one save. Play it here or from the library.'),
+  togetherOneSlot: () => t('err.togetherOneSlot', 'In Play together each computer builds only its own player’s game.'),
+  togetherSystem: () => t('err.togetherSystem', 'Play together needs a game that can link: a Game Boy, Game Boy Advance or DS game.'),
+  linkRomMissing: () => t('linkplay.romMissing2', 'A player’s game isn’t on one of the computers – the link needs every player’s game on every computer.'),
+  linkSaveDiffers: () => t('linkplay.saveDiffers', 'A save arrived damaged. Try again.'),
+  linkStateDiffers: () => t('linkplay.stateDiffers', 'A player’s game arrived damaged. Try again.'),
+  linkOwnMissing: () => t('linkplay.ownMissing', 'Your own game for this run isn’t built on this computer.'),
+  linkPickDiffers: () => t('err.linkPickDiffers', 'That file isn’t exactly the same game (its SHA-1 differs).'),
+  linkBuildNoRom: () => t('err.linkBuildNoRom', 'The run’s base game isn’t in your library – add it, then build again.'),
+  linkBuildNoPatch: () => t('err.linkBuildNoPatch', 'The run’s ROM hack patch isn’t in your library – add it, then build again.'),
   nativeEnded: () => t('err.nativeEnded', 'The game has stopped'),
   nativeBusy: () => t('err.nativeBusy', 'The game is busy – try again in a moment'),
+  linkRefused: () => t('err.linkRefused', 'The games couldn’t be linked on this computer – your game goes on as it was.'),
   badSave: () => t('err.badSave', 'Invalid save file'),
   saveTooLarge: () => t('err.saveTooLarge', 'The save file is too large'),
   emulatorOpen: (v) => t('err.emulatorOpen', '{emu} is already open – start the game there, or close {emu} and start it from here', v),
@@ -70,11 +151,18 @@ const TEXTS = {
   ctrEncrypted: () => t('err.ctrEncrypted', 'This 3DS game file is encrypted. souldew and Azahar only play decrypted games, and the randomizer needs a decrypted copy too (.3ds, .cci or .cxi) – souldew doesn’t decrypt games. Dump your cartridge decrypted (for example with GodMode9 on your 3DS) and add that file.'),
   ctrIncomplete: () => t('err.ctrIncomplete', 'This 3DS game file is incomplete – part of the game is missing, so it would only show a black screen. This happens when copying it was interrupted (souldew or the computer closed meanwhile) or a download stopped. Remove it from the library and add the game again.'),
   notCtr: () => t('err.notCtr', 'Not a Nintendo 3DS game'),
+  notCtrUpdate: () => t('err.notCtrUpdate', 'Not a 3DS game update'),
   ctrNoSpace: (v) => t('err.ctrNoSpace', 'Not enough disk space: the randomized 3DS games need about {need} GB, {free} GB are free.', v),
   ctrMemory: () => t('err.ctrMemory', 'Not enough memory for the 3DS randomizer (it needs up to 4.5 GB). Close other programs and try again.'),
   ctrTimeout: () => t('err.ctrTimeout', 'The 3DS randomizer took too long and was stopped. Try again – a fast drive helps.'),
   randoFailed: (v) => t('err.randoFailed', 'The randomizer can’t build this game with these settings – its data isn’t where the randomizer expects it, as in some ROM hacks and releases. Try another preset, or play without the randomizer. (Randomizer error: {what})', v),
   randoTimeout: () => t('err.randoTimeout', 'The randomizer took too long and was stopped. Try again.'),
+  // a file the randomizer couldn't read or write (server/lib/toolchain.mjs ioFailure): {what} is the system's own words
+  randoNoSpace: (v) => t('err.randoNoSpace', 'The disk ran full while the randomizer was writing {file} ({what}). Free up a few GB – a randomized 3DS game takes about 3 GB, plus about 1 GB while it is built – and build again.', { ...v, file: randoFile(v?.where) }),
+  randoNoAccess: (v) => IS_MAC ? t('err.randoNoAccessMac', 'souldew isn’t allowed to use {file} ({what}). On a Mac: System Settings › Privacy & Security › Files and Folders (or Full Disk Access) – allow souldew there. If it’s the game file, you can also move it into souldew’s library folder and add it again. Then build again.', { ...v, file: randoFile(v?.where) })
+    : t('err.randoNoAccess', 'souldew isn’t allowed to use {file} ({what}). Check that your user account may use that folder and that no security program blocks souldew (on Windows: Windows Security › Virus & threat protection › Ransomware protection › Controlled folder access). If it’s the game file, you can also move it into souldew’s library folder and add it again. Then build again.', { ...v, file: randoFile(v?.where) }),
+  randoReadFailed: (v) => t('err.randoReadFailed', 'The game file couldn’t be read completely ({what}). Is it on an external drive, a network folder or in iCloud Drive? Copy it onto the computer’s own disk – best into souldew’s library folder – add it again and build again. If that doesn’t help, the copy is damaged: get the game file again.', v),
+  randoIoFailed: (v) => t('err.randoIoFailed', 'The randomizer stopped at a file error: {what} ({file}). Check that the drive has free space and that souldew may use the folder, then build again. If it happens again, save the diagnostics (Help › Save diagnostics) and send them along.', { ...v, file: randoFile(v?.where) }),
   badEmulatorPath: () => t('err.badEmulatorPath', 'Invalid emulator path'),
   scriptMissing: () => t('err.scriptMissing', 'The mGBA script is missing – restart souldew to create it again'),
   emulatorRunning: () => t('err.emulatorRunning', 'The external emulator is still running. Save in the game, close the emulator, then try again.'),

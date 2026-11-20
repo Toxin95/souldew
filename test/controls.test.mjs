@@ -59,8 +59,8 @@ test('QWERTZ swaps Y and Z, AZERTY moves A/Q/W/Z', () => {
   assert.equal(keyFor('Space', QWERTY).keyCode, 32);
   // non-Latin layouts (e.g. Russian): browsers report the US letter
   assert.equal(keyFor('KeyF', { real: true, get: () => 'а' }).keyCode, 70);
-  assert.equal(labels(presetMap('arrows', QWERTZ), QWERTZ), '↑ ↓ ← → Y X A S Q E Enter V');
-  assert.equal(labels(presetMap('arrows', AZERTY), AZERTY), '↑ ↓ ← → W X Q S A E Enter V');
+  assert.equal(labels(presetMap('arrows', QWERTZ), QWERTZ), '↑ ↓ ← → Y X A S Q E Enter V C');
+  assert.equal(labels(presetMap('arrows', AZERTY), AZERTY), '↑ ↓ ← → W X Q S A E Enter V C');
 });
 
 test('the fallback layout follows the UI language', () => {
@@ -473,4 +473,11 @@ test('a 2.8.1 fast-forward key souldew’s menu has here (F11 on Windows / Linux
     const j = JSON.parse(readFileSync(new URL(`../web/i18n/${lang}.json`, import.meta.url), 'utf8'));
     for (const k of ['ctl.refusedNow', 'ctl.refusedNone', 'ctl.keepKey', 'ctl.ownerMenu', 'ctl.ownerSystem']) assert.ok(j[k], `${lang}: ${k}`);
   }
+});
+
+test('3.0: ⌘I / Ctrl+I folds the play view\'s dock – no shortcut can take it (it would never fire)', async () => {
+  const C = await import('../web/lib/controls.mjs');
+  assert.equal(C.reservedCombo({ keyCode: 73, meta: true }, true), 'menu');
+  assert.equal(C.reservedCombo({ keyCode: 73, ctrl: true }, false), 'menu');
+  assert.equal(C.reservedCombo({ keyCode: 73 }, true), null, 'I alone stays free');
 });

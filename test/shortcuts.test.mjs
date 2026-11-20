@@ -32,7 +32,7 @@ test('every shortcut has its row in Settings › Controls (and Help) – exactly
   for (const id of HOTKEY_IDS.filter((x) => !/^(save|load)\d$/.test(x))) assert.match(names, new RegExp(`\\b${id}: t\\(`), `${id} has a name`);
   assert.match(names, /\^\(save\|load\)\(\\d\)\$/);
   // Settings and Help draw the table from these rows
-  assert.match(read('web/views/settings.mjs'), /\$\{HOTKEY_ROWS\.map\(\(r\) => \{/);
+  assert.match(read('web/views/settings/controls.mjs'), /\$\{HOTKEY_ROWS\.map\(\(r\) => \{/);
   assert.match(guide, /\.\.\.HOTKEY_ROWS\.map\(/);
   // the controller's shortcuts are shortcuts of the same list
   for (const id of PAD_HOTKEY_IDS) assert.ok(HOTKEY_IDS.includes(id), id);
@@ -83,7 +83,9 @@ test('EmulatorJS and RetroArch keep no hotkeys of their own: only the 12 game bu
   assert.match(html, /for \(const n of Object\.keys\(p\)\) if \(Number\(n\) >= 12\) delete p\[n\];/);
   // the table souldew hands it: the 12 game buttons (RetroArch joypad 0–11), nothing else
   const t = ejsControls(null)[0];
-  assert.deepEqual(Object.keys(t).map(Number).sort((a, b) => a - b), BUTTONS.map((b) => b.ejs).sort((a, b) => a - b));
+  // (the 3DS half tilt is no joypad button – EmulatorJS never gets it)
+  assert.deepEqual(Object.keys(t).map(Number).sort((a, b) => a - b), BUTTONS.filter((b) => b.ejs !== undefined).map((b) => b.ejs).sort((a, b) => a - b));
+  assert.equal(Object.keys(t).length, 12);
   assert.ok(Object.keys(t).every((n) => Number(n) < 12));
   // the core's own keyboard (RetroArch's F1 menu, Space fast-forward, P pause, H reset …) stays off
   assert.match(html, /keyboardInput: 'disabled',/);

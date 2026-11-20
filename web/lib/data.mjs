@@ -1,11 +1,12 @@
 // Pokémon data for the UI: PokeAPI-derived names/types (multi-language), the game catalog,
 // and per-run randomized ROM data (types/evolutions exported by the randomizer bridge).
 import { api } from './api.mjs';
-import { currentLang } from './i18n.mjs';
+import { currentLang, t } from './i18n.mjs';
 import { slotsOf } from '/shared/slots.mjs';
 import { speciesCeiling } from '/shared/live/romspecies.mjs';
 import { setTypeChart } from '/shared/typechart.mjs';
-import { formTypes, formSpriteId } from '/shared/forms.mjs';
+import { formTypes, formSpriteId, formKind } from '/shared/forms.mjs';
+import { gbItemKey } from '/shared/giftitems.mjs';
 
 let P = null;
 let CATALOG = { games: [], hacks: [] };
@@ -59,6 +60,29 @@ export function speciesName(id, lang = nameLang()) {
   return P?.names?.[lang]?.[id] || P?.names?.en?.[id] || `#${id}`;
 }
 
+/** What a form is called (shared/forms.mjs formKind: 'mega', 'megaX', 'megaY', 'primal', 'alola'), '' for none. */
+export function formLabel(kind) {
+  switch (kind) {
+    case 'mega': return t('form.mega', 'Mega');
+    case 'megaX': return t('form.megaX', 'Mega X');
+    case 'megaY': return t('form.megaY', 'Mega Y');
+    case 'primal': return t('form.primal', 'Primal');
+    case 'alola': return t('form.alola', 'Alolan form');
+    default: return '';
+  }
+}
+
+/**
+ * The species' name with the form it is in right now – "Charizard (Mega Y)", "Vulpix (Alolan form)" – where the form
+ * has a name of its own (shared/forms.mjs formKind); else the species' name. Only for showing: a form is its species
+ * for every rule.
+ */
+export function speciesFormName(id, form = 0, gen = 7, lang) {
+  const name = speciesName(id, lang);
+  const label = form && id < FAKEMON ? formLabel(formKind(id, form, gen)) : '';
+  return label && name ? t('form.named', '{name} ({form})', { name, form: label }) : name;
+}
+
 /** Types valid in a given generation (PokeAPI typesGen: smallest key ≥ gen wins). */
 export function baseTypes(id, gen = 9) {
   if (!P || !id) return [];
@@ -76,9 +100,21 @@ export function typeLabel(type) {
   return TYPE_LABELS[t] || P?.typeNames?.[currentLang()]?.[t] || P?.typeNames?.en?.[t] || t;
 }
 
-export function moveName(id) {
-  const l = P?.moves?.[currentLang()] ? currentLang() : 'en';
+export function moveName(id, lang = currentLang()) {
+  const l = P?.moves?.[lang] ? lang : 'en';
   return P?.moves?.[l]?.[id] || '';
+}
+
+/** An ability's name by its number (the games number them alike from Gen 3 on); '' when unknown. */
+export function abilityName(id, lang = currentLang()) {
+  const l = P?.abilities?.[lang] ? lang : 'en';
+  return (Number.isInteger(id) && id > 0 && (P?.abilities?.[l]?.[id] || P?.abilities?.en?.[id])) || '';
+}
+
+/** A nature's name by its number in the games (0 Hardy … 24 Quirky); '' when unknown. */
+export function natureName(n, lang = currentLang()) {
+  const l = P?.natures?.[lang] ? lang : 'en';
+  return (Number.isInteger(n) && (P?.natures?.[l]?.[n] || P?.natures?.en?.[n])) || '';
 }
 
 /**
@@ -91,13 +127,32 @@ export function itemName(id, gen, lang = currentLang()) {
   return key ? items.names?.[lang]?.[key] || items.names?.en?.[key] || '' : '';
 }
 
+/** An item's name by its PokeAPI identifier ('master-ball') in the app's language – '' when unknown. */
+export function itemNameByKey(key, lang = currentLang()) {
+  const names = P?.items?.names;
+  return (key && (names?.[lang]?.[key] || names?.en?.[key])) || '';
+}
+
 /**
- * Sprite in the art style of the game's generation (served + cached by the local server). `form`: a DS Pokémon's
- * alternate form (shared/forms.mjs – PokeAPI's own number for it; Gen 4/5's sprite sets have them).
+ * An item's name for a gift between players (web/lib/together.mjs): Gen 3–7 as itemName, Gen 1/2 for the items a gift
+ * may be (shared/giftitems.mjs – their PokeAPI identifier, the same names). '' when unknown.
+ */
+export function giftItemName(id, gen, lang = currentLang()) {
+  if (gen >= 3) return itemName(id, gen, lang);
+  const key = gbItemKey(gen, id);
+  const items = P?.items;
+  return key ? items?.names?.[lang]?.[key] || items?.names?.en?.[key] || '' : '';
+}
+
+/**
+ * Sprite in the art style of the game's generation (served + cached by the local server). `form`: the Pokémon's
+ * alternate form (shared/forms.mjs – PokeAPI's own number for it; Gen 4/5's sprite sets have them, the others show
+ * today's sprite of the form: a 3DS game's Mega or Alolan form, an expanded GBA engine's Mega).
  */
 export function spriteUrl(id, { gen = 4, shiny = false, form = 0 } = {}) {
   if (!id || id > FAKEMON) return ''; // (a ROM hack's own Pokémon has no sprite here)
-  const fid = form && gen >= 4 ? formSpriteId(id, form) : id;
+  // (Gen 3: an expanded engine's Megas and Primal forms – shared/live/romspecies.mjs gen3Forms – in today's style)
+  const fid = form && gen >= 3 ? formSpriteId(id, form) : id;
   if (fid !== id) {
     if (gen === 4 || gen === 5) return `/sprites/gen${gen}${shiny ? 'shiny' : ''}/${fid}.png`;
     return `/sprites/${shiny ? 'shiny' : 'default'}/${fid}.png`;
@@ -162,7 +217,11 @@ export class RunData {
     this.byId = {};
   }
 
-  async load(manifest) {
+  /**
+   * `rom: false`: without the ROM's own data (romFetch / withRom bring it later) – the scan of a big game file takes
+   * seconds (a DS game) to minutes (a slow PC, the first time), and the run must not wait for it (web/app.mjs).
+   */
+  async load(manifest, { rom = true } = {}) {
     const game = gameById(manifest?.game?.id) || gameById(manifest?.base?.gameId);
     this.gen = game?.generation || genFromSystem(manifest?.game) || 4;
     this.game = game;
@@ -171,24 +230,38 @@ export class RunData {
       this.romData[slot] = d;
       this.byId[slot] = d ? new Map(d.pokemon.filter((p) => p.forme === 0).map((p) => [p.id, p])) : null;
     }
-    // the game's own data from its ROM (server/lib/romloc.mjs): its types (any game – a hack may have changed them) and,
-    // for a GBA game, which Pokémon it holds (a hack with later generations' Pokémon: Run & Bun, Light Platinum – also a
-    // ROM that was patched before it was added)
-    this.romTypes = null;
-    this.romSpecies = null;
-    this.romVanilla = null;
-    const out = Object.entries(manifest?.outputs || {}).find(([s, o]) => !this.byId[s] && o?.rom);
-    if (out) {
-      const src = `/api/runs/${manifest.id}/file?inline=1&name=${encodeURIComponent(out[1].rom)}`;
-      const j = await fetch(`/api/rom/locations?src=${encodeURIComponent(src)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      this.romTypes = j?.types?.species ? j.types : null;
-      this.romSpecies = j?.species || null;
-      this.romVanilla = j ? j.vanilla !== false : null;
-      Object.assign(TYPE_LABELS, this.romTypes?.labels || {});
-      // a hack's own Pokémon are named as the game names them – on the board too, not only while the game runs
-      if (this.romSpecies?.unknown && Object.keys(this.romSpecies.unknown).length) setRomSpecies(this.romSpecies);
-    }
+    this._applyRom(null);
+    if (rom) this._applyRom(await this.romFetch(manifest));
     return this;
+  }
+
+  /**
+   * The game's own data from its ROM (server/lib/romloc.mjs, computed in a worker): its types (any game – a hack may
+   * have changed them) and, for a GBA game, which Pokémon it holds (a hack with later generations' Pokémon: Run & Bun,
+   * Light Platinum – also a ROM that was patched before it was added). Only needed while no player's randomizer data
+   * is here. → the scan's result, or null (none needed, or it failed).
+   */
+  async romFetch(manifest) {
+    const out = Object.entries(manifest?.outputs || {}).find(([s, o]) => !this.byId[s] && o?.rom);
+    if (!out) return null;
+    const src = `/api/runs/${manifest.id}/file?inline=1&name=${encodeURIComponent(out[1].rom)}`;
+    return fetch(`/api/rom/locations?src=${encodeURIComponent(src)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  }
+
+  /** A copy of this run's data with the ROM's own data `j` (romFetch) in it – a new object, so whatever depends on it updates. */
+  withRom(j) {
+    const c = Object.assign(Object.create(RunData.prototype), this);
+    c._applyRom(j);
+    return c;
+  }
+
+  _applyRom(j) {
+    this.romTypes = j?.types?.species ? j.types : null;
+    this.romSpecies = j?.species || null;
+    this.romVanilla = j ? j.vanilla !== false : null;
+    Object.assign(TYPE_LABELS, this.romTypes?.labels || {});
+    // a hack's own Pokémon are named as the game names them – on the board too, not only while the game runs
+    if (this.romSpecies?.unknown && Object.keys(this.romSpecies.unknown).length) setRomSpecies(this.romSpecies);
   }
 
   /** A ROM hack's own Pokémon (no National Dex number): their ids (FAKEMON + the game's index), for the picker. */
@@ -312,6 +385,24 @@ export class RunData {
 
   starters(slot) {
     return this.romData[slot]?.starters || [];
+  }
+
+  /**
+   * A Pokémon of the randomizer's lists (encounters, starters, statics) by its number there: UPR numbers alternate forms
+   * after the last species (Gen 5 from 650, Gen 6 from 722, Gen 7 from 808 – a wild Mega Charizard Y with "Allow
+   * alternate forms" is one of them), which the app's species numbers would name as another Pokémon. → { species, form,
+   * name } – the species and the form's number in the game, and its name ("Charizard (Mega Y)"; UPR's own "Rotom-Heat"
+   * for a form without a name of its own here).
+   */
+  uprMon(id, slot) {
+    const list = this.romData[slot]?.pokemon || [];
+    const p = list.find((x) => x.id === id);
+    if (!p || !(p.forme > 0)) return { species: id, form: 0, name: speciesName(id) };
+    const base = list.filter((b) => b.forme === 0 && typeof b.name === 'string' && typeof p.name === 'string' && p.name.startsWith(`${b.name}-`))
+      .sort((a, b) => b.name.length - a.name.length)[0];
+    if (!base) return { species: id, form: 0, name: String(p.name || speciesName(id)) };
+    const kind = formKind(base.id, p.forme, this.gen);
+    return { species: base.id, form: p.forme, name: kind ? speciesFormName(base.id, p.forme, this.gen) : String(p.name) };
   }
 }
 

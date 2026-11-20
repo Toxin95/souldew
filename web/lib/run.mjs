@@ -2,15 +2,19 @@
 // (incl. Definitive HG) use a curated route list with level caps, every other game builds its
 // area list on the fly from the catch locations the players report.
 import { PROGRESSION, VANILLA_CAPS, areaForMetLocation, levelCapFor, gymCapsFamily, vanillaCapFor, romCapFor, prettyTrainer } from '/shared/routes.mjs';
-import { gen4data, speciesName, pokeapi } from './data.mjs';
+import { gen4data, speciesName, pokeapi, giftItemName, itemNameByKey, gameById as catalogGame } from './data.mjs';
 import { t, currentLang } from './i18n.mjs';
-import { ALL_SLOTS, slotsOf, runMode, isNuzlocke, othersOf } from '/shared/slots.mjs';
-import { DEFAULT_RULES, RULE_PRESETS, NUZLOCKE_RULES, rulesWithDefaults } from '/shared/rules.mjs';
+import { ALL_SLOTS, slotsOf, runMode, isNuzlocke, isTogether, othersOf, runSection } from '/shared/slots.mjs';
+import { gameInfo, cleanGameInfo } from '/shared/playtogether.mjs';
+import { DEFAULT_RULES, RULE_PRESETS, NUZLOCKE_RULES, rulesWithDefaults, cheatGroups } from '/shared/rules.mjs';
+import { CHEATS, cheatAllowed } from '/shared/live/cheats.mjs';
 import { placeName, locationLabel, nameIn } from '/shared/live/location.mjs';
+import { moneyText } from '/shared/linkbattle.mjs';
 import { livesLeft, livesOf, deathsIn, poolOf } from '/shared/lives.mjs';
 import { hostSlotOf, canEditRules, SOULLINK_RULE_KEYS } from '/shared/hostrules.mjs';
+import { cleanSummary } from '/shared/monstats.mjs';
 
-export { ALL_SLOTS, slotsOf, runMode, isNuzlocke, othersOf, DEFAULT_RULES, RULE_PRESETS, NUZLOCKE_RULES, hostSlotOf, canEditRules };
+export { ALL_SLOTS, slotsOf, runMode, isNuzlocke, isTogether, othersOf, runSection, DEFAULT_RULES, RULE_PRESETS, NUZLOCKE_RULES, hostSlotOf, canEditRules };
 // Runs from before 1–4 players were always a pair – the default where no slots/manifest are passed.
 const PAIR = ['p1', 'p2'];
 
@@ -241,11 +245,22 @@ function renderMsg(doc, manifest, m) {
   const vars = {};
   for (const [k, v] of Object.entries(m.vars || {})) {
     vars[k] = v && typeof v === 'object'
-      ? v.area !== undefined ? areaName(doc, manifest, v.area) : v.species !== undefined ? speciesName(v.species) : v.key ? renderMsg(doc, manifest, v) : ''
+      ? v.area !== undefined ? areaName(doc, manifest, v.area) : v.species !== undefined ? speciesName(v.species) : v.money !== undefined ? moneyText(v.money, currentLang())
+        : v.item !== undefined ? itemCount(v)
+        : v.key ? renderMsg(doc, manifest, v) : ''
       : v;
   }
   return t(m.key, m.def, vars);
 }
+
+/**
+ * An item in a log line ({ item, gen, n } – a gift between players; a cheat's adds `itemKey`, its PokeAPI identifier:
+ * Gen 1/2 items the gifts don't name, the Master Ball): "Potion", "3 × Potion".
+ */
+const itemCount = (v) => {
+  const name = (v.itemKey && itemNameByKey(String(v.itemKey))) || giftItemName(v.item, v.gen) || `#${v.item}`;
+  return v.n > 1 ? t('feed.itemCount', '{n} × {item}', { n: v.n, item: name }) : name;
+};
 
 export const causeText = (doc, manifest, cause) => (cause && typeof cause === 'object' ? renderMsg(doc, manifest, cause) : cause || '');
 
@@ -265,7 +280,10 @@ export function feedList(doc, limit = 80) {
 
 export function setEncounter(doc, manifest, area, slot, data, { quiet, by } = {}) {
   const prev = encounter(doc, area, slot);
-  doc.set(`enc:${area}:${slot}`, data ? { ...prev, ...data, at: prev?.at || Date.now() } : null);
+  const next = data ? { ...prev, ...data, at: prev?.at || Date.now() } : null;
+  // (another Pokémon entered by hand doesn't keep the form of the one before it)
+  if (next && prev?.form && !('form' in data) && data.species !== prev.species) delete next.form;
+  doc.set(`enc:${area}:${slot}`, next);
   // Edits by hand leave a trace in the log – otherwise a removed or swapped catch can't be told apart from a
   // tracking error later (both look like "the area holds something else now").
   if (!quiet && prev && (!data || (data.species && prev.species && data.species !== prev.species))) {
@@ -298,7 +316,8 @@ function missedMsg(doc, manifest, area, species) {
  * (the opponent of the battle it fell in), `place` {gen, id, name} (the place sign where it fell – the share card
  * shows it). The boss segment it died in is kept for the stats. In a deathless Nuzlocke the first death ends the run.
  */
-export function markDead(doc, manifest, area, { slot, cause = '', level = null, killer = null, place = null } = {}) {
+export function markDead(doc, manifest, area, { slot, cause = '', level = null, killer = null, place = null, feedId = undefined } = {}) {
+  if (isTogether(manifest)) return false; // (Play together: nothing ever dies)
   const p = doc.get(`pair:${area}`) || {};
   if (p.state === 'dead') return false;
   const segment = levelCap(doc, manifest, slot || 'p1').boss?.key ?? null;
@@ -308,7 +327,7 @@ export function markDead(doc, manifest, area, { slot, cause = '', level = null, 
   const text = n === 1 ? msg('feed.deathSolo', '{area}: the Pokémon died', { area: { area } })
     : n > 2 ? msg('feed.deathGroup', '{area}: the linked group died', { area: { area } })
       : msg('feed.death', '{area}: the pair died', { area: { area } });
-  feedMsg(doc, manifest, { type: 'death', slot, area, msg: text, cause: cause || null });
+  feedMsg(doc, manifest, { type: 'death', slot, area, msg: text, cause: cause || null }, feedId);
   if (runMode(manifest) === 'nuzlocke' && rules(doc, manifest).deathless) failRun(doc, manifest, slot || 'p1', 'deathless', { area });
   spendLife(doc, manifest, slot, { area });
   return true;
@@ -399,16 +418,54 @@ export function settleLives(doc, manifest) {
 }
 
 /**
- * `slot` used a cheat (today: `added` Rare Candies). Everyone in the run sees it in the log – that is the deal for
- * allowing cheats at all. Refused (false) while the run's rules don't allow cheats.
+ * A value of a log line that a 3.0 app renders in each player's language (renderMsg: `v.item`, `v.money`) and an older
+ * one as the plain English `def` (it only knows nested messages: { key, def }).
  */
-export function logCheat(doc, manifest, slot, { added }) {
-  if (!rules(doc, manifest).cheats) return false;
-  const what = msg('cheat.rareCandies', '{n} Rare Candy|{n} Rare Candies', { n: added, count: added });
-  feedMsg(doc, manifest, { type: 'cheat', slot, cheat: 'rareCandy', count: added, msg: slotsOf(manifest).length === 1
+const withFallback = (v, def) => ({ ...v, key: 'cheat.legacy', def: String(def), vars: {} });
+
+/**
+ * `slot` used a cheat (`cheat`: an id of shared/live/cheats.mjs CHEATS): `added` of its item went into the bag (`gen`:
+ * the game's generation – the item's number in it), or – the money – `added` ₽ more, `after` now. Everyone in the run
+ * sees it in the log, naming what was added – that is the deal for allowing cheats at all. Refused (false) while the
+ * run's rules don't allow this cheat (shared/rules.mjs cheats, cheatSet), and for a cheat it doesn't know. Rare Candies
+ * and Max Repels keep the lines older apps know.
+ */
+export function logCheat(doc, manifest, slot, { added, cheat = 'rareCandy', gen = null, after = null }) {
+  const c = CHEATS[cheat];
+  if (!c || !cheatAllowed(rules(doc, manifest), cheat) || !(added > 0)) return false;
+  const money = (v) => withFallback({ money: v }, moneyText(v, 'en'));
+  const what = cheat === 'rareCandy' ? msg('cheat.rareCandies', '{n} Rare Candy|{n} Rare Candies', { n: added, count: added })
+    : cheat === 'maxRepel' ? msg('cheat.maxRepels', '{n} Max Repel|{n} Max Repels', { n: added, count: added })
+      : c.money ? (after !== null ? msg('cheat.moneyNow', '+{money} money (now {total})', { money: money(added), total: money(after) }) : msg('cheat.money', '+{money} money', { money: money(added) }))
+        : withFallback({ item: c.items[gen] || 0, gen, n: added, itemKey: c.key }, added > 1 ? `${added} × ${c.en}` : c.en);
+  feedMsg(doc, manifest, { type: 'cheat', slot, cheat, count: added, msg: slotsOf(manifest).length === 1
     ? msg('feed.cheatSolo', 'Cheat used: {what}', { what })
     : msg('feed.cheat', 'used a cheat: {what}', { what }) });
   return true;
+}
+
+/**
+ * Which cheats the run allows changed (`groups`: shared/rules.mjs cheatGroups, cheats on both before and after) – logged
+ * like the cheats themselves, naming them (each a message of its own: every player reads them in their language).
+ */
+export function logCheatSet(doc, manifest, by, groups) {
+  const solo = slotsOf(manifest).length === 1;
+  const names = groups.map((g) => cheatGroupMsg(g));
+  const list = { key: 'cheat.list', def: names.map((_, i) => `{g${i}}`).join(', '), vars: Object.fromEntries(names.map((m, i) => [`g${i}`, m])) };
+  feedMsg(doc, manifest, { type: 'cheat', slot: by, msg: solo ? msg('feed.cheatSetSolo', 'Cheats allowed for this run: {list}', { list })
+    : msg('feed.cheatSet', 'set the cheats allowed for this run: {list}', { list }) });
+}
+
+/** A cheat group's name for the log and the rule editors (shared/rules.mjs CHEAT_GROUPS). */
+export function cheatGroupMsg(g) {
+  return {
+    rareCandy: msg('cheat.gRareCandy', 'Rare Candies'),
+    maxRepel: msg('cheat.gMaxRepel', 'Max Repels'),
+    masterBall: msg('cheat.gMasterBall', 'Master Balls'),
+    balls: msg('cheat.gBalls', 'Poké Balls and Ultra Balls'),
+    healing: msg('cheat.gHealing', 'Full Restores and Revives'),
+    money: msg('cheat.gMoney', 'Money'),
+  }[g] || msg('cheat.gOther', '{g}', { g });
 }
 
 /** The run's cheat rule was switched (`by` = slot) – logged like the cheats themselves. */
@@ -417,6 +474,92 @@ export function logCheatRule(doc, manifest, by, allowed) {
   feedMsg(doc, manifest, { type: 'cheat', slot: by, msg: allowed
     ? solo ? msg('feed.cheatsOnSolo', 'Cheats allowed for this run') : msg('feed.cheatsOn', 'allowed cheats for this run')
     : solo ? msg('feed.cheatsOffSolo', 'Cheats turned off for this run') : msg('feed.cheatsOff', 'turned cheats off for this run') });
+}
+
+/**
+ * A trade in a link session (docs/MULTIPLAYER.md): what left `slot`'s team and what came in, by the party before and
+ * after (live data; a Pokémon is its `key` – personality value and trainer ID). Logged only when both sides changed.
+ */
+export function logLinkTrade(doc, manifest, slot, partner, before, after) {
+  // (a Pokémon is its key AND its species, counted: Gen 1/2 keys are only trainer ID + DVs – two of a player's own
+  // Pokémon may share them, as in the recorded Crystal ↔ Silver trade, where a key-only comparison saw nothing leave)
+  const id = (m) => `${m.key}|${m.species}`;
+  const minus = (a, b) => {
+    const left = new Map();
+    for (const m of b || []) if (m?.key) left.set(id(m), (left.get(id(m)) || 0) + 1);
+    return (a || []).filter((m) => {
+      if (!m?.key) return false;
+      const n = left.get(id(m)) || 0;
+      if (n) left.set(id(m), n - 1);
+      return !n;
+    });
+  };
+  const gave = minus(before, after);
+  const got = minus(after, before);
+  if (!gave.length || !got.length) return false;
+  const name = players(doc, manifest)[partner]?.name || partner;
+  feedMsg(doc, manifest, { type: 'trade', slot, partner, gave: gave.map((m) => m.species), got: got.map((m) => m.species),
+    msg: msg('feed.linkTrade', 'traded {gave} for {got} with {partner}', { gave: { species: gave[0].species }, got: { species: got[0].species }, partner: name }) });
+  return true;
+}
+
+/**
+ * A link battle every player of the session agreed on (web/lib/wager.mjs outcomeOf) into the log: "Sam won a link
+ * battle against Tim", "… won 2 : 1 in link battles against Tim", "… drew a link battle with Tim", "Sam & Lena beat
+ * Tim & Robin in a multi battle". Keyed by the session, so every player's computer writes the same entry once.
+ */
+export function logLinkBattle(doc, manifest, sid, o) {
+  const key = `feed:lb-${sid}`;
+  if (!o || o.state !== 'agreed' || !o.summary?.battles || doc.get(key)) return false;
+  const names = players(doc, manifest);
+  const name = (s) => names[s]?.name || s;
+  const s = o.summary;
+  const base = { at: o.at || Date.now(), type: 'linkBattle', sid, winners: s.winners, losers: s.losers, draw: !!s.draw, battles: s.battles, wager: o.wager || 0 };
+  let entry;
+  if (s.multi) {
+    entry = { ...base, slot: null, msg: msg('feed.linkMulti', '{winners} beat {losers} in a multi battle', { winners: joinNames(s.winners.map(name)), losers: joinNames(s.losers.map(name)) }) };
+  } else if (s.draw) {
+    const [a, b] = o.seats;
+    entry = { ...base, slot: a, msg: s.battles > 1 ? msg('feed.linkDrawMany', 'drew {score} with {name} in link battles', { score: `${s.score[0]} : ${s.score[1]}`, name: name(b) })
+      : msg('feed.linkDraw', 'drew a link battle with {name}', { name: name(b) }) };
+  } else {
+    const [w] = s.winners;
+    const [l] = s.losers;
+    entry = { ...base, slot: w, msg: s.battles > 1 ? msg('feed.linkWonMany', 'won {score} in link battles against {name}', { score: `${s.score[0]} : ${s.score[1]}`, name: name(l) })
+      : msg('feed.linkWon', 'won a link battle against {name}', { name: name(l) }) };
+  }
+  doc.set(key, { ...entry, text: feedText(doc, manifest, entry) });
+  return true;
+}
+
+/**
+ * A raid that is over (web/lib/raid.mjs): "Sam, Tim & Kim won a raid (1:23 · most damage: Tim)" / "… lost a raid".
+ * Every computer that was in it writes the same entry, keyed by the raid (shared/raid.mjs raidFeedEntry).
+ */
+export function logRaid(doc, manifest, entry) {
+  const key = `feed:raid-${entry.raid}`;
+  if (doc.get(key)) return false;
+  const names = players(doc, manifest);
+  const name = (s) => names[s]?.name || s;
+  const who = joinNames(entry.players.map(name));
+  const time = Number.isFinite(entry.ms) ? `${Math.floor(entry.ms / 60000)}:${String(Math.floor((entry.ms % 60000) / 1000)).padStart(2, '0')}` : '';
+  const m = entry.won
+    ? entry.mvp ? msg('feed.raidWonMvp', '{names} won a raid together ({time} · most damage: {mvp})', { names: who, time, mvp: name(entry.mvp) })
+      : msg('feed.raidWon', '{names} won a raid together ({time})', { names: who, time })
+    : msg('feed.raidLost', '{names} lost a raid ({time})', { names: who, time });
+  const e = { ...entry, slot: null, msg: m };
+  doc.set(key, { ...e, text: feedText(doc, manifest, e) });
+  return true;
+}
+
+/** `slot`'s game paid a lost wager: "Tim paid Sam ₽2,000 (link battle)" – once per session and payer. */
+export function logWagerPaid(doc, manifest, sid, slot, to, amount) {
+  const key = `feed:lbp-${sid}-${slot}`;
+  if (doc.get(key)) return false;
+  const entry = { at: Date.now(), type: 'wager', slot, to, amount, sid,
+    msg: msg('feed.wagerPaid', 'paid {name} {amount} (link battle)', { name: players(doc, manifest)[to]?.name || to, amount: { money: amount } }) };
+  doc.set(key, { ...entry, text: feedText(doc, manifest, entry) });
+  return true;
 }
 
 /**
@@ -487,7 +630,15 @@ const switchLabels = (n) => ({
   autoAssign: msg('rules.autoAssign', 'Enter new catches automatically'),
   autoDeath: n > 2 ? msg('rules.autoDeathGroup', 'A linked Pokémon that faints (live) kills its whole group automatically')
     : msg('rules.autoDeath', 'A linked Pokémon that faints (live) kills the pair automatically'),
+  startAtBalls: msg('rules.balls', 'Nothing counts before your first Poké Balls'),
+  linkTrades: msg('rules.linkTrades', 'Trades between us (link)'),
+  linkBattles: msg('rules.linkBattles', 'Battles between us (link)'),
+  linkBattleDeaths: msg('rules.linkBattleDeaths', 'Losing a link battle counts as deaths'),
+  itemGifts: msg('rules.itemGifts', 'Gifts between us'),
+  saveImports: msg('rules.saveImports', 'Allow importing a save file'),
 });
+// (the link rules say 'on' / 'off')
+const switchOn = (v) => !!v && v !== 'off';
 
 /** A SoulLink's choices (n players): their label and the label of each value, for the log – the board's texts. */
 const choiceLabels = (n) => ({
@@ -505,6 +656,10 @@ const choiceLabels = (n) => ({
  */
 export function logRulesChange(doc, manifest, by, before, after) {
   if (!!after.cheats !== !!before.cheats) logCheatRule(doc, manifest, by, !!after.cheats);
+  // which cheats: switched on with only some of them, or changed while on – the list
+  const groups = cheatGroups(after);
+  const some = typeof after.cheatSet === 'string' && after.cheatSet !== 'all';
+  if (after.cheats && (before.cheats ? groups.join() !== cheatGroups(before).join() : some)) logCheatSet(doc, manifest, by, groups);
   if ((after.typeHelp !== false) !== (before.typeHelp !== false)) logTypeHelpRule(doc, manifest, by, after.typeHelp !== false);
   if ((after.lives || 0) !== (before.lives || 0) || (after.lives > 0 && after.livesPool !== before.livesPool)) logLivesRule(doc, manifest, by, after);
   if (isNuzlocke(manifest)) return;
@@ -512,8 +667,8 @@ export function logRulesChange(doc, manifest, by, before, after) {
   const switches = switchLabels(n);
   const choices = choiceLabels(n);
   for (const key of SOULLINK_RULE_KEYS) {
-    if (switches[key] && !!after[key] !== !!before[key]) {
-      feedMsg(doc, manifest, { type: 'rule', slot: by, msg: after[key]
+    if (switches[key] && switchOn(after[key]) !== switchOn(before[key])) {
+      feedMsg(doc, manifest, { type: 'rule', slot: by, msg: switchOn(after[key])
         ? msg('feed.ruleOn', 'turned on “{rule}” for everyone', { rule: switches[key] })
         : msg('feed.ruleOff', 'turned off “{rule}” for everyone', { rule: switches[key] }) });
     } else if (choices[key] && after[key] !== before[key]) {
@@ -531,6 +686,28 @@ export function markMissed(doc, manifest, area, slot, { species = null, by } = {
   return true;
 }
 
+/**
+ * "Nothing counts before your first Poké Balls" (rules.startAtBalls) – does it still hold for `slot`? Each player goes
+ * by their own bag: `balls:<slot>` ({ at, how: 'bag' | 'catch', down?: [key] }) marks when their rules started. While it
+ * holds, that player's Pokémon don't die, a whiteout doesn't end the run (or cost a life) and no encounter is spent.
+ * In a SoulLink the link still works the other way: a partner whose rules have started loses a Pokémon – its whole
+ * group dies, this player's linked one too (that death counts: it is the partner's).
+ */
+export const beforeBalls = (doc, manifest, slot) => !!doc && !!rules(doc, manifest).startAtBalls && !doc.get(`balls:${slot}`, null);
+
+/**
+ * `slot`'s rules start now: souldew saw Poké Balls in their bag (`how` 'bag'), or – where it can't read the bag – they
+ * caught a Pokémon ('catch'). Logged once per player (a fixed log id – two computers write one line). `down`: the keys
+ * of their Pokémon at 0 HP right now – knocked out before the rules started, they only die once they were healed and
+ * go down again. false when the rule doesn't hold (any more) for `slot`.
+ */
+export function startRules(doc, manifest, slot, how = 'bag', down = []) {
+  if (!beforeBalls(doc, manifest, slot)) return false;
+  doc.set(`balls:${slot}`, { at: Date.now(), how: how === 'catch' ? 'catch' : 'bag', ...(down.length ? { down: down.slice(0, 6) } : {}) });
+  feedMsg(doc, manifest, { type: 'rule', slot, msg: msg('feed.ballsStart', 'Rules start now – first Poké Balls') }, `balls-${slot}`);
+  return true;
+}
+
 /** Areas (progression entries) where `slot` has no encounter yet. */
 export function openAreas(doc, manifest, slot = 'p1') {
   return progression(doc, manifest).filter((a) => a.kind === 'area' && !encounter(doc, a.key, slot));
@@ -540,7 +717,7 @@ export function openAreas(doc, manifest, slot = 'p1') {
  * Ask `slot` whether the wild battle that just ended spent an area (solo Nuzlocke and every player of a SoulLink – a
  * miss there fails the pair)? Not when a new Pokémon turned up since it began (`newMonAt` ≥ `from`), when it was a
  * trainer battle at any point (`wild` false – Gen 4 tells them apart by a heuristic that can flicker), for a shiny
- * (clause) or a dupe, when the run is over, when the place sign's area (`here`, where the battle ended) already has
+ * (clause) or a dupe, when the run is over, when the place sign's area (`here`, where the battle was) already has
  * this player's encounter – no first encounter then –, when a curated route list has no open area left, or when a
  * catch could have gone unseen: a full party sends it to the PC, and the PC is only read live in some games (`boxes`
  * false). In a SoulLink only where the place sign resolves to an area (one without this player's encounter, or a
@@ -550,6 +727,7 @@ export function openAreas(doc, manifest, slot = 'p1') {
  */
 export function missedQuestion(doc, manifest, rd, slot, { foe, wild, from = 0, newMonAt = 0, boxes = true, partySize = 0, here = null } = {}) {
   if (!manifest || doc.get('run:status', null) || !wild || !foe?.species) return false;
+  if (beforeBalls(doc, manifest, slot)) return false; // (no first encounter is spent before the first Poké Balls)
   if (newMonAt >= from || (!boxes && partySize >= 6)) return false;
   if (foe.shiny && rules(doc, manifest).shinyClause) return false;
   if (dupeOf(doc, manifest, rd, foe.species, slot)) return false;
@@ -577,7 +755,9 @@ export function lastWildAt(doc, manifest, gen, area, slot) {
  */
 export function blackout(doc, manifest, slot = 'p1') {
   const mode = rules(doc, manifest).blackout;
-  const resumed = doc.get('run:resumed', 0) || 0;
+  // (a whiteout before the first Poké Balls doesn't count – nor does one that began before them)
+  if (beforeBalls(doc, manifest, slot)) return false;
+  const resumed = Math.max(doc.get('run:resumed', 0) || 0, doc.get(`balls:${slot}`, null)?.at || 0);
   if (mode === 'party') {
     const l = live(doc, slot);
     const mons = (l?.party || []).filter((m) => !m.egg);
@@ -621,6 +801,8 @@ export function wipedSlot(doc, slots = ALL_SLOTS, manifest = Array.isArray(slots
   if (manifest && runMode(manifest) === 'nuzlocke') return blackout(doc, manifest, 'p1') ? 'p1' : null;
   const resumed = doc.get('run:resumed', 0) || 0;
   for (const slot of Array.isArray(slots) ? slots : slotsOf(slots)) {
+    // (before the first Poké Balls a wiped team doesn't end the run – deaths of linked Pokémon still stand)
+    if (beforeBalls(doc, manifest, slot)) continue;
     const p = live(doc, slot)?.party || [];
     const dead = (m) => m.area && pairState(doc, m.area).state === 'dead';
     if (!p.length || !p.every((m) => m.egg || dead(m) || (m.maxHp > 0 && m.hp === 0))) continue;
@@ -638,7 +820,7 @@ export function wipedSlot(doc, slots = ALL_SLOTS, manifest = Array.isArray(slots
  * and markExtraDead() reopen a run whose cause they undo. `feedId`: a fixed id for the log line (endByLives).
  */
 export function failRun(doc, manifest, slot, reason = 'wipe', { area = null, extra = null } = {}, feedId = undefined) {
-  if (doc.get('run:status')) return false;
+  if (doc.get('run:status') || isTogether(manifest)) return false; // (Play together can't fail)
   const rule = reason === 'blackout' && runMode(manifest) === 'nuzlocke' ? rules(doc, manifest).blackout : null;
   doc.set('run:status', { state: 'failed', at: Date.now(), by: slot, auto: true, note: null, reason, ...(area ? { area } : extra ? { extra } : {}), ...(rule ? { rule } : {}) });
   const name = players(doc, manifest)[slot]?.name || slot.toUpperCase();
@@ -788,6 +970,7 @@ export function pairTypeClash(doc, manifest, rd, me, species, at = Date.now()) {
 }
 
 export function checks(doc, manifest, rd) {
+  if (isTogether(manifest)) return []; // (no rules to break in Play together)
   const r = rules(doc, manifest);
   const out = [];
   const pn = players(doc, manifest);
@@ -1004,6 +1187,8 @@ const hatchedKeys = new WeakMap();
 
 /** `wasEgg`: the app saw this Pokémon as an egg – an untracked one keeps that mark in the live team (hatchedMon). */
 function liveMon(m, area, wasEgg = false) {
+  // nature, ability, IVs, EVs as the reader got them (shared/monstats.mjs) – the board's Pokémon details; an egg's stay out
+  const summary = m.isEgg ? null : cleanSummary(m.summary);
   return {
     key: m.key, area, species: m.species, nick: m.nickname, level: m.level, hp: m.hp, maxHp: m.maxHp, item: m.item ?? m.heldItem,
     status: m.status, shiny: m.shiny, gender: m.gender, moves: m.moves, ...(m.form ? { form: m.form } : {}), ...(m.isEgg ? { egg: true } : !area && wasEgg ? { hatched: true } : {}),
@@ -1011,6 +1196,7 @@ function liveMon(m, area, wasEgg = false) {
     ...(m.itemOwn ? { itemOwn: true, ...(m.itemName ? { itemName: String(m.itemName).slice(0, 24) } : {}) } : {}),
     // where an untracked mon was met – the Nuzlocke checks tell a second catch on a spent area by it
     ...(!area && m.metLocation != null ? { met: m.metLocation, metLevel: m.metLevel ?? null, ...(m.eggLocation > 0 ? { eggLocation: m.eggLocation } : {}) } : {}),
+    ...(summary ? { summary } : {}),
   };
 }
 
@@ -1049,6 +1235,86 @@ function trustLevels(doc, slot, party, known, source) {
 const partyDown = (party) => party.some((m) => !m.egg) && party.every((m) => m.egg || (m.maxHp > 0 && m.hp === 0));
 
 /**
+ * Deaths the game hasn't shown yet. A live read sees a Pokémon's HP at 0 while the game still drains its HP bar and
+ * says that it fainted – so the play view (web/lib/reveal.mjs) holds such a Pokémon until the player has seen it, and
+ * applySnapshot gets its key in `held`. Its death is recorded at once, under `held:<slot>:<area>` – with the cause, the
+ * opponent and the place of that moment (the battle may be over when it is revealed): nothing is lost when the game is
+ * closed, reset or a state is loaded meanwhile, and a death recorded is never taken back. Nothing reads these records but
+ * revealHeld: the death itself (`pair:<area>` – the notice, the sound, the log, the partners' apps, older ones too, the
+ * stream overlay and API, Discord) is written only when it is revealed.
+ */
+export const HELD_PREFIX = 'held:';
+/** The held record of a whiteout without a death (a Nuzlocke with "fainted means dead" off). */
+const DOWN_ONLY = '~down';
+
+/**
+ * Reveal the held deaths of `slot` (all of them, or those whose Pokémon `keep` doesn't hold any more; `olderThan`: only
+ * records at least that many ms old – an app that doesn't play `slot` reveals what its player's app left behind):
+ * each is marked dead as it was recorded, with a fixed log id, so two apps revealing it write one line. A death that
+ * came with the whole team down (`down`) ends the run like that whiteout would have – also when the player reset the
+ * game meanwhile. → { deaths: [area], failed: 'blackout'|'deathless'|'lives'|'wipe'|null }
+ */
+export function revealHeld(doc, manifest, slot, { keep = null, olderThan = 0, now = Date.now() } = {}) {
+  const out = { deaths: [], failed: null };
+  const statusBefore = doc.get('run:status', null);
+  for (const [area, h] of Object.entries(doc.scan(`${HELD_PREFIX}${slot}:`))) {
+    if (!h || (keep && h.key && keep.has(h.key)) || now - (h.at || 0) < olderThan) continue;
+    doc.set(`${HELD_PREFIX}${slot}:${area}`, null);
+    if (area !== DOWN_ONLY && markDead(doc, manifest, area, { slot, cause: h.cause || '', level: h.level ?? null, killer: h.killer || null, place: h.place || null,
+      feedId: `death-${slot}-${String(area).replace(/[^\w-]/g, '_')}-${(h.at || 0).toString(36)}` })) out.deaths.push(area);
+    if (h.down && !doc.get('run:status', null)) {
+      if (runMode(manifest) !== 'nuzlocke') failRun(doc, manifest, slot, 'wipe');
+      else if (rules(doc, manifest).blackout === 'party') failRun(doc, manifest, slot, 'blackout');
+    }
+  }
+  const st = doc.get('run:status', null);
+  if (!statusBefore && st?.state === 'failed') out.failed = st.reason || 'wipe';
+  return out;
+}
+
+/** How long after the first look at an imported save its Pokémon are still taken as brought along (the PC is read later). */
+export const IMPORT_WINDOW = 60 * 1000;
+
+/**
+ * A battery save imported into `slot`'s game (the board's Files menu, web/views/saveimport.mjs – `simport:<slot>` in the
+ * doc, written before the save is): the first look at the game afterwards takes what it holds as where the player
+ * stands – its Pokémon are set aside (ignored, reason 'imported': no catch, no encounter, no death), its badges are no
+ * news, tracked Pokémon in it are brought up to date quietly. That lasts until the PC was read too (a snapshot with
+ * boxes) or IMPORT_WINDOW has passed since the first look. → null (nothing to do) or { writes } for this snapshot.
+ */
+export function importBaseline(doc, slot, snap, now = Date.now()) {
+  const imp = doc.get(`simport:${slot}`, null);
+  if (!imp || typeof imp !== 'object' || imp.done || !imp.at) return null;
+  // (an empty look – a title screen, a reset – isn't the save yet: applySnapshot returns before this for those)
+  const since = Number.isFinite(imp.since) ? imp.since : now;
+  const done = Array.isArray(snap?.boxes) || now - since >= IMPORT_WINDOW;
+  return { writes: { [`simport:${slot}`]: { ...imp, since, ...(done ? { done: true } : {}) } } };
+}
+
+/** Can this player import a save into the run? A Nuzlocke: yes. A SoulLink: only where the host allows it (rule `saveImports`). */
+export function canImportSave(doc, manifest) {
+  if (!manifest) return { ok: true };
+  if (runMode(manifest) === 'nuzlocke') return { ok: true };
+  return rules(doc, manifest).saveImports ? { ok: true } : { ok: false, reason: 'host' };
+}
+
+/**
+ * The marker importBaseline reads – written before the save goes to the server, so no look at the game can come first.
+ * `clear`: the import failed – the marker goes.
+ */
+export function markSaveImport(doc, slot, { clear = false } = {}) {
+  doc.set(`simport:${slot}`, clear ? null : { at: Date.now() });
+}
+
+/** The import in the run's log, for everyone (also older partners – the English text goes along). `undo`: it was undone. */
+export function logSaveImport(doc, manifest, slot, { undo = false } = {}) {
+  const solo = slotsOf(manifest).length === 1;
+  feedMsg(doc, manifest, { type: 'saveImport', slot, ...(undo ? { undo: true } : {}), msg: undo
+    ? solo ? msg('feed.saveImportUndoSolo', 'Imported save undone – the save from before is back') : msg('feed.saveImportUndo', 'undid the save import – the save from before is back')
+    : solo ? msg('feed.saveImportSolo', 'Save file imported – its Pokémon and badges don’t count for the run') : msg('feed.saveImport', 'imported a save file – its Pokémon and badges don’t count for the run') });
+}
+
+/**
  * Apply a snapshot of `slot`'s game: { party: [mon], boxes: [mon]|null, badges, trainer, playTime, source }.
  * Mons are normalized: { key, species, nickname, level, hp, maxHp, status, shiny, gender, metLocation, metLevel, isEgg, inParty }.
  * `battle` (optional, the live battle right now): { kind: 'wild'|'trainer', enemy: { species, level } } – a mon
@@ -1057,7 +1323,65 @@ const partyDown = (party) => party.some((m) => !m.egg) && party.every((m) => m.e
  * snapshot ended a Nuzlocke, 'lives' when one of its deaths took the last life (any mode; SoulLinks otherwise end
  * through wipedSlot/failRun as before).
  */
-export function applySnapshot(doc, manifest, gen, slot, snap, { auto = true, rd = null, battle = null } = {}) {
+/**
+ * Play together: every player's game as the partners announced it (`game:<slot>`, shared/playtogether.mjs gameInfo) –
+ * this computer's own from its run (always current) – { slot: info | null }.
+ */
+export function togetherGames(doc, manifest, me = null) {
+  const own = me && manifest?.outputs?.[me] ? gameInfo(manifest.game, catalogGame(manifest.game?.id)) : null;
+  return Object.fromEntries(slotsOf(manifest).map((s) => [s, s === me && own ? own : cleanGameInfo(doc?.get?.(`game:${s}`, null))]));
+}
+
+/**
+ * The id a run player's save states and "where you left off" go by in the play view: the run's own – or, in Play
+ * together, the library game's (its free play's), so the states are one set with the game's save (shared/playtogether.mjs).
+ */
+export function runStateId(manifest, me) {
+  const lib = isTogether(manifest) ? manifest?.outputs?.[me]?.library : null;
+  return typeof lib === 'string' && lib ? lib : `run-${manifest?.id}-${me}`;
+}
+
+/** This computer's player tells the others which game they play (Play together): once, and again when it changes. */
+export function announceGame(doc, manifest, me) {
+  if (!doc || !isTogether(manifest) || !manifest.outputs?.[me]) return false;
+  const info = gameInfo(manifest.game, catalogGame(manifest.game?.id));
+  if (JSON.stringify(doc.get(`game:${me}`, null)) === JSON.stringify(info)) return false;
+  doc.set(`game:${me}`, info);
+  return true;
+}
+
+const NOTHING = () => ({ inbox: [], alerts: [], newCatches: [], deaths: [], failed: null });
+
+/**
+ * Play together (shared/playtogether.mjs): what the tracker writes of a player's game – their live team, badges and
+ * play time for the board, the partners (Shared World followers, gifts, raids, watching) and the stream overlay. No
+ * encounter, no death, no level cap, nothing that can end the run; a new badge goes to the log (the one line a
+ * friend's game adds there besides trades, battles, raids and gifts). The same "no flicker" guards as applySnapshot:
+ * an empty party (title screen, reset) and an older save file under fresh live data change nothing.
+ */
+export function applyTogether(doc, manifest, slot, snap) {
+  if (snap.source !== 'save' && !(snap.party || []).length && !(snap.boxes || []).length) return NOTHING();
+  const prev = live(doc, slot);
+  if (snap.source === 'save' && prev?.source === 'live' && Date.now() - (prev.at || 0) < LIVE_FRESH) return NOTHING();
+  const party = (snap.party || []).map((m) => liveMon(m, null, false));
+  const badges = snap.badges ?? prev?.badges ?? 0;
+  const best = Math.max(prev?.badgesBest ?? 0, prev?.badges || 0);
+  const firstRead = snap.badges !== undefined && prev && !prev.badgesRead && snap.source !== 'save';
+  if (prev && badges > best && !firstRead) feedMsg(doc, manifest, { type: 'badge', slot, msg: msg('feed.badge', 'Earned badge #{n}!', { n: badges }) });
+  const next = {
+    source: snap.source || 'live', trainer: snap.trainer || prev?.trainer || '', badges,
+    ...(snap.badges !== undefined || prev?.badgesRead ? { badgesRead: true } : {}),
+    ...(Math.max(best, badges) > badges ? { badgesBest: best } : {}),
+    playTime: snap.playTime || prev?.playTime || null, party,
+    boxCount: snap.boxes ? snap.boxes.length : prev?.boxCount ?? null, game: snap.game || prev?.game || null,
+  };
+  const { at, ...was } = prev || {};
+  if (JSON.stringify(was) !== JSON.stringify(next) || !at || Date.now() - at > 30000) doc.set(`live:${slot}`, { ...next, at: Date.now() });
+  return NOTHING();
+}
+
+export function applySnapshot(doc, manifest, gen, slot, snap, { auto = true, rd = null, battle = null, held = null } = {}) {
+  if (isTogether(manifest)) return applyTogether(doc, manifest, slot, snap);
   // The party is never empty once the game has started – an empty live party is the title screen, a reset or a
   // save being loaded. Applying it would wipe the team (the partner sees warnings), drop the badges to 0 and then
   // announce every badge as "newly earned" once the game is loaded again.
@@ -1086,6 +1410,8 @@ export function applySnapshot(doc, manifest, gen, slot, snap, { auto = true, rd 
   // the Pokémon of the intro save this player's game started from (server/lib/introsave.mjs – normally none, it's a
   // save from before the starter): no encounter, no catch, no death – they are set aside like ignored ones
   const fromIntro = new Set(Array.isArray(manifest?.intro?.[slot]?.keys) ? manifest.intro[slot].keys : []);
+  // a battery save this player just imported (importBaseline): what it brought along is where the player stands
+  const imp = importBaseline(doc, slot, snap);
   const inbox = [];
   const alerts = [];
   const newCatches = [];
@@ -1107,21 +1433,54 @@ export function applySnapshot(doc, manifest, gen, slot, snap, { auto = true, rd 
   let starterOffered = false;
   const battles = lastBattle.get(doc) || new Map();
   lastBattle.set(doc, battles);
-  if (snap.source === 'live' && battle?.enemy?.species) battles.set(slot, { battle, at: Date.now() });
+  // (with the place sign read during the battle: a death seen just after it is told where the battle was)
+  if (snap.source === 'live' && battle?.enemy?.species) battles.set(slot, { battle, at: Date.now(), here: snap.here || null });
   const recent = battles.get(slot);
   const fight = battle || (snap.source === 'live' && recent && Date.now() - recent.at < BATTLE_GRACE ? recent.battle : null);
   // auto-death: `m` (filed under `area`) fell – with the opponent of the battle as its cause
-  const autoDead = (area, m) => {
+  const deathOf = (area, m) => {
     const name = m.nickname || { species: m.species };
     const foe = fight?.enemy?.species ? fight.enemy : null;
     const kind = fight?.kind === 'trainer' ? msg('cause.trainer', 'trainer battle') : msg('cause.wild', 'wild battle');
+    // where it fell: the place sign read with this snapshot (play view → snap.here) – or, when it is seen only once the
+    // battle is over (its party tells), where that battle was: the player may have walked on (#79)
+    const where = (!battle && fight ? recent.here : snap.here) || null;
+    // The log line names the area of the Pokémon's encounter ("Ruins of Alph: the Pokémon died") – where it fell goes
+    // with the cause, unless that is the same area (#79: read as the place of death)
+    const at = where?.name && areaForPlace(doc, manifest, gen, where) !== area ? String(where.name).slice(0, 40) : null;
     const cause = foe
-      ? msg('feed.faintedBy', '{name} fainted against {enemy} (Lv. {lv}, {kind})', { name, enemy: { species: foe.species }, lv: foe.level ?? '?', kind })
-      : msg('feed.faintedCause', '{name} fainted', { name });
+      ? at ? msg('feed.faintedByAt', '{name} fainted against {enemy} (Lv. {lv}, {kind}, {place})', { name, enemy: { species: foe.species }, lv: foe.level ?? '?', kind, place: at })
+        : msg('feed.faintedBy', '{name} fainted against {enemy} (Lv. {lv}, {kind})', { name, enemy: { species: foe.species }, lv: foe.level ?? '?', kind })
+      : at ? msg('feed.faintedAt', '{name} fainted ({place})', { name, place: at }) : msg('feed.faintedCause', '{name} fainted', { name });
     const killer = foe ? { species: foe.species, level: foe.level ?? null, kind: fight.kind || null } : null;
-    // where it fell: the place sign read with this snapshot (play view → snap.here)
-    if (markDead(doc, manifest, area, { slot, cause, level: m.level ?? null, killer, place: snap.here || null })) deaths.push(area);
+    return { cause, level: m.level ?? null, killer, place: where };
   };
+  // the play view hasn't shown this death yet (`held`): recorded now, revealed later (revealHeld); else marked dead now
+  const realDown = snap.source !== 'save' && partyDown(party.map((m) => ({ egg: m.isEgg, hp: m.hp, maxHp: m.maxHp })));
+  const autoDead = (area, m) => {
+    const hk = `${HELD_PREFIX}${slot}:${area}`;
+    if (held?.has(m.key)) {
+      if (!doc.get(hk, null) && !writes[hk]) {
+        const d = deathOf(area, m);
+        writes[hk] = { key: m.key, at: Date.now(), ...d, place: d.place ? { gen: d.place.gen ?? null, id: d.place.id ?? null, name: String(d.place.name || '').slice(0, 40) } : null, ...(realDown ? { down: true } : {}) };
+      }
+      return;
+    }
+    if (doc.get(hk, null)) return; // (recorded while held: revealed below as it was recorded)
+    if (markDead(doc, manifest, area, { slot, ...deathOf(area, m) })) deaths.push(area);
+  };
+  // "Nothing counts before your first Poké Balls": no deaths of this player's own yet; the Pokémon that were down when
+  // the rules started (`balls:<slot>`.down) die only once they were healed and go down again
+  const grace = beforeBalls(doc, manifest, slot);
+  const ballsAt = doc.get(`balls:${slot}`, null);
+  const forgiven = new Set(Array.isArray(ballsAt?.down) ? ballsAt.down : []);
+  for (const m of party) if (forgiven.has(m.key) && m.hp > 0) forgiven.delete(m.key);
+  if (ballsAt && forgiven.size !== (ballsAt.down?.length || 0)) {
+    const { down, ...rest } = ballsAt; // eslint-disable-line no-unused-vars
+    writes[`balls:${slot}`] = forgiven.size ? { ...rest, down: [...forgiven] } : rest;
+  }
+  const counts = (m) => !grace && !forgiven.has(m.key);
+  let caughtNew = false; // a new Pokémon that is no starter, egg or gift – it took a Poké Ball (the bag can't always be read)
   const autoDeath = auto && r.autoDeath && snap.source === 'live';
   const fellOnCatch = []; // new catches already at 0 HP: they die once their encounter is written
 
@@ -1132,6 +1491,16 @@ export function applySnapshot(doc, manifest, gen, slot, snap, { auto = true, rd 
     if (seen.has(m.key)) continue;
     seen.add(m.key);
     const k = known.get(m.key);
+    if (k && imp) {
+      // (a tracked Pokémon in the imported save: brought up to date quietly – no evolution in the log, no death; the
+      // trophies don't take a level or a species it may have reached elsewhere – shared/trophies.mjs)
+      const patch = {};
+      if (k.enc.species !== m.species) patch.species = m.species;
+      if (m.level && m.level !== k.enc.level) patch.level = m.level;
+      if (m.nickname && m.nickname !== k.enc.nickname) patch.nickname = m.nickname;
+      if (Object.keys(patch).length) writes[`enc:${k.area}:${slot}`] = { ...k.enc, ...patch };
+      continue;
+    }
     if (k) {
       const patch = {};
       if (k.enc.species !== m.species) {
@@ -1140,16 +1509,24 @@ export function applySnapshot(doc, manifest, gen, slot, snap, { auto = true, rd 
       }
       if (m.level && m.level !== k.enc.level) patch.level = m.level;
       if (m.nickname && m.nickname !== k.enc.nickname) patch.nickname = m.nickname;
-      if (Object.keys(patch).length) writes[`enc:${k.area}:${slot}`] = { ...k.enc, ...patch };
-      if (m.inParty && m.hp === 0 && m.maxHp > 0 && pairState(doc, k.area).state !== 'dead') {
+      // the form it has outside of battle (an Alolan form, a Mega that kept its form after the catch – or lost it on a
+      // reset): only shown. A form a battle gives it (Mega Evolution, Zen Mode, Blade Forme, a School …) is the same
+      // Pokémon – the species and the key stay, so it is no new catch, no evolution and no missing one; while a battle
+      // runs the encounter keeps the form it had before
+      const formChanged = !battle && snap.source !== 'save' && (m.form || 0) !== (k.enc.form || 0);
+      if (Object.keys(patch).length || formChanged) {
+        const { form: _old, ...rest } = k.enc; // eslint-disable-line no-unused-vars
+        writes[`enc:${k.area}:${slot}`] = { ...(formChanged ? rest : k.enc), ...patch, ...(formChanged && m.form ? { form: m.form } : {}) };
+      }
+      if (m.inParty && m.hp === 0 && m.maxHp > 0 && pairState(doc, k.area).state !== 'dead' && counts(m)) {
         if (autoDeath) autoDead(k.area, m);
-        else alerts.push({ type: 'fainted', area: k.area, mon: m });
+        else if (!held?.has(m.key)) alerts.push({ type: 'fainted', area: k.area, mon: m });
       }
       continue;
     }
     if (ignored[m.key] || extras[m.key]) continue;
-    if (fromIntro.has(m.key)) {
-      writes[`ign:${slot}:${m.key}`] = { species: m.species, nickname: m.nickname || null, level: m.level || null, shiny: !!m.shiny, reason: 'intro', at: Date.now() };
+    if (fromIntro.has(m.key) || imp) {
+      writes[`ign:${slot}:${m.key}`] = { species: m.species, nickname: m.nickname || null, level: m.level || null, shiny: !!m.shiny, reason: imp ? 'imported' : 'intro', at: Date.now() };
       continue;
     }
     // Gen 4 writes a caught Pokémon into the party first and its met data (place, level) a moment later –
@@ -1169,6 +1546,7 @@ export function applySnapshot(doc, manifest, gen, slot, snap, { auto = true, rd 
     // go to the inbox.
     const hatched = hatchedMon(gen, m, { wasEgg, levelOneWild: oneWild });
     const special = gen >= 4 && m.metLocation >= 2000;
+    if (snap.source === 'live' && guess !== 'starter' && !hatched && !special && m.metLocation != null && (m.metLevel ?? 1) > 0) caughtNew = true;
     if (!guess && !hatched && !special && m.metLocation !== null && m.metLocation !== undefined) guess = areaForCatch(doc, manifest, gen, m.metLocation);
     // Gen 1 and Gold/Silver keep no catch location: a Pokémon that joins within a minute of a wild battle was caught
     // where the player is – the place the sign shows (snap.here, read live like the battle)
@@ -1184,14 +1562,16 @@ export function applySnapshot(doc, manifest, gen, slot, snap, { auto = true, rd 
       const enc = {
         outcome: 'caught', species: m.species, nickname: m.nickname, level: m.level || m.metLevel, gender: m.gender, shiny: m.shiny,
         key: m.key, metLocation: m.metLocation ?? null, metLevel: m.metLevel ?? null, at: Date.now(), auto: true,
+        // (the species is the rules' – route, dupes, evolution line, pairs; the form is only shown: "Charizard (Mega Y)")
+        ...(m.form ? { form: m.form } : {}),
       };
       writes[`enc:${guess}:${slot}`] = enc;
       known.set(m.key, { area: guess, enc });
       newCatches.push(guess);
       feedMsg(doc, manifest, { type: 'catch', slot, area: guess, species: m.species, msg: msg('feed.autoCaught', '{area}: {name} (Lv. {lv}) caught', { area: { area: guess }, name: { species: m.species }, lv: m.level || m.metLevel || '?' }) });
-      if (m.inParty && m.hp === 0 && m.maxHp > 0) {
+      if (m.inParty && m.hp === 0 && m.maxHp > 0 && counts(m)) {
         if (autoDeath) fellOnCatch.push([guess, m]);
-        else alerts.push({ type: 'fainted', area: guess, mon: m });
+        else if (!held?.has(m.key)) alerts.push({ type: 'fainted', area: guess, mon: m });
       }
     } else {
       inbox.push({ mon: m, guess, occupied: !!occupied, reason: !guess ? (hatched ? 'egg' : special ? 'special' : 'unknown') : occupied ? 'occupied' : shinyHold ? 'shiny' : dupe ? 'dupe' : 'manual',
@@ -1230,7 +1610,8 @@ export function applySnapshot(doc, manifest, gen, slot, snap, { auto = true, rd 
   // (the first count a game gives after it had none – Gen 3 and Diamond/Pearl/Platinum didn't read badges before – is
   // where the player stands, not badges won just now)
   const firstRead = snap.badges !== undefined && prevLive && !prevLive.badgesRead && snap.source !== 'save';
-  if (prevLive && badges > best && !firstRead) {
+  if (imp) Object.assign(writes, imp.writes);
+  if (prevLive && badges > best && !firstRead && !imp) {
     feedMsg(doc, manifest, { type: 'badge', slot, msg: msg('feed.badge', 'Earned badge #{n}!', { n: badges }) });
     // Nuzlocke: was the boss beaten with a mon over the cap that applied before this badge? (The team as last
     // seen before the badge – levels gained in that very fight are allowed.)
@@ -1242,7 +1623,14 @@ export function applySnapshot(doc, manifest, gen, slot, snap, { auto = true, rd 
       }
     }
   }
-  const liveParty = party.map((m) => liveMon(m, known.get(m.key)?.area || null, wasEgg.has(m.key)));
+  // a Pokémon whose death the game hasn't shown yet keeps the HP the play view shows for it (`held` as a Map: key → HP)
+  // – the partners and the stream overlay see it go down when the player does
+  const prevHp = new Map((prevLive?.party || []).map((x) => [x.key, x.hp]));
+  const shownHp = (m) => {
+    const v = typeof held?.get === 'function' ? held.get(m.key) : undefined;
+    return Number.isFinite(v) && v > 0 ? v : prevHp.get(m.key) > 0 ? prevHp.get(m.key) : 1;
+  };
+  const liveParty = party.map((m) => liveMon(held?.has(m.key) && m.hp === 0 ? { ...m, hp: shownHp(m) } : m, known.get(m.key)?.area || null, wasEgg.has(m.key)));
   const down = snap.source !== 'save' && partyDown(liveParty);
   // the level caps read from this player's game (romcaps.mjs, sent along by the play view): kept with the run, so the
   // board, the partners and the stream API know them too
@@ -1267,12 +1655,28 @@ export function applySnapshot(doc, manifest, gen, slot, snap, { auto = true, rd 
     writes[`live:${slot}`] = { ...nextLive, at: Date.now() };
   }
   if (Object.keys(writes).length) doc.batch(writes);
+  // a whiteout the game is still showing, in a Nuzlocke whose blackout ends it without a death (fainted isn't dead
+  // there): recorded like a held death – the run ends when it is shown, even when the game was reset meanwhile
+  if (solo && !autoDeath && realDown && r.blackout === 'party' && !grace && snap.source === 'live' && !doc.get(`${HELD_PREFIX}${slot}:${DOWN_ONLY}`, null)) {
+    const k = party.find((m) => held?.has(m.key) && m.hp === 0)?.key;
+    if (k) writes[`${HELD_PREFIX}${slot}:${DOWN_ONLY}`] = { key: k, at: Date.now(), down: true };
+  }
+  const late = {};
   for (const [area, m] of fellOnCatch) if (pairState(doc, area).state !== 'dead') autoDead(area, m);
+  // (a new catch already down while held: its record goes in now that its encounter is written)
+  for (const [k, v] of Object.entries(writes)) if (k.startsWith(HELD_PREFIX) && !doc.get(k, null)) late[k] = v;
+  if (Object.keys(late).length) doc.batch(late);
+  // the held deaths the play view has shown by now – all of them where nothing holds any (a save file, an emulator
+  // outside souldew, an older caller)
+  if (snap.source === 'live' || !held) deaths.push(...revealHeld(doc, manifest, slot, { keep: held }).deaths);
+  // the first catch starts the rules where the bag couldn't tell (play view: startRules with the bag)
+  if (caughtNew && beforeBalls(doc, manifest, slot)) startRules(doc, manifest, slot, 'catch');
   let failed = null;
   // (a death of this pass took the last life – any mode; markDead ended the run already)
-  if (auto && !statusBefore && doc.get('run:status', null)?.reason === 'lives') failed = 'lives';
+  const reason = doc.get('run:status', null)?.reason;
+  if (auto && !statusBefore && reason === 'lives') failed = 'lives';
   else if (solo && auto && !statusBefore) {
-    if (doc.get('run:status', null)?.reason === 'deathless') failed = 'deathless';
+    if (reason === 'deathless' || reason === 'blackout') failed = reason; // (a held death revealed with its whiteout)
     else if (blackout(doc, manifest, slot) && failRun(doc, manifest, slot, 'blackout')) failed = 'blackout';
   }
   return { inbox, alerts, newCatches, deaths, failed };
