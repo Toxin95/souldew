@@ -5,7 +5,7 @@ import { t, ago } from '../lib/i18n.mjs';
 import { players as getPlayers, slotsOf, othersOf, joinNames } from '../lib/run.mjs';
 import { PARTNER_TTL } from '../lib/sync.mjs';
 import { ConnectionFlow, ConnectionText } from './guide.mjs';
-import { HostCode } from './invitecode.mjs';
+import { HostCode, PackVersionNote } from './invitecode.mjs';
 
 
 export function LinkView() {
@@ -81,6 +81,7 @@ export function LinkView() {
       ${s?.error && s.p2p !== 'connected' && s.relay !== 'connected' && html`<p class="warning error" role="alert">${t('link.error', 'Connection problem: {msg}', { msg: s.error })}</p>`}
     </section>
     ${others.length > 0 && html`<section class="panel stack"><h2>${t('link.invite', 'Invite')}</h2>
+      <${PackVersionNote} manifest=${manifest} />
       ${!manifest.imported && html`<${HostCode} manifest=${manifest} />`}
       <p class="small muted">${others.length > 1
         ? manifest.imported ? t('link.inviteFileGroupImported', 'Save the invite file – the other players open it in souldew under SoulLink › “Join with code”.')

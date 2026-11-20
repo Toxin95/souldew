@@ -1,5 +1,6 @@
 // Small filesystem helpers shared by the server modules.
-import { writeFileSync, renameSync, rmSync, realpathSync } from 'node:fs';
+import { writeFileSync, renameSync, rmSync, realpathSync, openSync, readSync, closeSync } from 'node:fs';
+import { rm as rmAsync } from 'node:fs/promises';
 import { extname, posix, win32 } from 'node:path';
 
 /**
@@ -15,6 +16,21 @@ export function renameRetry(from, to, { platform = process.platform, rename = re
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20 * (i + 1));
     }
   }
+}
+
+/**
+ * Remove a temporary file or folder, best effort and off the caller's path: Windows' transient locks (Defender or the
+ * search indexer holding a file the randomizer just wrote – EBUSY / EPERM) are retried a few times, an error that
+ * stays is logged (its code only, never the path – it names the player's user folder) and swallowed. Never throws,
+ * never rejects: a leftover in the cache must not keep a build or the wizard's check from finishing.
+ */
+export function removeQuietly(path, { rm = rmAsync, label = 'cleanup' } = {}) {
+  return Promise.resolve()
+    .then(() => rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }))
+    .then(() => true, (e) => {
+      console.warn(`[${label}] a temporary file couldn’t be removed (${e?.code || 'error'}) – left in the cache`);
+      return false;
+    });
 }
 
 /**
@@ -126,4 +142,23 @@ export function realInside(path, base, { realpath = realpathSync.native, platfor
  */
 export function httpError(status, message, code, vars) {
   return Object.assign(new Error(message), { status, ...(code ? { code } : {}), ...(vars ? { vars } : {}) });
+}
+
+/**
+ * A line of a build's log (server/lib/build.mjs, roms.mjs): `code` (+ `vars`) is what the page shows in the player's
+ * language (web/lib/errors.mjs buildLogText), `text` the English line for clients without that code.
+ */
+export function logLine(code, text, vars) {
+  return { code, text, ...(vars ? { vars } : {}) };
+}
+
+/** `len` bytes of a file from `offset` (fewer at its end) – a part of a big file without reading it whole. */
+export function readRange(path, offset, len) {
+  const fd = openSync(path, 'r');
+  try {
+    const b = Buffer.alloc(len);
+    return b.subarray(0, readSync(fd, b, 0, len, offset));
+  } finally {
+    closeSync(fd);
+  }
 }

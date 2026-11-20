@@ -40,6 +40,16 @@ if (want('stream')) webp('art=stream', [1280, 720], 'streaming');
 if (want('poster')) for (const name of ['board', 'teams', 'routes', 'nuzlocke', 'stream']) webp(`art=poster&src=${name}`, [1280, 720], `poster-${name}`);
 // Only on request: the image for the 2.5.0 release notes (`node scripts/render-readme-art.mjs release`).
 if (only === 'release') webp('art=release', [1280, 720], 'release-2.5.0-3ds');
+// Only on request: the 3DS player for the website (`node scripts/render-readme-art.mjs ds3`) – the screenshot with our
+// own painted screens in place of game footage, as site/assets/img/shots/play-3ds(-1440).webp.
+if (only === 'ds3') {
+  const png = join(tmp, 'ds3.png');
+  shoot('art=ds3', [1440, 900], 2, png);
+  const site = join(root, 'site', 'assets', 'img', 'shots');
+  execFileSync('cwebp', ['-quiet', '-q', '84', png, '-o', join(site, 'play-3ds.webp')]);
+  execFileSync('cwebp', ['-quiet', '-q', '84', '-resize', '1440', '900', png, '-o', join(site, 'play-3ds-1440.webp')]);
+  console.log('wrote site/assets/img/shots/play-3ds.webp and play-3ds-1440.webp');
+}
 
 // Pixel icons for the feature list, on a tinted tile that reads on GitHub's light and dark theme.
 const ICONS = { play: '#6f8fe0', signal: '#3f9a7c', ball: '#d45f55', link: '#e06bbd', scroll: '#c8902e', grave: '#8f78d6', sound: '#8a9c3e', globe: '#3a9aa6', stream: '#d45f55', lock: '#3f9a7c', eye: '#6f8fe0', save: '#c8902e' };

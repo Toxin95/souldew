@@ -6,7 +6,7 @@
 //
 // Writes <name>.png per fixture and meta.json (the post's text per card, as buildMeta cleans it).
 import { app, BrowserWindow } from 'electron';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LIVE_FIXTURES } from '../test/fixtures/livecards.mjs';
@@ -20,6 +20,7 @@ const opt = (name) => {
 const out = resolve(args.find((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--')) || join(tmpdir(), 'souldew-live-cards'));
 const data = resolve(opt('data') || mkdtempSync(join(tmpdir(), 'souldew-live-cards-data-')));
 const lang = opt('lang') || 'en';
+const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 mkdirSync(out, { recursive: true });
 mkdirSync(data, { recursive: true });
 process.env.SLS_DATA_DIR = data; // before the server's paths are read: the scratch folder, not the real data
@@ -59,7 +60,7 @@ app.whenReady().then(async () => {
       doc._persistSoon = () => {};
       doc.batch(f.entries);
       const event = f.event.kind === 'death' ? deathEvent(doc, f.manifest, f.event.area) : endEvent(f.manifest, doc.get('run:status'));
-      const { model, metaInput } = cardModel({ doc, manifest: f.manifest, gen: f.gen, event, app: '2.6.0' });
+      const { model, metaInput } = cardModel({ doc, manifest: f.manifest, gen: f.gen, event, app: ${JSON.stringify(version)} });
       const png = await renderCardPng(model, (id, fallback) => spriteUrl(id, { gen: fallback ? 9 : f.gen }));
       let s = '';
       for (let i = 0; i < png.length; i += 0x8000) s += String.fromCharCode.apply(null, png.subarray(i, i + 0x8000));

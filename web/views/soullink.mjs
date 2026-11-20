@@ -1,22 +1,34 @@
 import { html, useState, useEffect } from '/vendor/htm-preact.mjs';
 import { useApp, Modal, Led } from '../lib/ui.mjs';
 import { Icon } from '../lib/icons.mjs';
-import { t, ago } from '../lib/i18n.mjs';
+import { t, ago, currentLang } from '../lib/i18n.mjs';
 import { api } from '../lib/api.mjs';
-import { catalog, gameById, hackById, gameTitle, patchLabel, genFromSystem } from '../lib/data.mjs';
+import { buildLogText, serverErrorText } from '../lib/errors.mjs';
+import { diag } from '../lib/diag.mjs';
+import { catalog, gameById, hackById, gameTitle, patchLabel, patchFits, patchDiag, genFromSystem } from '../lib/data.mjs';
 import { PRESETS, DEFAULT_VALUES, localizeRandomizer, randomSeed, sameSettings, withDefaults, fieldActive, fieldEnabled, forGen, buildValues } from '/shared/randomizer-options.mjs';
 import { Cart, coverOf } from './library.mjs';
 import { RestartModal } from './restart.mjs';
 import { mySlotIn } from '../lib/restart.mjs';
 import { numberedName, baseRomsFor, needsIdenticalRom, pairJoin, joinGameId } from '/shared/restart.mjs';
 import { pairMate } from '/shared/pair-titles.mjs';
-import { ALL_SLOTS, slotsOf, runMode, othersOf, defaultRunName } from '/shared/slots.mjs';
-import { NUZLOCKE_RULES, joinNames } from '../lib/run.mjs';
+import { ALL_SLOTS, slotsOf, runMode, runSection, othersOf, defaultRunName } from '/shared/slots.mjs';
+import { NewTogether, TogetherJoinStep, TogetherBoard, TogetherIntro } from './playtogether.mjs';
+import { NUZLOCKE_RULES, joinNames, shinyNote } from '../lib/run.mjs';
+import { NEW_RUN_RULES } from '/shared/rules.mjs';
 import { suggestSlot } from '../lib/invitecode.mjs';
 import { Board, InviteBody } from './board.mjs';
 import { JoinCode } from './invitecode.mjs';
-import { NuzlockeRules, TypeHelpRule } from './nuzrules.mjs';
+import { NuzlockeRules, TypeHelpRule, LivesRule, SoulLinkRules, SoulLinkAuto, RulesSummary, BallsRule, LinkRules, GiftRule, RaidRules } from './nuzrules.mjs';
+import { RAID_SYSTEMS } from '/shared/live/raidhp.mjs';
+import { linkUnavailable } from '/shared/link.mjs';
+import { soulLinkRulesFrom, hostSlotOf } from '/shared/hostrules.mjs';
+import { rulesWithDefaults } from '/shared/rules.mjs';
+import { useAccount, useFriends } from '../lib/account.mjs';
+import { acceptInvite } from '../lib/friendinvite.mjs';
 import { FirstSteps } from './firststeps.mjs';
+import { IntroSaveOption, useIntroSave } from './introsave.mjs';
+import { SHINY_RATES, NORMAL_RATE, MIN_RATE, cleanShiny, shinyOdds, shinyNeedsHigh } from '/shared/shiny.mjs';
 
 /**
  * The SoulLink and the Nuzlocke section – one view, two modes (route `soullink` / `nuzlocke`):
@@ -36,12 +48,14 @@ export function SoulLinkView({ mode = 'soullink' }) {
     if (p.run && p.run !== runId) setRunId(p.run);
   }, [p.run]);
   // (`home`: the board's "All runs" – the overview of the section the open run belongs to)
-  const own = useOwnSection(mode, p.join !== undefined ? 'soullink'
-    : p.home !== undefined && !p.run ? manifest && runMode(manifest)
-      : p.run && p.new === undefined && manifest?.id === p.run ? runMode(manifest) : null);
+  // (a Play together lives in the SoulLink section: runSection)
+  const own = useOwnSection(mode, p.join !== undefined || p.together !== undefined ? 'soullink'
+    : p.home !== undefined && !p.run ? manifest && runSection(manifest)
+      : p.run && p.new === undefined && manifest?.id === p.run ? runSection(manifest) : null);
   if (!own) return null;
+  if (p.together !== undefined) return html`<${NewTogether} key=${p.rom || 'together'} romPick=${p.rom || null} />`;
   if (p.new !== undefined && p.from) return html`<${RestartRun} key=${p.from} from=${p.from} mode=${mode} />`;
-  if (p.new !== undefined) return html`<${NewRun} key=${mode} mode=${mode} gameId=${p.new} hackId=${p.hack} patchPick=${p.patch} romPick=${p.rom} />`;
+  if (p.new !== undefined) return html`<${NewRun} key=${mode} mode=${mode} gameId=${p.new} hackId=${p.hack} patchPick=${p.patch} romPick=${p.rom} friendPick=${p.friend} />`;
   if (p.join !== undefined) return html`<${JoinRun} />`;
   if (!p.run) return html`<${RunsHome} key=${mode} mode=${mode} />`;
   if (!manifest && missingRun === p.run) {
@@ -51,7 +65,7 @@ export function SoulLinkView({ mode = 'soullink' }) {
   }
   if (!manifest || manifest.id !== p.run) return html`<div class="empty-state"><p class="muted">${t('common.loading', 'Loading …')}</p></div>`;
   if (!Object.keys(manifest.outputs || {}).length && manifest.imported) return html`<${JoinRun} />`;
-  return html`<${Board} />`;
+  return runMode(manifest) === 'together' ? html`<${TogetherBoard} />` : html`<${Board} />`;
 }
 
 export const NuzlockeView = () => html`<${SoulLinkView} mode="nuzlocke" />`;
@@ -94,7 +108,9 @@ function liveOf(r, { runId, doc, me, onlineSlots }) {
 }
 
 /** "Nuzlocke" / "SoulLink · 3" – how a run is played, for lists. */
-export const modeLabel = (r) => (runMode(r) === 'nuzlocke' ? t('runs.modeSolo', 'Solo Nuzlocke') : t('runs.modeLink', 'SoulLink · {n}', { n: slotsOf(r).length }));
+export const modeLabel = (r) => (runMode(r) === 'nuzlocke' ? t('runs.modeSolo', 'Solo Nuzlocke')
+  : runMode(r) === 'together' ? t('pt.modeShort', 'Play together · {n}', { n: slotsOf(r).length })
+    : t('runs.modeLink', 'SoulLink · {n}', { n: slotsOf(r).length }));
 
 function RunCaption({ r }) {
   const app = useApp();
@@ -103,8 +119,8 @@ function RunCaption({ r }) {
   const who = slotsOf(r).map((x) => r.summary?.names?.[x] || r.players?.[x]?.name || x.toUpperCase()).join(', ');
   return html`<div class="run-cap">
     <span class="tiny muted ellipsis" title=${who}><b>${modeLabel(r)}</b> · ${who}</span>
-    <div class="row tight"><span class=${`chip run-st ${st}`}>${stateLabel(st)}</span>
-      <span class="tiny muted"><b class="alive-t">${s.alive || 0}</b> ${t('board.alive', 'alive')} · <b class="dead-t">${s.dead || 0}</b> ${t('board.dead', 'dead')}</span></div>
+    ${runMode(r) === 'together' ? null : html`<div class="row tight"><span class=${`chip run-st ${st}`}>${stateLabel(st)}</span>
+      <span class="tiny muted"><b class="alive-t">${s.alive || 0}</b> ${t('board.alive', 'alive')} · <b class="dead-t">${s.dead || 0}</b> ${t('board.dead', 'dead')}</span></div>`}
     ${liveOf(r, app).map((x) => html`<span class="tiny live-tag"><${Led} on color="green" blink=${!x.playing} />${x.playing ? t('runs.live', '{name} live', { name: x.name }) : t('runs.online', '{name} online', { name: x.name })}</span>`)}
   </div>`;
 }
@@ -150,7 +166,7 @@ export function DeleteRunModal({ r, onClose }) {
     setBusy(true);
     try {
       const res = await fetch(`/api/runs/${r.id}`, { method: 'DELETE', headers: { 'x-soullink': '1' } });
-      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `HTTP ${res.status}`);
+      if (!res.ok) throw new Error(serverErrorText((await res.json().catch(() => null)) || {}, res.status));
       try { localStorage.removeItem(`sl-doc-${r.id}`); } catch { /* private mode */ }
       if (r.id === runId) setRunId(null);
       await reloadStatus();
@@ -164,7 +180,8 @@ export function DeleteRunModal({ r, onClose }) {
   return html`<${Modal} open=${true} onClose=${onClose} title=${t('runs.deleteTitle', 'Delete “{name}”?', { name: r.name })}
     footer=${html`<button class="btn ghost" onClick=${onClose}>${t('common.cancel', 'Cancel')}</button>
       <button class="btn danger" disabled=${busy} onClick=${go}>${t('runs.deleteConfirm', 'Delete run')}</button>`}>
-    <p class="muted">${t('runs.deleteText', 'This removes the run from this computer: the games built for it, the save files, the board with all encounters and deaths, and the invite.')}</p>
+    <p class="muted">${runMode(r) === 'together' ? t('pt.deleteText', 'This removes the run from this computer: its board, its log and the invite. Your game and its save stay – they belong to your library.')
+      : t('runs.deleteText', 'This removes the run from this computer: the games built for it, the save files, the board with all encounters and deaths, and the invite.')}</p>
     <p class="small faint">${runMode(r) === 'nuzlocke' ? t('runs.deleteTrashSolo', 'The folder is moved to the trash folder inside the app data (runs/.trash) – you can restore it by hand.')
       : slotsOf(r).length > 2 ? t('runs.deleteTrashGroup', 'The folder is moved to the trash folder inside the app data (runs/.trash) – you can restore it by hand. The copies of the other players are not affected.')
         : t('runs.deleteTrash', 'The folder is moved to the trash folder inside the app data (runs/.trash) – you can restore it by hand. Your partner’s copy is not affected.')}</p>
@@ -198,7 +215,7 @@ function RunStats({ runs, mode }) {
 function RunningHere({ mode }) {
   const { session, status, navigate, closeSession } = useApp();
   const run = session?.target.runId && (status?.runs || []).find((r) => r.id === session.target.runId);
-  if (!run || runMode(run) !== mode) return null;
+  if (!run || runSection(run) !== mode) return null;
   return html`<div class="panel row running-banner">
     <${Led} on color="green" /><span class="grow">${t('play.runningNow', 'Running now:')} <b>${session.target.label}</b></span>
     <button class="btn small primary" onClick=${() => navigate('play', session.target.params)}><${Icon} name="play" size=${14} />${t('play.backToGame', 'Back to the game')}</button>
@@ -215,6 +232,9 @@ function RunsHome({ mode }) {
   // still going first, then the one played last
   const when = (r) => r.summary?.lastPlayed || Date.parse(r.updatedAt) || 0;
   const runs = [...all].sort((a, b) => (runState(a) === 'active' ? 0 : 1) - (runState(b) === 'active' ? 0 : 1) || when(b) - when(a));
+  // Play together lives in the SoulLink section: its own shelf, after the SoulLinks (views/playtogether.mjs)
+  const togethers = solo ? [] : (status?.runs || []).filter((r) => runMode(r) === 'together').sort((a, b) => when(b) - when(a));
+  const startTogether = () => navigate('soullink', { together: '' });
   const board = (r) => { setRunId(r.id); navigate(mode, { run: r.id }); };
   const actions = (r) => {
     const playing = session?.target.runId === r.id;
@@ -231,7 +251,8 @@ function RunsHome({ mode }) {
   return html`<div class="stack-l">
     <div class="topbar"><div class="stack-s" style="gap:2px; margin-right:auto"><h1>${solo ? t('nav.nuzlocke', 'Nuzlocke') : t('nav.soullink', 'SoulLink')}</h1>
         <span class="small muted">${solo ? t('runs.leadSolo', 'Solo runs – just you against the game, tracked live.') : t('runs.leadLink', 'Runs for 2–4 players – the catches of each area are linked.')}</span></div>
-      ${runs.length > 0 && html`<div class="row">${!solo && joinBtn(false)}${hostBtn(false)}</div>`}</div>
+      ${(runs.length > 0 || togethers.length > 0) && html`<div class="row">${!solo && joinBtn(false)}
+        ${!solo && html`<button class="btn" onClick=${startTogether}><${Icon} name="friends" size=${16} />${t('pt.start', 'Play together')}</button>`}${hostBtn(false)}</div>`}</div>
     <${FirstSteps} mode=${mode} />
     <${RunningHere} mode=${mode} />
     <${RunStats} runs=${all} mode=${mode} />
@@ -242,6 +263,9 @@ function RunsHome({ mode }) {
         return html`<${RunCard} key=${r.id} r=${r} sub=${[h ? h.name : g ? gameTitle(g) : r.game?.title, ago(when(r))].filter(Boolean).join(' · ')}
           onOpen=${() => board(r)} actions=${actions(r)} />`;
       })}
+    </div></section>`}
+    ${togethers.length > 0 && html`<section class="stack"><h2>${t('pt.yourRuns', 'Playing together')}</h2><div class="shelf">
+      ${togethers.map((r) => html`<${RunCard} key=${r.id} r=${r} sub=${[t('pt.title', 'Play together'), ago(when(r))].join(' · ')} onOpen=${() => board(r)} actions=${actions(r)} />`)}
     </div></section>`}
     ${runs.length === 0 && (solo ? html`<div class="grid-2 entry-choices">
       <section class="panel entry host">
@@ -284,6 +308,7 @@ function RunsHome({ mode }) {
         ${joinBtn(true)}
       </section>
     </div>`)}
+    ${!solo && runs.length + togethers.length === 0 && html`<${TogetherIntro} onStart=${startTogether} onJoin=${() => navigate('soullink', { join: 1 })} />`}
   </div>`;
 }
 
@@ -296,7 +321,7 @@ function RestartRun({ from, mode }) {
     Promise.all([api.get(`/api/runs/${from}`), api.get(`/api/runs/${from}/doc`).catch(() => null)])
       .then(([m, doc]) => setOld(doc?.rules?.v ? { ...m, rules: doc.rules.v } : m)).catch((e) => setError(e.message));
   }, [from]);
-  const own = useOwnSection(mode, old ? runMode(old) : null);
+  const own = useOwnSection(mode, old ? runSection(old) : null);
   if (error) return html`<div class="warning error" role="alert">${error}</div>`;
   if (!old) return html`<div class="empty-state"><p class="muted">${t('common.loading', 'Loading …')}</p></div>`;
   if (!own) return null;
@@ -442,9 +467,16 @@ function useGameChoices(gameId, hackId) {
   const rootOf = (id) => cat.games.find((g) => g.id === id)?.variantOf || id;
   const roms = (library?.roms || []).filter((r) => !gameId || rootOf(r.gameId) === gameId);
   const allRoms = library?.roms || [];
-  const patchesFor = (rom) => (library?.patches || []).filter((p) => rom && (!p.expectedCrc || p.expectedCrc === rom.crc));
+  const patchesFor = (rom) => (library?.patches || []).filter((p) => patchFits(p, rom, cat));
   return { roms: roms.length ? roms : allRoms, patchesFor, preferredPatch: (rom) => patchesFor(rom).find((p) => p.hackId === hackId),
-    patchById: (id) => (id && (library?.patches || []).find((p) => p.id === id)) || null };
+    patchById: (id) => (id && (library?.patches || []).find((p) => p.id === id)) || null,
+    // the hack the wizard was opened for (its library page), when none of its patches goes with this ROM: the run would
+    // be the original game – said instead of switched silently (#68)
+    hackMissing: (rom) => {
+      if (!hackId || !rom || rom.hackId === hackId || patchesFor(rom).some((p) => p.hackId === hackId)) return null;
+      const own = (library?.patches || []).find((p) => p.hackId === hackId);
+      return own && hackById(hackId) ? { hack: hackById(hackId), crc: own.expectedCrc } : null;
+    } };
 }
 
 /** First step of a new SoulLink: how many play – one card per head count, the player figures show it.
@@ -476,11 +508,93 @@ function namesFrom(from, fallback) {
   return out;
 }
 
+/** "1 in 8192" – how a shiny rate reads in the wizard. */
+const shinyRateLabel = (rate) => (rate === NORMAL_RATE ? t('new.shinyNormal', 'Normal (1 in 8192)') : t('new.shinyRate', '1 in {n}', { n: rate }));
+/** A custom rate starts here – what players asked for most. */
+const CUSTOM_RATE = 100;
+/** The commonest rate a game without the rewritten compares can take: a threshold of 255 (shared/shiny.mjs). */
+const MIN_RATE_8BIT = 257;
+/** "99.9" (of "1 in 99.9") – what a threshold gives, with as many decimals as it takes to differ from the rate asked for. */
+function effectiveText(o) {
+  const d = Number.isInteger(o.effective) ? 0 : Number(o.effective.toFixed(1)) !== o.rate ? 1 : 2;
+  return o.effective.toLocaleString(currentLang(), { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: false });
+}
+
+/**
+ * "1 in N" for a custom shiny rate: a number field that takes its value on Enter or when it loses focus, kept between
+ * the commonest rate the game can take (`min`) and 1 in 8192.
+ */
+function CustomRate({ rate, min, onRate }) {
+  const [draft, setDraft] = useState(String(rate));
+  useEffect(() => setDraft(String(rate)), [rate]);
+  const commit = (text) => {
+    const n = Math.round(Number(text));
+    const v = Number.isFinite(n) && String(text).trim() !== '' ? Math.max(min, Math.min(NORMAL_RATE, n)) : rate;
+    setDraft(String(v));
+    if (v !== rate) onRate(v);
+  };
+  return html`<span class="row shiny-custom" style="gap:6px; flex-wrap:nowrap">
+    <span class="small">${t('new.shinyOneIn', '1 in')}</span>
+    <input type="number" class="num-in" style="width:84px" min=${min} max=${NORMAL_RATE} step="1" value=${draft} aria-label=${t('new.shinyCustomAria', 'Shiny rate: 1 in how many')}
+      onInput=${(e) => setDraft(e.target.value)} onChange=${(e) => commit(e.target.value)} onKeyDown=${(e) => e.key === 'Enter' && commit(e.target.value)} />
+  </span>`;
+}
+
+/**
+ * The game's shiny rate (and shiny Pokémon for trainers): offered for the games server/lib/shiny.mjs can patch –
+ * `support` is the inspect's { ok, trainers, high, reason } – else shown switched off with the reason. `hack`: a ROM
+ * hack is picked (the server only knows the copy isn't an original it recognises – a ROM hack, or a dump the catalog
+ * lacks). A preset from the list, or "Custom" with any "1 in N" (shared/shiny.mjs shinyOdds: when the game can't do
+ * that exactly, the hint says what it does).
+ */
+function ShinyOption({ support, gen, solo, hack, rate, trainers, onRate, onTrainers }) {
+  const ok = !!support?.ok;
+  const min = support?.high ? MIN_RATE : MIN_RATE_8BIT;
+  const [custom, setCustom] = useState(() => !SHINY_RATES.includes(rate));
+  const odds = custom && ok ? shinyOdds(rate) : null;
+  const why = ok ? null
+    : support?.reason === 'hack' && hack ? t('new.shinyHack', 'Not for ROM hacks – their code can differ from the original game.')
+      : support?.reason === 'hack' || support?.reason === 'code' ? t('new.shinyCode', 'souldew can’t find the shiny check in this copy of the game, so the rate stays as it is.')
+        : gen === 1 ? t('new.shinyGen1', 'Gen 1 has no shiny Pokémon.')
+          : t('new.shinyGames', 'Only for the original Gen 3–5 games (Game Boy Advance and DS).');
+  const trainersOff = ok && !support.trainers;
+  return html`<div class="rule-sep stack">
+    <div class="grid-2">
+      <label class="field"><span>${t('new.shinyLabel', 'Shiny rate')}</span>
+        <span class="row" style="gap:8px; flex-wrap:nowrap">
+          <select value=${custom && ok ? 'custom' : rate} disabled=${!ok} style="flex:1; min-width:0" onChange=${(e) => {
+            const v = e.target.value;
+            setCustom(v === 'custom');
+            if (v === 'custom') onRate(Math.max(min, CUSTOM_RATE));
+            else onRate(Number(v));
+          }}>
+            ${SHINY_RATES.map((r) => html`<option value=${r}>${shinyRateLabel(r)}</option>`)}
+            <option value="custom">${t('new.shinyCustom', 'Custom…')}</option></select>
+          ${custom && ok && html`<${CustomRate} rate=${rate} min=${min} onRate=${onRate} />`}
+        </span></label>
+      ${ok && html`<label class="check" style=${`align-self: end${trainersOff ? '; opacity:.45' : ''}`}>
+        <input type="checkbox" checked=${trainers && !trainersOff} disabled=${trainersOff} onChange=${(e) => onTrainers(e.target.checked)} />
+        <span>${t('new.shinyTrainers', 'Trainers’ Pokémon can be shiny too')}<span class="hint">${trainersOff
+          ? t('new.shinyTrainersGen5', 'Not in Gen 5 games.') : t('new.shinyTrainersHint', 'At the same rate – normally a trainer’s Pokémon is never shiny.')}</span></span></label>`}
+    </div>
+    <p class="small muted">${[
+      ok ? (solo ? t('new.shinyHintSolo', 'How often a Pokémon is shiny – wild ones, gifts and eggs alike. Built into your game.')
+        : t('new.shinyHint', 'How often a Pokémon is shiny – wild ones, gifts and eggs alike. Built into every player’s game.')) : why,
+      odds && !odds.exact && t('new.shinyRounded', 'The game can do 1 in {n}, the closest to 1 in {rate}.', { n: effectiveText(odds), rate: odds.rate }),
+      odds && !support.high && rate === min && t('new.shinyMin8bit', 'This copy of the game goes up to 1 in {n}.', { n: MIN_RATE_8BIT }),
+    ].filter(Boolean).join(' ')}</p>
+  </div>`;
+}
+
 /** The new-run wizard of one mode: a SoulLink (2–4 players, invite at the end) or a solo Nuzlocke (rules step).
  * A restart (`from`) always keeps the mode of the old run. */
-function NewRun({ gameId, hackId, patchPick, romPick, from, mode: sectionMode }) {
+function NewRun({ gameId, hackId, patchPick, romPick, friendPick, from, mode: sectionMode }) {
   const { status, navigate, reloadStatus, setRunId, setMe } = useApp();
-  const { roms, patchesFor, preferredPatch, patchById } = useGameChoices(gameId || null, hackId);
+  // souldew friends who play the other seats (signed in only): their name goes in, and they get an invite once it's built
+  const acct = useAccount();
+  const { data: friendData } = useFriends(!!acct.session?.signedIn);
+  const [invited, setInvited] = useState({}); // slot → friend card
+  const { roms, patchesFor, preferredPatch, patchById, hackMissing } = useGameChoices(gameId || null, hackId);
   // `patchPick`: started from a patch the catalog doesn't know (library) – its base ROM and that patch come first
   const picked = !from ? patchById(patchPick) : null;
   // `from`: restart of an old run – same game, hack, settings, mode and players; seeds stay fresh.
@@ -504,8 +618,19 @@ function NewRun({ gameId, hackId, patchPick, romPick, from, mode: sectionMode })
   const slots = ALL_SLOTS.slice(0, solo ? 1 : count);
   // a restarted Nuzlocke keeps its rules; a SoulLink's rules don't fit a Nuzlocke (and the other way round)
   const [nzRules, setNzRules] = useState(() => (from && runMode(from) === 'nuzlocke' && from.rules ? { ...NUZLOCKE_RULES, ...from.rules } : { ...NUZLOCKE_RULES }));
-  // the host's call for everyone: the battle helper's type matchups (a restart keeps the old run's choice)
+  // the battle helper's type matchups (a restart keeps the old run's choice)
   const [typeHelp, setTypeHelp] = useState(() => from?.rules?.typeHelp !== false);
+  // nothing counts before the first Poké Balls – on for a new run (a restart keeps an old run's "off")
+  const [startAtBalls, setStartAtBalls] = useState(() => (typeof from?.rules?.startAtBalls === 'boolean' ? from.rules.startAtBalls : NEW_RUN_RULES.startAtBalls));
+  // the lives rule (off unless switched on; a restart keeps the old run's lives)
+  const [lives, setLives] = useState(() => ({ lives: from?.rules?.lives > 0 ? from.rules.lives : 0, livesPool: from?.rules?.livesPool === 'player' ? 'player' : 'shared' }));
+  // a SoulLink's rules – every one of them, the host's call for everyone (shared/hostrules.mjs); a new attempt starts
+  // with the old run's
+  const [slRules, setSlRules] = useState(() => soulLinkRulesFrom(from && runMode(from) === 'soullink' ? from.rules : null));
+  const patchSl = (patch) => setSlRules((v) => ({ ...v, ...patch }));
+  // another shiny rate for the game (Gen 3–5 originals, patched into every player's game – a restart keeps it)
+  const [shinyRate, setShinyRate] = useState(from?.shiny?.rate || NORMAL_RATE);
+  const [shinyTrainers, setShinyTrainers] = useState(!!from?.shiny?.trainers);
   const [seedMode, setSeedMode] = useState(from?.randomizer?.sharedSeed ? 'shared' : 'separate');
   const [seeds, setSeeds] = useState(() => Object.fromEntries(ALL_SLOTS.map((s) => [s, randomSeed()])));
   const [names, setNames] = useState(() => (from ? namesFrom(from, status?.config?.playerName || '') : { p1: status?.config?.playerName || '', p2: '', p3: '', p4: '' }));
@@ -516,13 +641,21 @@ function NewRun({ gameId, hackId, patchPick, romPick, from, mode: sectionMode })
   const [result, setResult] = useState(null);
   const [progressId, setProgressId] = useState(null);
   const progress = useBuildProgress(progressId);
+  // the intro save kept for the picked game (server/lib/introsave.mjs) – the host's game starts from it unless unticked
+  const [intro, forgetIntro] = useIntroSave(rom ? `romId=${encodeURIComponent(rom.id)}${patchId ? `&patchId=${encodeURIComponent(patchId)}` : ''}` : null);
+  const [fromIntro, setFromIntro] = useState(true);
 
   useEffect(() => {
     if (!rom) return;
     let off = false;
     setInspect(null);
     setError(null); // an error of the previous pick (e.g. a patch that didn't fit) doesn't apply to this one
-    api.post('/api/rom/inspect', { romId: rom.id, patchId }).then((r) => !off && setInspect(r))
+    api.post('/api/rom/inspect', { romId: rom.id, patchId }).then((r) => {
+      // diagnostics: the game the randomizer's trial run stopped on, and where (a report then names the data it choked on)
+      // – the patch by what it is (its hack, its checksum), never by its id: a library id is the file's absolute path
+      if (r?.reason === 'randoCrash') diag('rando', { game: rom.gameId || null, code: rom.code || null, hack: rom.hackId || null, patch: patchDiag(patchesFor(rom).find((p) => p.id === patchId)), what: r.what || null, trace: r.trace || null });
+      if (!off) setInspect(r);
+    })
       .catch((e) => { if (!off) { setInspect({ failed: true, info: { unsupported: true } }); setError(e.message); } });
     return () => { off = true; };
   }, [rom?.id, patchId]);
@@ -553,6 +686,7 @@ function NewRun({ gameId, hackId, patchPick, romPick, from, mode: sectionMode })
   const hack = patch?.hackId ? hackById(patch.hackId) : !patch && rom?.hackId ? hackById(rom.hackId) : null;
   // a ROM the player marked as a hack the catalog doesn't know (library "This is a ROM hack…")
   const customHack = !patch && !hack && rom?.customHack ? rom.customHack : null;
+  const missing = !patchId ? hackMissing(rom) : null;
   // (a hack the catalog says the randomizer can't handle – also an already-patched ROM linked to it in the library)
   const hackNoUpr = hack?.uprCompatible === 'no';
   const canRandomize = inspect && !inspect.info?.unsupported && !hackNoUpr;
@@ -560,10 +694,28 @@ function NewRun({ gameId, hackId, patchPick, romPick, from, mode: sectionMode })
   // the other title of the game's pair (HeartGold → SoulSilver): partners may play it in a run without randomizer or hack
   const mate = !solo && game && !hack && !customHack && !patchId ? gameById(pairMate(game.variantOf || game.id)) : null;
   const step = { who: 1, game: 2, randomizer: 3, rules: 4, build: 5 };
+  const friends = friendData?.friends || [];
+  // "New SoulLink with Kim" (Friends): Kim plays the second seat
+  useEffect(() => {
+    const f = friendPick && friends.find((x) => x.user.id === friendPick);
+    if (f && !invited.p2 && !solo) {
+      setInvited((v) => ({ ...v, p2: f.user }));
+      setNames((n) => ({ ...n, p2: f.user.name.slice(0, 20) }));
+    }
+  }, [friendPick, friends.length]);
+  const pickFriend = (s, id) => {
+    const f = friends.find((x) => x.user.id === id)?.user || null;
+    setInvited((v) => ({ ...v, [s]: f }));
+    if (f) setNames((n) => ({ ...n, [s]: f.name.slice(0, 20) }));
+  };
   const seedSlots = solo || seedMode === 'shared' ? ['p1'] : slots;
   // a randomized 3DS game is rebuilt per world: how many games this computer builds, and their size
   const ctrGames = ctr && randomize && canRandomize ? (solo || buildFor !== 'all' ? 1 : seedMode === 'shared' ? 1 : count) : 0;
   const ctrGb = inspect?.patched?.outputSize ? (inspect.patched.outputSize / 1024 ** 3).toFixed(1) : null;
+  const shinyOk = !!inspect?.shiny?.ok;
+  // (a copy without the rewritten compares takes up to 1 in 257: a commoner custom rate stops there)
+  const rateFits = shinyOk && !inspect.shiny.high && shinyNeedsHigh({ rate: shinyRate }) ? MIN_RATE_8BIT : shinyRate;
+  const shiny = shinyOk ? cleanShiny({ rate: rateFits, trainers: shinyTrainers && inspect.shiny.trainers }) : null;
 
   async function build() {
     setBusy(true);
@@ -581,7 +733,9 @@ function NewRun({ gameId, hackId, patchPick, romPick, from, mode: sectionMode })
         gameId: game?.variantOf || game?.id || null, gameTitle: hack?.name || customHack || (game ? gameTitle(game) : rom.title), hackId: hack?.id || null,
         hackName: !hack && customHack ? customHack : undefined,
         name: numberedName(defaultRunName(players, mode), status?.runs),
-        rules: { ...(solo ? nzRules : from && runMode(from) === 'soullink' ? from.rules || {} : {}), typeHelp },
+        rules: solo ? { ...nzRules, ...lives, typeHelp, startAtBalls } : slRules,
+        shiny,
+        ...(intro && fromIntro ? { introSave: true, introSlot: 'p1' } : {}),
       });
       setLog(res.log);
       await reloadStatus();
@@ -608,11 +762,11 @@ function NewRun({ gameId, hackId, patchPick, romPick, from, mode: sectionMode })
     return html`<div class="stack-l">
       <div class="topbar"><h1>${soloDone ? t('new.doneSolo', 'Your Nuzlocke is ready') : t('new.done', 'Your SoulLink is ready')}</h1></div>
       ${soloDone ? html`<section class="panel stack"><p class="muted">${t('new.doneSoloText', 'Your game is built. Start playing – the app files your catches and deaths live, and the board keeps the score.')}</p></section>`
-        : html`<section class="panel stack invite-panel"><${InviteBody} manifest=${result} /></section>`}
+        : html`<section class="panel stack invite-panel"><${InviteBody} manifest=${result} autoFriends=${slotsOf(result).map((s) => invited[s]).filter(Boolean)} /></section>`}
       ${from && !soloDone && html`<p class="warning info">${t('new.restartInviteHint', 'This is a new run – the invite of “{old}” doesn’t work for it. Send the new one.', { old: from.name })}</p>`}
       <div class="row">
         <button class=${`btn ${soloDone ? 'primary big' : ''}`} onClick=${() => navigate('play', { run: result.id })}><${Icon} name="play" size=${16} />${t('new.playNow', 'Start playing')}</button>
-        <button class="btn ghost" onClick=${() => navigate(runMode(result), { run: result.id })}>${soloDone ? t('new.toBoardRun', 'Open the board') : t('new.toBoard', 'Open SoulLink board')}</button>
+        <button class="btn ghost" onClick=${() => navigate(runSection(result), { run: result.id })}>${soloDone ? t('new.toBoardRun', 'Open the board') : t('new.toBoard', 'Open SoulLink board')}</button>
       </div>
     </div>`;
   }
@@ -635,8 +789,13 @@ function NewRun({ gameId, hackId, patchPick, romPick, from, mode: sectionMode })
         ${slots.map((s, i) => html`<label class="field" key=${s}><span class="who-label">${!solo && html`<span class="who-mark" style=${`color:var(--${s})`} aria-hidden="true"><${Icon} name="user" size=${13} /></span>`}${i === 0 ? (solo ? t('code.yourName', 'Your name') : t('new.you', 'You'))
           : count === 2 ? t('new.partner', 'Your partner') : t('new.playerN', 'Player {n}', { n: i + 1 })}</span>
           <input type="text" value=${names[s]} maxLength="20" placeholder=${t('new.playerN', 'Player {n}', { n: i + 1 })}
-            onInput=${(e) => setNames({ ...names, [s]: e.target.value })} /></label>`)}
+            onInput=${(e) => setNames({ ...names, [s]: e.target.value })} />
+          ${i > 0 && friends.length > 0 && html`<select class="who-friend small" aria-label=${t('new.friendFor', 'A souldew friend for this seat')} value=${invited[s]?.id || ''}
+            onChange=${(e) => pickFriend(s, e.target.value)}>
+            <option value="">${t('new.noFriend', 'Not a souldew friend')}</option>
+            ${friends.filter((f) => f.user.id === invited[s]?.id || !Object.values(invited).some((x) => x?.id === f.user.id)).map((f) => html`<option value=${f.user.id}>${t('new.inviteFriendOpt', 'Invite {name}', { name: f.user.name })}</option>`)}</select>`}</label>`)}
       </div>
+      ${!solo && Object.values(invited).some(Boolean) && html`<p class="small muted">${t('new.friendsInvited', 'Your friends get the invite in souldew as soon as the run is built.')}</p>`}
     </section>
 
     <section class="panel stack">
@@ -652,20 +811,27 @@ function NewRun({ gameId, hackId, patchPick, romPick, from, mode: sectionMode })
             ${patchesFor(rom).map((p, i, all) => html`<option value=${p.id}>${patchLabel(p, all)}</option>`)}
           </select></label>
       </div>
+      ${missing && html`<p class="warning">${t('new.hackNoFit', '{hack} doesn’t fit this ROM – its patch needs another copy of the game (CRC32 {crc}). As it is, this run would be the original game.', { hack: missing.hack.name, crc: missing.crc })}</p>`}
       <p class="small muted">${!inspect ? t('new.checking', 'Checking the game …')
         : inspect.failed ? t('new.checkFailed', 'This combination of game and ROM hack doesn’t work – see the message above.')
+        // (a hack with a randomizer of its own – Pokémon Quetzal: its new-game options)
+        : hackNoUpr && hack?.ownRandomizer ? t('new.ownRandomizer', 'souldew can’t randomize {hack} – but the hack has a randomizer of its own: switch it on in the game’s options when you start a new game.', { hack: hack.name })
         : inspect.info?.missingTool === 'java' ? (solo ? t('new.noJavaSolo', 'Java wasn’t found, so the randomizer can’t run. Install Java (e.g. Temurin 21 from adoptium.net) and restart the app – or play the Nuzlocke without the randomizer.')
           : t('new.noJava', 'Java wasn’t found, so the randomizer can’t run. Install Java (e.g. Temurin 21 from adoptium.net) and restart the app – or play a regular SoulLink.'))
         : inspect.info?.missingTool === 'upr' ? (solo ? t('new.noUprSolo', 'The randomizer (Universal Pokémon Randomizer ZX) is missing – you can still play the Nuzlocke without it.')
           : t('new.noUpr', 'The randomizer (Universal Pokémon Randomizer ZX) is missing – or play a regular SoulLink.'))
         : inspect.info?.reason === 'encrypted' ? t('new.ctrEncrypted', 'This 3DS game file is encrypted, so the randomizer can’t read it. It needs a decrypted copy of the game (.3ds, .cci or .cxi) – souldew doesn’t decrypt games.')
         : inspect.info?.reason === 'compressed' ? t('new.ctrCompressed', 'Compressed 3DS files (.zcci, .zcxi) can’t be randomized – add the uncompressed game file (.3ds, .cci or .cxi).')
+        : inspect.info?.reason === 'randoCrash' ? (solo ? t('new.randoCrashSolo', 'The randomizer can’t build this game – its data isn’t where the randomizer expects it, as in some ROM hacks and releases. You can still play the Nuzlocke without the randomizer.')
+          : t('new.randoCrash', 'The randomizer can’t build this game – its data isn’t where the randomizer expects it, as in some ROM hacks and releases. You can still play a regular SoulLink.'))
         : inspect.info?.unsupported || hackNoUpr ? (solo ? t('new.noRandomizerSolo', 'This game can’t be randomized – you can still play the Nuzlocke without the randomizer.')
           : t('new.noRandomizer', 'This game can’t be randomized – you can still play a regular SoulLink.'))
         : t('new.ok', '{n} Pokémon · randomizer supported', { n: inspect.info.pokemonCount })}${inspect && inspect.info && inspect.info.staticsSupported === false ? ` · ${t('new.noStatics', 'gifts & legendaries stay as in the hack')}` : ''}</p>
       ${mate && inspect && html`<p class="small muted">${randomize && canRandomize
         ? t('new.pairRandom', 'With the randomizer everyone needs {game}. Without it, your partners could also play {mate}.', { game: gameTitle(game), mate: gameTitle(mate) })
         : html`<span class="chip ok">${t('new.pairChip', 'Both editions')}</span> ${t('new.pairOk', 'Your partners may also play {mate} – in a run without randomizer or ROM hack, both editions work.', { mate: gameTitle(mate) })}`}</p>`}
+      ${inspect && !inspect.failed && html`<${ShinyOption} support=${inspect.shiny} gen=${inspect.info?.generation} solo=${solo} hack=${!!(patch || hack || customHack)}
+        rate=${shinyOk ? rateFits : NORMAL_RATE} trainers=${shinyTrainers} onRate=${setShinyRate} onTrainers=${setShinyTrainers} />`}
     </section>
 
     <section class="panel stack">
@@ -716,10 +882,20 @@ function NewRun({ gameId, hackId, patchPick, romPick, from, mode: sectionMode })
     <section class="panel stack">
       <h2>${t('new.stepRules', '{n} · Rules', { n: step.rules })}</h2>
       ${solo ? html`<p class="small muted">${t('new.rulesHint', 'You can change them later on the board (Rules tab).')}</p>
-        <${NuzlockeRules} variant="wizard" value=${nzRules} onChange=${(patch) => setNzRules((v) => ({ ...v, ...patch }))} />`
-        : html`<p class="small muted">${count > 2 ? t('new.rulesHintGroup', 'Type rule, dupes clause, level caps and the rest are set together on the board (Rules tab). This one is yours as the host – it applies to everyone, and only you can change it later.')
-          : t('new.rulesHintLink', 'Type rule, dupes clause, level caps and the rest are set together on the board (Rules tab). This one is yours as the host – it applies to both of you, and only you can change it later.')}</p>`}
-      <div class=${solo ? 'rule-sep' : ''}><${TypeHelpRule} value=${typeHelp} solo=${solo} onChange=${setTypeHelp} /></div>
+        <${NuzlockeRules} variant="wizard" value=${nzRules} onChange=${(patch) => setNzRules((v) => ({ ...v, ...patch }))} />
+        <div class="rule-sep"><${BallsRule} value=${startAtBalls} players=${1} onChange=${setStartAtBalls} /></div>
+        <div class="rule-sep"><${TypeHelpRule} value=${typeHelp} solo=${true} onChange=${setTypeHelp} /></div>
+        <div class="rule-sep"><${LivesRule} variant="wizard" value=${lives.lives} pool=${lives.livesPool} players=${1} onChange=${(patch) => setLives((v) => ({ ...v, ...patch }))} /></div>`
+        : html`<p class="small muted">${count > 2 ? t('new.rulesHostGroup', 'You’re the host: these rules apply to all of you, and only you can change them later (board › Rules). Every change shows up in the log for everyone.')
+          : t('new.rulesHost', 'You’re the host: these rules apply to both of you, and only you can change them later (board › Rules). Every change shows up in the log for both of you.')}</p>
+        <${SoulLinkRules} variant="wizard" value=${slRules} onChange=${patchSl} players=${count} />
+        ${!linkUnavailable({ system: inspect?.patched?.system || rom?.system, hackId: hack?.id, code: inspect?.patched?.header?.code ?? rom?.code, title: inspect?.patched?.header?.title ?? rom?.title }) && html`<div class="rule-sep"><${LinkRules} value=${slRules} onChange=${patchSl} /></div>`}
+        ${RAID_SYSTEMS.includes(inspect?.patched?.system || rom?.system) && html`<div class="rule-sep"><${RaidRules} value=${slRules} onChange=${patchSl} /></div>`}
+        <div class="rule-sep"><${GiftRule} value=${slRules} onChange=${patchSl} /></div>
+        <div class="rule-sep"><${BallsRule} value=${slRules.startAtBalls} players=${count} onChange=${(v) => patchSl({ startAtBalls: v })} /></div>
+        <div class="rule-sep"><${TypeHelpRule} value=${slRules.typeHelp} onChange=${(v) => patchSl({ typeHelp: v })} /></div>
+        <div class="rule-sep"><${LivesRule} variant="wizard" value=${slRules.lives} pool=${slRules.livesPool} players=${count} onChange=${patchSl} /></div>
+        <div class="rule-sep stack-s"><b class="small">${t('rules.auto', 'Automatic')}</b><${SoulLinkAuto} value=${slRules} onChange=${patchSl} players=${count} /></div>`}
     </section>
 
     <section class="panel stack">
@@ -727,13 +903,14 @@ function NewRun({ gameId, hackId, patchPick, romPick, from, mode: sectionMode })
       ${!solo && html`<div class="row small"><span class="muted">${t('new.buildFor', 'Build games for')}</span>
         <div class="seg" role="group" aria-label=${t('new.buildFor', 'Build games for')}><button class=${buildFor === 'all' ? 'on' : ''} aria-pressed=${buildFor === 'all'} onClick=${() => setBuildFor('all')}>${count > 2 ? t('new.forAll', 'All of us') : t('new.forBoth', 'Both of us')}</button>
           <button class=${buildFor === 'me' ? 'on' : ''} aria-pressed=${buildFor === 'me'} onClick=${() => setBuildFor('me')}>${t('new.forMe', 'Only me')}</button></div></div>`}
+      <${IntroSaveOption} intro=${intro} forget=${forgetIntro} on=${fromIntro} onChange=${setFromIntro} disabled=${busy} />
       ${ctrGames > 1 && html`<p class="small muted">${t('new.ctrGames', 'This builds {n} 3DS games on this computer{size}. “Only me” builds just yours – the others build their own.', { n: ctrGames, size: ctrGb ? ` (≈ ${(ctrGames * Number(ctrGb)).toFixed(1)} GB)` : '' })}</p>`}
       <div class="row">
         <button class="btn primary big" disabled=${busy || !inspect || inspect.failed} onClick=${build}><${Icon} name=${solo ? 'play' : 'link'} size=${16} />${busy ? t('new.building', 'Building …')
           : solo ? t('new.createSolo', 'Start Nuzlocke') : t('new.create', 'Create SoulLink')}</button>
       </div>
       ${busy && html`<${BuildProgress} state=${progress} name=${(s) => names[s]?.trim() || s?.toUpperCase() || ''} />`}
-      ${(busy ? progress?.log || [] : log).length > 0 && html`<div class="log">${(busy ? progress.log : log).join('\n')}</div>`}
+      ${(busy ? progress?.log || [] : log).length > 0 && html`<div class="log">${(busy ? progress.log : log).map(buildLogText).join('\n')}</div>`}
     </section>
   </div>`;
 }
@@ -759,7 +936,16 @@ function InviteDrop({ onText }) {
 }
 
 function JoinRun() {
-  const { manifest, reloadStatus, setRunId, setMe, toast, library, navigate, reloadManifest, status, doc } = useApp();
+  const { manifest, reloadStatus, setRunId, setMe, toast, library, navigate, reloadManifest, status, doc, route } = useApp();
+  // a friend's invite (souldew account): accepted here, its code goes into the join flow below
+  const inviteId = route.params.invite || null;
+  const [friendInvite, setFriendInvite] = useState(null);
+  useEffect(() => {
+    if (!inviteId) return;
+    setFriendInvite(null);
+    acceptInvite(inviteId).then((inv) => setFriendInvite(inv?.code ? inv : { error: t('join.inviteGone', 'This invite has no code any more – ask for a new one.') }),
+      (e) => setFriendInvite({ error: e.message }));
+  }, [inviteId]);
   const [pack, setPack] = useState(manifest?.imported && !Object.keys(manifest.outputs || {}).length ? manifest : null);
   // a restart offer already knows our slot – stored for the new run (RestartOffer: setMe), read from there: the app's
   // `me` is still the default p1 while a reload brings the run back (the host's seat – their name overwritten)
@@ -776,8 +962,8 @@ function JoinRun() {
     }
   }, [manifest?.id]);
   const slots = pack ? slotsOf(pack) : [];
-  // Without a hint (invite file) the host is taken to be P1 – the first free player after them is us.
-  const mine = slots.includes(slot) ? slot : suggestSlot(pack?.players, ['p1']) || slots[0] || 'p1';
+  // Without a hint (invite file) the host's seat is taken (P1 in older invites) – the first free player after them is us.
+  const mine = slots.includes(slot) ? slot : suggestSlot(pack?.players, [hostSlotOf(pack)]) || slots[0] || 'p1';
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [log, setLog] = useState([]);
@@ -787,7 +973,13 @@ function JoinRun() {
   // (by CRC32 – a 3DS game, which has none, by its game: never just the first 3DS file of the library)
   const cat = catalog();
   const rootOf = (id) => cat.games.find((g) => g.id === id)?.variantOf || id;
-  const rom = pack ? baseRomsFor(pack, library?.roms, rootOf)[0] : undefined;
+  // every library ROM this run can be joined with – the exact release first, then other releases and the pair's other
+  // title (HeartGold for a SoulSilver run). With both editions at hand the player picks one (one per edition).
+  const candidates = pack ? baseRomsFor(pack, library?.roms, rootOf) : [];
+  const editions = [];
+  for (const r of candidates) if (r.gameId && !editions.some((e) => rootOf(e.gameId) === rootOf(r.gameId))) editions.push(r);
+  const [pickedRomId, setPickedRomId] = useState(null);
+  const rom = candidates.find((r) => r.id === pickedRomId) || candidates[0];
   // The release behind a CRC32, e.g. "Pokemon - Platinum Version (USA) (Rev 1)" – for messages a person can act on.
   const releaseOf = (crc) => {
     const c = String(crc || '').toUpperCase();
@@ -805,6 +997,9 @@ function JoinRun() {
   const ownReleases = pack && needsIdenticalRom(pack) ? (library?.roms || []).filter((r) => !r.hackId && !r.customHack && r.gameId && rootOf(r.gameId) === pack.game?.id) : [];
   const ownMate = pack && mateId && needsIdenticalRom(pack) && (library?.roms || []).some((r) => !r.hackId && !r.customHack && r.gameId && rootOf(r.gameId) === mateId);
   const patch = pack?.patch ? library?.patches?.find((p) => p.sha1 === pack.patch.sha1) || (baseCrc && library?.patches?.find((p) => p.expectedCrc === baseCrc)) : null;
+  // our own intro save for this game (server/lib/introsave.mjs) – nothing of it comes with the invite
+  const [intro, forgetIntro] = useIntroSave(rom ? `romId=${encodeURIComponent(rom.id)}${patch ? `&patchId=${encodeURIComponent(patch.id)}` : ''}` : null);
+  const [fromIntro, setFromIntro] = useState(true);
 
   // seat: the host's hint with a code invite – { slot, taken } (see JoinCode); none with an invite file
   const load = async (text, seat = null) => {
@@ -812,7 +1007,7 @@ function JoinRun() {
     try {
       const m = await api.post('/api/runs/import', { pack: JSON.parse(String(text).replace(/^\uFEFF/, '').trim()) }); // an editor may have added a BOM
       const s = runMode(m) === 'nuzlocke' ? 'p1'
-        : seat?.slot ?? suggestSlot(m.players, seat ? seat.taken || [] : ['p1'], status?.config?.playerName) ?? slotsOf(m).at(-1);
+        : seat?.slot ?? suggestSlot(m.players, seat ? seat.taken || [] : [hostSlotOf(m)], status?.config?.playerName) ?? slotsOf(m).at(-1);
       await reloadStatus();
       setRunId(m.id);
       setMe(s, m.id);
@@ -836,12 +1031,16 @@ function JoinRun() {
     try {
       const res = await api.post('/api/runs/build', {
         progressId: pid, runId: pack.id, romId: rom.id, patchId: patch?.id || null, values: pack.randomizer.values, randomize: pack.randomizer.enabled,
-        seeds: pack.randomizer.seeds, sharedSeed: pack.randomizer.sharedSeed, players: withMyName(), buildFor: [mine], name: pack.name, mode: runMode(pack),
+        seeds: pack.randomizer.seeds, sharedSeed: pack.randomizer.sharedSeed, players: withMyName(), name: pack.name, mode: runMode(pack),
+        // GB / GBA: every player's game too (a few MB) – a link session (trades, battles) runs every seat here, from
+        // byte-identical games (docs/MULTIPLAYER.md); not with the pair's other title, nor DS/3DS (large, no link yet)
+        buildFor: !pair && ['gba', 'gb', 'gbc'].includes(pack.game?.system) && slots.length > 1 ? [mine, ...slots.filter((s) => s !== mine)] : [mine],
         // with the pair's other title our run is built for the game we play (live tracking, cover, trophies)
         expectedOutputs: pack.expectedOutputs, rules: pack.rules, gameId: joinGameId(pack, rom, rootOf), hackId: pack.game?.hackId, hackName: pack.game?.hackName || undefined,
         // same file name as the host's ("Robin – Silberne Edition Randomized.gbc", not the raw header title; a hack –
         // also a pre-patched one without a patch file – by its name, as the host's wizard does); our own title on a pair join
         gameTitle: pack.patch?.name || hackById(pack.game?.hackId)?.name || pack.game?.hackName || (pair ? titleOf(pair.yours) : gameById(pack.game?.id) ? gameTitle(gameById(pack.game.id)) : undefined),
+        ...(intro && fromIntro ? { introSave: true, introSlot: mine } : {}),
       });
       setLog(res.log);
       setMe(mine, pack.id);
@@ -861,21 +1060,48 @@ function JoinRun() {
     setBusy(false);
   };
 
+  // Play together: the joining player's own game, any linkable one (views/playtogether.mjs) – then the same as a build
+  const togetherJoined = async (seat) => {
+    setMe(seat, pack.id);
+    const name = myName.trim();
+    if (name && doc?.runId === pack.id) doc.set(`player:${seat}`, { ...(doc.get(`player:${seat}`) || {}), name });
+    else if (name) try { localStorage.setItem(`sl-joinname-${pack.id}`, JSON.stringify({ slot: seat, name })); } catch {}
+    await reloadStatus();
+    await reloadManifest(pack.id);
+    toast({ kind: 'ok', title: t('join.ready', 'You’re in!'), text: t('pt.joinedText', 'Your game is ready – have fun together.') });
+    navigate('soullink', { run: pack.id });
+  };
+  const together = !!pack && runMode(pack) === 'together';
+
   return html`<div class="stack-l">
-    <div class="topbar"><h1>${t('join.title', 'Join a SoulLink')}</h1>
+    <div class="topbar"><h1>${together ? t('pt.joinTitle', 'Join Play together') : t('join.title', 'Join a SoulLink')}</h1>
       <button class="btn small ghost" onClick=${() => navigate('soullink', { new: '' })}>${t('join.hostInstead', 'No invite? Host one yourself')}</button></div>
-    <p class="muted">${t('join.introAny', 'Somebody created the run. Enter the code they give you – the app fetches the invite, builds the same game from your own copy and connects you.')}</p>
+    <p class="muted">${together ? t('pt.joinIntro', 'Pick the game you want to play – your own, with its save. Then the app connects you with the others.')
+      : inviteId ? t('join.introFriend', 'A friend invited you. Once they let you in, the app fetches the run, builds the same game from your own copy and connects you.')
+      : t('join.introAny', 'Somebody created the run. Enter the code they give you – the app fetches the invite, builds the same game from your own copy and connects you.')}</p>
     ${error && html`<div class="warning error" role="alert">${error}</div>`}
     <section class="panel stack">
-      <h2>${pack ? t('join.step1', '1 · Open the invite') : t('join.step1Code', '1 · Enter the invite code')}</h2>
-      ${pack ? html`<p class="note">${t('join.loaded', 'Invite from {name}: {run}', { name: pack.players?.p1?.name || 'P1',
+      <h2>${pack ? t('join.step1', '1 · Open the invite') : inviteId ? t('join.step1Friend', '1 · Your invite') : t('join.step1Code', '1 · Enter the invite code')}</h2>
+      ${pack ? html`<p class="note">${t('join.loaded', 'Invite from {name}: {run}', { name: pack.players?.[hostSlotOf(pack)]?.name || hostSlotOf(pack).toUpperCase(),
           run: runMode(pack) === 'nuzlocke' ? t('runs.modeSolo', 'Solo Nuzlocke')
-            : t('join.loadedLink', 'SoulLink with {n} players ({names})', { n: slots.length, names: joinNames(slots.map((s) => pack.players?.[s]?.name || s.toUpperCase())) }) })}</p>`
-        : html`<${JoinCode} onPack=${(p, seat) => load(JSON.stringify(p), seat)} />
+            : together ? t('pt.loaded', 'Play together with {n} players ({names}) – no challenge rules, everyone plays their own game', { n: slots.length, names: joinNames(slots.map((s) => pack.players?.[s]?.name || s.toUpperCase())) })
+            : t('join.loadedLink', 'SoulLink with {n} players ({names})', { n: slots.length, names: joinNames(slots.map((s) => pack.players?.[s]?.name || s.toUpperCase())) }) })}</p>
+        ${runMode(pack) === 'soullink' && html`<div class="stack-s join-rules"><b class="small">${t('join.rules', 'The rules of this run')}</b>
+          <${RulesSummary} rules=${rulesWithDefaults(pack.rules, 'soullink')} players=${slots.length} />
+          <span class="tiny faint">${t('join.rulesHost', '{name} set them as the host – they apply to everyone, and only {name} can change them later.', { name: pack.players?.[hostSlotOf(pack)]?.name || hostSlotOf(pack).toUpperCase() })}</span></div>`}`
+        : html`${friendInvite?.error && html`<p class="warning" role="alert">${t('join.inviteFailed', 'The invite couldn’t be opened: {msg}', { msg: friendInvite.error })}</p>`}
+          ${inviteId && !friendInvite ? html`<p class="small muted">${t('common.loading', 'Loading …')}</p>`
+            : html`<${JoinCode} key=${friendInvite?.code || 'code'} invite=${friendInvite?.code ? friendInvite : null} onPack=${(p, seat) => load(JSON.stringify(p), seat)} />`}
           <details class="group"><summary>${t('join.fileInstead', 'Or use an invite file')}</summary><div style="padding:4px 14px 12px"><${InviteDrop} onText=${load} /></div></details>`}
     </section>
-    ${pack && html`<section class="panel stack">
+    ${together && html`<${TogetherJoinStep} key=${pack.id} pack=${pack} slots=${slots} mine=${mine} setSlot=${setSlot} taken=${taken} myName=${myName} onJoined=${togetherJoined} />`}
+    ${pack && !together && html`<section class="panel stack">
       <h2>${t('join.step2', '2 · Your game')}</h2>
+      ${rom && editions.length > 1 && html`<div class="row small"><span class="muted">${t('join.playWith', 'Play with')}</span>
+        <div class="seg" role="radiogroup" aria-label=${t('join.playWith', 'Play with')}>${editions.map((e) => {
+          const on = rootOf(e.gameId) === rootOf(rom.gameId);
+          return html`<button role="radio" aria-checked=${on} class=${on ? 'on' : ''} onClick=${() => setPickedRomId(e.id)}>${titleOf(rootOf(e.gameId))}</button>`;
+        })}</div></div>`}
       ${rom ? html`<p class="small"><span class="chip ok">${t('join.found', 'Found in your library')}</span> <span class="mono">${rom.name}</span></p>
         ${pair && html`<p class="small"><span class="chip ok">${t('join.pairChip', 'Other edition')}</span> ${t('join.pairTitle', 'You play {yours}, the host plays {host} – that’s fine for a run without randomizer or ROM hack: everyone catches in their own game.', { yours: titleOf(pair.yours), host: titleOf(pair.host) })}</p>`}
         ${otherRelease && !pair && html`<p class="small muted">${t('join.otherRelease', 'Another release than the host’s ({host}) – that’s fine: everyone plays their own copy in this run.', { host: releaseOf(baseCrc) || `CRC32 ${baseCrc}` })}</p>`}`
@@ -894,10 +1120,12 @@ function JoinRun() {
           title=${taken.includes(s) ? t('join.takenTitle', 'Already in the run') : ''} style=${taken.includes(s) && mine !== s ? 'opacity:.55' : ''}>${pack.players?.[s]?.name || s.toUpperCase()}</button>`)}</div></div>
         ${myName.trim() && pack.players?.[mine]?.name !== myName.trim() && html`<p class="small muted">${t('join.asName', 'You’ll play as {name} – that’s the name the others see.', { name: myName.trim() })}</p>`}
         ${taken.includes(mine) && html`<p class="small warning info">${t('join.takenHint', 'The host’s app says {name} is already in the run. Only pick it if that’s you on another computer.', { name: pack.players?.[mine]?.name || mine.toUpperCase() })}</p>`}`}
+      ${shinyNote(pack) && html`<p class="small muted">${t('join.shiny', 'This run changes shinies ({what}) – your game gets the same.', { what: shinyNote(pack) })}</p>`}
       ${pack.game?.system === '3ds' && pack.randomizer?.enabled && html`<p class="small muted">${t('join.ctrNote', 'A randomized 3DS run: your game is rebuilt from your own decrypted copy – a few GB and a few minutes. Afterwards souldew checks that it matches the host’s byte for byte.')}</p>`}
+      <${IntroSaveOption} intro=${intro} forget=${forgetIntro} on=${fromIntro} onChange=${setFromIntro} disabled=${busy} />
       <div><button class="btn primary big" disabled=${busy || !rom || (pack.patch && !patch)} onClick=${build}>${busy ? t('new.building', 'Building …') : t('join.build', 'Build my game & join')}</button></div>
       ${busy && html`<${BuildProgress} state=${progress} name=${(s) => pack.players?.[s]?.name || s?.toUpperCase() || ''} />`}
-      ${(busy ? progress?.log || [] : log).length > 0 && html`<div class="log">${(busy ? progress.log : log).join('\n')}</div>`}
+      ${(busy ? progress?.log || [] : log).length > 0 && html`<div class="log">${(busy ? progress.log : log).map(buildLogText).join('\n')}</div>`}
     </section>`}
   </div>`;
 }

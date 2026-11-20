@@ -15,6 +15,7 @@
 import { openSync, readSync, closeSync, statSync, statfsSync, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { httpError } from './fsutil.mjs';
+import { randomizerError } from './toolchain.mjs';
 
 const u32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
 const tag = (b, o) => String.fromCharCode(b[o], b[o + 1], b[o + 2], b[o + 3]);
@@ -70,19 +71,22 @@ export function checkCtrSpace(dir, ncchSize, count = 1, { free = freeBytes(dir) 
   const need = ncchSize * count + CTR_WORK_MARGIN;
   if (free < need) {
     const gb = (n) => (n / 1024 ** 3).toFixed(1);
-    throw httpError(507, `Zu wenig Speicherplatz: die randomisierten 3DS-Spieldateien brauchen etwa ${gb(need)} GB, frei sind ${gb(free)} GB`, 'ctrNoSpace', { need: gb(need), free: gb(free) });
+    throw httpError(507, `Not enough disk space: the randomized 3DS games need about ${gb(need)} GB, ${gb(free)} GB are free`, 'ctrNoSpace', { need: gb(need), free: gb(free) });
   }
 }
 
-/** The bridge's error codes as messages the app translates (web/lib/errors.mjs); other errors pass through. */
-export function ctrRandoError(e) {
+/**
+ * The bridge's error codes as messages the app translates (web/lib/errors.mjs); other randomizer failures as for Gen 1–5
+ * (a file it couldn't read or write among them – toolchain.mjs ioFailure). `opts`: randomizerError's (tests).
+ */
+export function ctrRandoError(e, opts) {
   if (e?.status) return e;
   if (e?.code === 'encrypted') {
-    return httpError(422, 'Dieses 3DS-Spiel ist verschlüsselt. Der Randomizer braucht eine entschlüsselte Kopie (decrypted .3ds/.cci/.cxi) – souldew entschlüsselt keine Spiele.', 'ctrEncrypted');
+    return httpError(422, 'This 3DS game is encrypted. The randomizer needs a decrypted copy (.3ds/.cci/.cxi) – souldew doesn’t decrypt games.', 'ctrEncrypted');
   }
-  if (e?.code === 'memory') return httpError(507, 'Zu wenig Arbeitsspeicher für den 3DS-Randomizer (er braucht bis zu 4,5 GB)', 'ctrMemory');
-  if (e?.code === 'timeout') return httpError(504, 'Der 3DS-Randomizer hat zu lange gebraucht und wurde abgebrochen', 'ctrTimeout');
-  return e;
+  if (e?.code === 'memory') return httpError(507, 'Not enough memory for the 3DS randomizer (it needs up to 4.5 GB)', 'ctrMemory');
+  if (e?.code === 'timeout') return httpError(504, 'The 3DS randomizer took too long and was stopped', 'ctrTimeout');
+  return randomizerError(e, opts);
 }
 
 /**

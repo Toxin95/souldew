@@ -173,27 +173,27 @@
   #release .window { left: 470px; top: 116px; width: 770px; --c: #ffb65c; }
   /* the app screenshot (1440×900 css px) with the game area painted over: our own pixel scene instead of game footage */
   #release .inner { position: relative; }
-  #release .screens { position: absolute; left: 0; top: 0; width: 1440px; height: 900px; transform-origin: 0 0; }
-  #release .screens .gap { position: absolute; left: 528px; top: 121px; width: 559px; height: 671px; background: #060608; border-radius: 4px; }
-  #release .scr { position: absolute; overflow: hidden; }
-  #release .scr canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
-  #release .scr.top { left: 528px; top: 121px; width: 559px; height: 335px; }
-  #release .scr.bot { left: 584px; top: 457px; width: 447px; height: 335px; }
-  #release .hpbox { position: absolute; padding: 9px 14px 11px; border-radius: 6px; background: #1d1c24ee; box-shadow: 0 0 0 3px #0c0b10, inset 0 2px 0 #ffffff1c, 0 6px 0 #0006;
+  :is(#release, #ds3) .screens { position: absolute; left: 0; top: 0; width: 1440px; height: 900px; transform-origin: 0 0; }
+  :is(#release, #ds3) .screens .gap { position: absolute; left: 528px; top: 121px; width: 559px; height: 671px; background: #060608; border-radius: 4px; }
+  :is(#release, #ds3) .scr { position: absolute; overflow: hidden; }
+  :is(#release, #ds3) .scr canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+  :is(#release, #ds3) .scr.top { left: 528px; top: 121px; width: 559px; height: 335px; }
+  :is(#release, #ds3) .scr.bot { left: 584px; top: 457px; width: 447px; height: 335px; }
+  :is(#release, #ds3) .hpbox { position: absolute; padding: 9px 14px 11px; border-radius: 6px; background: #1d1c24ee; box-shadow: 0 0 0 3px #0c0b10, inset 0 2px 0 #ffffff1c, 0 6px 0 #0006;
     font: 700 21px/1 'Pixelify Sans'; color: var(--ink); white-space: nowrap; }
-  #release .hpbox small { margin-left: 12px; font: 700 18px/1 'Pixelify Sans'; color: var(--ink-2); }
-  #release .hpbox .hp { display: flex; align-items: center; gap: 8px; margin-top: 8px; font: 700 13px/1 var(--mono); color: var(--warn); }
-  #release .hpbox .hp i { display: block; width: 170px; height: 9px; background: #0c0b10; box-shadow: inset 0 0 0 2px #0c0b10; }
-  #release .hpbox .hp i::before { content: ''; display: block; height: 100%; width: var(--w, 100%); background: linear-gradient(#8fe0a3 0 40%, #5fbf7a 40%); }
-  #release .hpbox .num { margin-top: 6px; text-align: right; font: 700 17px/1 var(--pixel); color: var(--ink-2); }
-  #release .menu { position: absolute; inset: 26px 26px 26px; display: grid; grid-template-columns: 1.25fr 1fr; grid-template-rows: 1fr 1fr 1fr; gap: 14px; }
-  #release .menu b { display: grid; place-items: center; border-radius: 10px; font: 700 34px/1 'Pixelify Sans'; letter-spacing: .04em; color: #fff; text-shadow: 0 3px 0 #0007;
+  :is(#release, #ds3) .hpbox small { margin-left: 12px; font: 700 18px/1 'Pixelify Sans'; color: var(--ink-2); }
+  :is(#release, #ds3) .hpbox .hp { display: flex; align-items: center; gap: 8px; margin-top: 8px; font: 700 13px/1 var(--mono); color: var(--warn); }
+  :is(#release, #ds3) .hpbox .hp i { display: block; width: 170px; height: 9px; background: #0c0b10; box-shadow: inset 0 0 0 2px #0c0b10; }
+  :is(#release, #ds3) .hpbox .hp i::before { content: ''; display: block; height: 100%; width: var(--w, 100%); background: linear-gradient(#8fe0a3 0 40%, #5fbf7a 40%); }
+  :is(#release, #ds3) .hpbox .num { margin-top: 6px; text-align: right; font: 700 17px/1 var(--pixel); color: var(--ink-2); }
+  :is(#release, #ds3) .menu { position: absolute; inset: 26px 26px 26px; display: grid; grid-template-columns: 1.25fr 1fr; grid-template-rows: 1fr 1fr 1fr; gap: 14px; }
+  :is(#release, #ds3) .menu b { display: grid; place-items: center; border-radius: 10px; font: 700 34px/1 'Pixelify Sans'; letter-spacing: .04em; color: #fff; text-shadow: 0 3px 0 #0007;
     background: var(--b); box-shadow: inset 0 0 0 3px #ffffff40, inset 0 -8px 0 #0004, 0 0 0 3px #0c0b10, 0 6px 0 #0c0b10; }
-  #release .menu .fight { grid-row: span 3; --b: linear-gradient(160deg, #ff7aa8, #e0457a); font-size: 46px; }
-  #release .menu .bag { --b: linear-gradient(160deg, #ffc76b, #e29a35); }
-  #release .menu .mon { --b: linear-gradient(160deg, #9ad883, #5ea65a); }
-  #release .menu .run { --b: linear-gradient(160deg, #8cb0ff, #5b7ee0); }
-  #release .cursor { position: absolute; left: 160px; top: 236px; width: 44px; height: 44px; filter: drop-shadow(0 4px 0 #0008); }
+  :is(#release, #ds3) .menu .fight { grid-row: span 3; --b: linear-gradient(160deg, #ff7aa8, #e0457a); font-size: 46px; }
+  :is(#release, #ds3) .menu .bag { --b: linear-gradient(160deg, #ffc76b, #e29a35); }
+  :is(#release, #ds3) .menu .mon { --b: linear-gradient(160deg, #9ad883, #5ea65a); }
+  :is(#release, #ds3) .menu .run { --b: linear-gradient(160deg, #8cb0ff, #5b7ee0); }
+  :is(#release, #ds3) .cursor { position: absolute; left: 160px; top: 236px; width: 44px; height: 44px; filter: drop-shadow(0 4px 0 #0008); }
   #release .ticker { position: absolute; left: 0; right: 0; bottom: 0; height: 46px; z-index: 7; display: flex; align-items: center; gap: 22px; padding-left: 64px;
     background: linear-gradient(180deg, #1a2a1d, #101912); box-shadow: inset 0 1px 0 #2f4a33, 0 -10px 30px #0008;
     font: 700 17px/1 'Pixelify Sans'; letter-spacing: .08em; color: var(--lcd-4); text-transform: uppercase; white-space: nowrap; }
@@ -284,6 +284,13 @@
     <svg class="spark" style="left:1236px;top:92px;--c:#ff8fdc;width:10px;height:10px"><use href="#spark"/></svg>
     <svg class="spark" style="left:1150px;top:640px;--c:#b3c770;width:10px;height:10px"><use href="#spark"/></svg>
     <div class="ticker"><span class="brand"><img src="../icon.svg" alt="" />souldew <em>2.5.0</em></span><span>X</span><i></i><span>Y</span><i></i><span>Omega Ruby</span><i></i><span>Alpha Sapphire</span><i></i><span>Sun</span><i></i><span>Moon</span><i></i><span>Ultra Sun</span><i></i><span>Ultra Moon</span></div>
+  </div>
+
+  <!-- ================= the 3DS player alone (1440×900, for the website): the screenshot with our own painted screens ================= -->
+  <div class="art" id="ds3" style="width:1440px;height:900px">
+    <div class="screens-host" style="position:relative;width:1440px;height:900px">
+      <img src="shots/play-3ds.webp" alt="" style="display:block;width:1440px;height:900px" />
+    </div>
   </div>
 
   <!-- ================= how it works ================= -->
@@ -409,6 +416,15 @@
     ], { x: 470 + 1, y: 116 + 1 + 27, s: 770 / 1440 }, 'shots/play-3ds.webp', c);
   }
 
+  if (art.id === 'ds3') {
+    // the release image's painted screens (no game footage), at the screenshot's own scale
+    const screens = document.querySelector('#release .screens').cloneNode(true);
+    screens.style.transform = 'none';
+    art.querySelector('.screens-host').append(screens);
+    art.querySelectorAll('.hpbox .hp i').forEach((i) => i.style.setProperty('--w', '100%'));
+    await paintBattle(art.querySelector('.scr.top canvas'));
+    paintTouch(art.querySelector('.scr.bot canvas'));
+  }
   if (art.id === 'stream') paintRoute(art.querySelector('canvas'));
 
   // A small pixel-art route (320×180, scaled up 4×): dithered sky, clouds, a tree line, tall grass and a path.

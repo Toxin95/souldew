@@ -6,13 +6,14 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { fakeHostSpawn, killFakeHosts } from './fixtures/fakehosts.mjs';
 import { crc32 } from '../shared/checksum.mjs';
 import { extractArchive, isFolderEntry } from '../server/lib/archive.mjs';
 import { CTR_LAYOUTS, ctrLayout, ctrLayoutAspect, ctrTouchAt } from '../shared/ctrlayout.mjs';
 
 const TMP = mkdtempSync(join(tmpdir(), 'sls-ctrplayer-'));
 test.after(() => rmSync(TMP, { recursive: true, force: true }));
+test.afterEach(killFakeHosts); // (a test that failed half way leaves its stand-in host running)
 // (a scratch data folder before the server modules read their paths: the 3DS host's save folders land there)
 process.env.SLS_DATA_DIR = TMP;
 const { installDownloaded, installEmulator } = await import('../server/lib/emulator.mjs');
@@ -213,7 +214,7 @@ test('a 3DS host that crashes: its graphics card, exit and last stderr stay for 
   const warned = [];
   console.warn = (...a) => warned.push(a.join(' '));
   try {
-    const ctr = new CtrSessions({ spawn: (cmd, args, o) => spawn(process.execPath, ['-e', FAKE, '--', ...args], o) });
+    const ctr = new CtrSessions({ spawn: fakeHostSpawn(FAKE) });
     ctr.logFile = join(TMP, 'logs', 'players.log');
     const tools = { host: 'ctrhost', core: 'core', vulkan: 'vk' };
     ctr.start({ rom: 'crash', key: 'k-crash', tools });

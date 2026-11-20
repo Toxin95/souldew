@@ -6,10 +6,12 @@
 // Like the overlay snapshot (shared/overlay.mjs) it carries only what a stream may show: no room keys or secrets,
 // no file names or folders, no device ids, no spoiler log, no Discord webhook, no moves.
 
+import { raidOfFeed } from './raid.mjs';
 import { slotsOf, runMode } from './slots.mjs';
 import { runGen, areaLabel, statusKey, validLevel } from './overlay.mjs';
 import { legendaryKind } from './legendaries.mjs';
 import { rulesWithDefaults } from './rules.mjs';
+import { livesLeft, livesOf, deathsIn } from './lives.mjs';
 import { levelCapFor, gymCapsFamily, vanillaCapFor, romCapFor, prettyTrainer } from './routes.mjs';
 
 export const API_VERSION = 1;
@@ -165,25 +167,34 @@ export function buildState(manifest, doc, opts = {}) {
     const item = Number.isInteger(m.item) && m.item > 0 ? { id: m.item, name: (m.itemOwn ? m.itemName : itemName(m.item, gen)) || null } : null;
     return {
       slot, key: str(m.key) || null, area: m.area ? str(m.area, 60) : null, areaName: label(m.area),
-      species, name: sp(species), nickname: str(m.nick ?? m.nickname, 24), level: lv,
+      // (`form`: the game's form number – a Mega, an Alolan form …; `species` stays the species, its sprites the species')
+      species, form: Number.isInteger(m.form) && m.form > 0 && m.form < 32 ? m.form : 0, name: sp(species), nickname: str(m.nick ?? m.nickname, 24), level: lv,
       hp, maxHp: hp === null ? null : m.maxHp, status: status === 'fnt' ? '' : status, fainted, item,
       shiny: !!m.shiny, egg: !!m.egg, dead, alive: !dead && !fainted, inParty: true,
       legendary: legendaryKind(species),
       sprites: spriteUrls(species, { gen, shiny: !!m.shiny, base, token }), ...extra,
     };
   };
-  const fromEncounter = (area, slot, e) => mon({ key: null, area, species: e.species, nick: e.nickname, level: e.level, shiny: e.shiny }, slot, { inParty: false });
+  const fromEncounter = (area, slot, e) => mon({ key: null, area, species: e.species, form: e.form, nick: e.nickname, level: e.level, shiny: e.shiny }, slot, { inParty: false });
 
   const rules = rulesWithDefaults(val('rules'), mode);
   delete rules.discordWebhook; // stays on the streamer's computer (and older runs kept it here)
   const cleanRules = Object.fromEntries(Object.entries(rules).filter(([, v]) => ['string', 'number', 'boolean'].includes(typeof v)));
+  // the lives rule (shared/lives.mjs), counted from the deaths that stand – as the app counts them
+  const scan = (prefix) => Object.fromEntries(Object.keys(raw).filter((k) => k.startsWith(prefix)).map((k) => [k.slice(prefix.length), obj(val(k))]));
+  const lives = livesLeft(rules, slots, deathsIn(scan('pair:'), scan('extra:'), { slots, encs: scan('enc:') }));
+  const livesFor = (slot) => {
+    const p = livesOf(lives, slot, slots);
+    return p ? { left: p.left, used: p.used } : null;
+  };
 
   const players = slots.map((slot) => {
     const live = obj(val(`live:${slot}`));
     const where = obj(val(`where:${slot}`));
     const meta = obj(val(`player:${slot}`)) || {};
     let party;
-    if (Array.isArray(live?.party) && live.party.length) party = live.party.slice(0, 6).filter((m) => obj(m) && Number.isInteger(m.species)).map((m) => mon(m, slot));
+    // (an egg stays out until it hatches: its species is what it hatches into – a randomizer's surprise)
+    if (Array.isArray(live?.party) && live.party.length) party = live.party.slice(0, 6).filter((m) => obj(m) && Number.isInteger(m.species) && !m.egg).map((m) => mon(m, slot));
     else {
       const list = Array.isArray(val(`party:${slot}`)) ? val(`party:${slot}`).slice(0, 6) : [];
       party = list.map((a) => {
@@ -196,6 +207,7 @@ export function buildState(manifest, doc, opts = {}) {
       slot, name: str(meta.name, 24) || str(manifest?.players?.[slot]?.name, 24) || slot.toUpperCase(), color: PLAYER_COLORS[slot],
       live: Number.isFinite(live?.at) && Math.abs(now - live.at) < LIVE_FRESH, updatedAt: num(live?.at),
       badges: int(live?.badges), levelCap: live ? levelCapOf(manifest, rules, raw, int(live.badges) ?? 0, slot) : null, playTime: playTime(live?.playTime),
+      lives: livesFor(slot),
       location: where ? {
         id: int(where.id), gen: int(where.gen), name: str(where.name, 60) || null, at: num(where.at),
         battle: fight && Number.isInteger(fight.species) ? { kind: fight.kind === 'trainer' ? 'trainer' : 'wild', species: fight.species, name: sp(fight.species),
@@ -236,7 +248,7 @@ export function buildState(manifest, doc, opts = {}) {
   const feed = Object.entries(raw).filter(([k]) => k.startsWith('feed:')).map(([k, e]) => [k, obj(e?.v)]).filter(([, v]) => v)
     .sort((a, b) => (b[1].at || 0) - (a[1].at || 0)).slice(0, FEED)
     .map(([k, v]) => ({ id: k.slice(5), at: num(v.at), type: str(v.type, 12), slot: slots.includes(v.slot) ? v.slot : null, area: v.area ? str(v.area, 60) : null,
-      areaName: label(v.area), species: int(v.species), name: sp(int(v.species)) }));
+      areaName: label(v.area), species: int(v.species), name: sp(int(v.species)), ...linkBattleOf(v), ...raidOfFeed(v) }));
 
   const status = obj(val('run:status'));
   const counts = { alive: 0, dead: 0, caught: 0, missed: 0, encounters: encounters.length };
@@ -255,6 +267,7 @@ export function buildState(manifest, doc, opts = {}) {
       createdAt: manifest?.createdAt || null,
       status: status?.state ? { state: str(status.state, 12), reason: str(status.reason, 16) || null, at: num(status.at), by: slots.includes(status.by) ? status.by : null } : null,
       rules: cleanRules, counts,
+      lives: lives ? { total: lives.total, pool: lives.pool, left: lives.pools.all?.left ?? null, used: lives.pools.all?.used ?? null } : null,
     },
     players, links, graveyard, encounters, feed,
     lang, generatedAt: now, updatedAt: updatedAt || null,
@@ -264,7 +277,7 @@ export function buildState(manifest, doc, opts = {}) {
 // ---- events ----------------------------------------------------------------------------------------------------
 
 export const EVENT_TYPES = ['run-start', 'run-end', 'catch', 'missed', 'death', 'faint', 'level-up', 'evolve', 'badge', 'party', 'location',
-  'battle-start', 'battle-end', 'encounter', 'legendary', 'coffee'];
+  'battle-start', 'battle-end', 'encounter', 'legendary', 'coffee', 'link-battle', 'raid'];
 
 const brief = (m) => (m ? { slot: m.slot, key: m.key, species: m.species, name: m.name, nickname: m.nickname, level: m.level, shiny: m.shiny, sprites: m.sprites } : null);
 
@@ -331,7 +344,22 @@ export function eventsBetween(prev, next) {
     const keys = (list) => list.map((m) => m.key || `${m.area}:${m.species}`).join(',');
     if (keys(p.party) !== keys(q.party)) ev('party', { slot, size: p.party.length, species: p.party.map((m) => m.species) });
   }
+  // a link battle every player of it agreed on (the log entry web/lib/run.mjs logLinkBattle writes)
+  const seen = new Set((prev.feed || []).map((f) => f.id));
+  for (const f of next.feed || []) {
+    if (f.type === 'linkBattle' && !seen.has(f.id)) ev('link-battle', { winners: f.winners, losers: f.losers, draw: f.draw, battles: f.battles, wager: f.wager });
+    // a raid that is over (shared/raid.mjs raidFeedEntry): won or lost, who took part, the MVP, who is still standing
+    if (f.type === 'raid' && !seen.has(f.id)) ev('raid', { won: f.won, players: f.players, mvp: f.mvp, survivors: f.survivors, ms: f.ms, size: f.size });
+  }
   return out;
+}
+
+/** A link battle's log entry for stream tools: who won, who lost, a draw, how many battles, the wager (₽). */
+function linkBattleOf(v) {
+  if (v.type !== 'linkBattle') return {};
+  const slots = (a) => (Array.isArray(a) ? a.filter((s) => /^p[1-4]$/.test(s)).slice(0, 4) : []);
+  const n = (x) => (Number.isFinite(x) ? Math.max(0, Math.min(999999, Math.floor(x))) : 0);
+  return { winners: slots(v.winners), losers: slots(v.losers), draw: !!v.draw, battles: n(v.battles), wager: n(v.wager) };
 }
 
 /** The battle-start events that are wild legendary or mythical encounters – the coffee pop-up's candidates. */

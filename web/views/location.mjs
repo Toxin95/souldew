@@ -6,7 +6,8 @@ import { useApp } from '../lib/ui.mjs';
 import { t, currentLang } from '../lib/i18n.mjs';
 import { speciesName, gen4data, setRomSpecies, setRomTypes } from '../lib/data.mjs';
 import { readLocation, readMusicInfo, locationLabel, sameLocation, canReadLocation, placeName } from '/shared/live/location.mjs';
-import { pairState, encounter, players as getPlayers, slotsOf, isNuzlocke, genOfRun, setRomPlaces, areaForPlace } from '../lib/run.mjs';
+import { watchRomData } from '../lib/romdata.mjs';
+import { pairState, encounter, players as getPlayers, slotsOf, isNuzlocke, isTogether, genOfRun, setRomPlaces, areaForPlace } from '../lib/run.mjs';
 
 let MAPS = null; // shared/data/maps.json once loaded
 let LOC = null; // { loc2, loc3, loc6, loc7 } for the names
@@ -20,40 +21,47 @@ const load = () => {
 };
 
 // The running ROM's own data (server/lib/romloc.mjs, computed by the server from the file): its map → location step
-// and place names (shared/live/romloc.mjs), and for GBA games its species table (shared/live/romspecies.mjs).
+// and place names (shared/live/romloc.mjs), for Game Boy games its map headers (`gbMaps`, which the place is read by),
+// and for GBA games its species table (shared/live/romspecies.mjs).
 // `pending` while it loads; `data` null = the ROM has no location data (the tables still serve).
-const ROMLOC = { src: null, data: null, species: null, wram: null, own: null, pending: false };
+const ROMLOC = { src: null, data: null, species: null, wram: null, gbMaps: null, own: null, pending: false };
 
 /** Starts loading the location data of the ROM at `src` (the /api/… URL the emulator loads); resolves when done. */
 export function loadRomLocations(src) {
   if (!src || ROMLOC.src === src) return ROMLOC.p || Promise.resolve();
-  Object.assign(ROMLOC, { src, data: null, species: null, wram: null, own: null, pending: true });
+  Object.assign(ROMLOC, { src, data: null, species: null, wram: null, gbMaps: null, own: null, pending: true });
   setRomPlaces(null); // (another game's names don't apply any more)
   setRomSpecies(null);
   setRomTypes(null);
-  const p = fetch(`/api/rom/locations?src=${encodeURIComponent(src)}`)
-    .then((r) => (r.ok ? r.json() : null))
-    .catch(() => null)
-    .then((j) => {
-      if (ROMLOC.src !== src) return;
-      Object.assign(ROMLOC, {
-        data: j?.data || null, species: j?.species || null, wram: j?.wram || null, pending: false,
-        own: { items: j?.items || null, moves: j?.moves || null, types: j?.types || null, caps: j?.caps || null, capsWhy: j?.capsWhy || null, header: j?.header || null, vanilla: j ? j.vanilla !== false : null },
-      });
-      setRomPlaces(ROMLOC.data); // catches made now are named like the sign names their place
-      setRomSpecies(ROMLOC.species); // a ROM hack's own Pokémon get the game's names
-      setRomTypes(j?.types || null); // … and the game's types (names, chart, Fairy, a hack's own)
-    });
+  // (the first answer right away; while the server couldn't read the file, it is asked again in the background)
+  const p = new Promise((done) => {
+    watchRomData(src, (j) => {
+      applyRomData(src, j);
+      done();
+    }, { current: () => ROMLOC.src === src }).finally(done);
+  });
   ROMLOC.p = p;
   return p;
 }
+
+function applyRomData(src, j) {
+  if (ROMLOC.src !== src) return;
+  Object.assign(ROMLOC, {
+    data: j?.data || null, species: j?.species || null, wram: j?.wram || null, gbMaps: j?.gbMaps || null, pending: false,
+    own: { items: j?.items || null, moves: j?.moves || null, types: j?.types || null, caps: j?.caps || null, capsWhy: j?.capsWhy || null, header: j?.header || null, vanilla: j ? j.vanilla !== false : null, layout3: j?.layout3 || null },
+  });
+  setRomPlaces(ROMLOC.data); // catches made now are named like the sign names their place
+  setRomSpecies(ROMLOC.species); // a ROM hack's own Pokémon get the game's names
+  setRomTypes(j?.types || null); // … and the game's types (names, chart, Fairy, a hack's own)
+}
+
 
 /**
  * The game session ended: its ROM's types and species names don't apply to whatever is shown next (another run's
  * board, another game) – the next session loads its own again.
  */
 export function resetRomData() {
-  Object.assign(ROMLOC, { src: null, data: null, species: null, wram: null, own: null, pending: false, p: null });
+  Object.assign(ROMLOC, { src: null, data: null, species: null, wram: null, gbMaps: null, own: null, pending: false, p: null });
   setRomTypes(null);
   setRomSpecies(null);
 }
@@ -87,21 +95,33 @@ export function readHere(entry, read, state = null) {
     return null;
   }
   const rom = ROMLOC.data;
-  const r = readLocation(MAPS, entry, read, { rom, state });
+  const r = readLocation(MAPS, entry, read, { rom, state, gbMaps: ROMLOC.gbMaps });
   if (!r) return null;
+  if (r.link) return { gen: r.gen, id: r.id, name: linkRoomName(r.link), link: r.link }; // (a link room: no area)
   const lang = currentLang();
   const table = locationLabel(r.gen, r.id, { maps: MAPS, ...LOC, gen4: gen4data() }, lang === 'de' ? 'de' : 'en');
   const name = placeName(r, { rom, table, lang });
   return name ? { gen: r.gen, id: r.id, name } : null;
 }
 
+/** The sign's name for a link room (shared/live/location.mjs linkRoom). */
+export function linkRoomName(room) {
+  return {
+    trade: t('loc.linkTrade', 'Trade Center'),
+    colosseum: t('loc.linkColosseum', 'Colosseum'),
+    timecapsule: t('loc.linkTimeCapsule', 'Time Capsule'),
+    cableclub: t('loc.linkCableClub', 'Cable Club'),
+    union: t('loc.linkUnion', 'Union Room'),
+  }[room] || t('loc.linkCableClub', 'Cable Club');
+}
+
 /** What the music is right now (readMusicInfo, for a MusicKeyTracker), or null – cheap, read every few frames. */
-export function musicInfo(entry, read) {
+export function musicInfo(entry, read, ctx = {}) {
   if (!MAPS) {
     load();
     return null;
   }
-  return readMusicInfo(MAPS, entry, read);
+  return readMusicInfo(MAPS, entry, read, ctx);
 }
 
 /**
@@ -124,7 +144,7 @@ export function areaOfHere(doc, manifest, gen, here) {
 }
 
 function chipFor(st, enc) {
-  if (st === 'dead' && enc?.species) return { cls: 'dead', text: t('loc.dead', 'Dead: {species}', { species: enc.nickname || speciesName(enc.species) }) };
+  if (st === 'dead' && enc?.outcome === 'caught' && enc.species) return { cls: 'dead', text: t('loc.dead', 'Dead: {species}', { species: enc.nickname || speciesName(enc.species) }) };
   if (st === 'dead') return { cls: 'used', text: t('loc.used', 'Area used up') };
   if (enc?.outcome === 'caught') return { cls: 'caught', text: t('loc.caught', 'Caught: {species}', { species: enc.nickname || speciesName(enc.species) }) };
   // a missed encounter uses the area up for the whole group
@@ -134,7 +154,7 @@ function chipFor(st, enc) {
 
 function Status({ area }) {
   const { doc, manifest } = useApp();
-  if (!area || !doc || !manifest) return null;
+  if (!area || !doc || !manifest || isTogether(manifest)) return null; // (Play together: no encounters to show)
   const slots = slotsOf(manifest);
   const st = pairState(doc, area, manifest);
   if (isNuzlocke(manifest) || slots.length < 2) {

@@ -23,17 +23,17 @@ export function listPresets(config) {
  */
 export function savePreset(list, { id, name, values } = {}, now = new Date().toISOString()) {
   const n = cleanName(name);
-  if (!n) throw httpError(400, 'Name für das Preset fehlt', 'presetName');
+  if (!n) throw httpError(400, 'The preset needs a name', 'presetName');
   const presets = [...list];
   if (id) {
     const i = presets.findIndex((p) => p.id === id);
-    if (i < 0) throw httpError(404, 'Preset nicht gefunden', 'presetNotFound');
+    if (i < 0) throw httpError(404, 'Preset not found', 'presetNotFound');
     const preset = { ...presets[i], name: n, values: values ? sanitizeValues(values) : presets[i].values, updatedAt: now };
     presets[i] = preset;
     return { preset, presets };
   }
-  if (!values || typeof values !== 'object') throw httpError(400, 'Einstellungen für das Preset fehlen', 'presetValues');
-  if (presets.length >= MAX_PRESETS) throw httpError(400, `Höchstens ${MAX_PRESETS} Presets möglich`, 'presetLimit', { max: MAX_PRESETS });
+  if (!values || typeof values !== 'object') throw httpError(400, 'The preset’s settings are missing', 'presetValues');
+  if (presets.length >= MAX_PRESETS) throw httpError(400, `At most ${MAX_PRESETS} presets`, 'presetLimit', { max: MAX_PRESETS });
   let newId;
   do newId = `u-${randomBytes(4).toString('hex')}`; while (presets.some((p) => p.id === newId));
   const preset = { id: newId, name: n, values: sanitizeValues(values), createdAt: now, updatedAt: now };
@@ -42,6 +42,6 @@ export function savePreset(list, { id, name, values } = {}, now = new Date().toI
 }
 
 export function deletePreset(list, id) {
-  if (!list.some((p) => p.id === id)) throw httpError(404, 'Preset nicht gefunden', 'presetNotFound');
+  if (!list.some((p) => p.id === id)) throw httpError(404, 'Preset not found', 'presetNotFound');
   return list.filter((p) => p.id !== id);
 }

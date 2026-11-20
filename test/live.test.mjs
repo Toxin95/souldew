@@ -33,6 +33,11 @@ const inv = (charset) => Object.fromEntries(Object.entries(charset.table).map(([
 
 test('entry lookup by game code / header title', () => {
   assert.equal(findEntry(TABLE, { platform: 'gba', code: 'BPRE' }).id, 'firered_us');
+  // German Emerald (Smaragd) is tracked live like the English game – its RAM is the same (3.0 acceptance, verified in the
+  // running game: team, place, cap, battle, bag, catch); French, Italian and Spanish Emerald share emerald_eu (the Italian one
+  // checked in the running game)
+  assert.equal(findEntry(TABLE, { platform: 'gba', code: 'BPED', title: 'POKEMON EMER' }).id, 'emerald_de');
+  for (const code of ['BPEF', 'BPEI', 'BPES']) assert.equal(findEntry(TABLE, { platform: 'gba', code, title: 'POKEMON EMER' }).id, 'emerald_eu', code);
   assert.equal(findEntry(TABLE, { platform: 'gb', title: 'POKEMON RED' }).id, 'red_us');
   assert.equal(findEntry(TABLE, { platform: 'nds', code: 'IPKE' }).id, 'heartgold_us');
   assert.ok(findEntry(TABLE, { platform: 'nds', code: 'IPKD' }).scanOnly, 'German HG falls back to scanning');
@@ -126,12 +131,12 @@ test('Gen 3 (FireRed): encrypted party struct', () => {
   assert.ok(parsePk3(bad, T).bad);
 });
 
-test('Gen 3 Emerald in German, French, Italian and Spanish: its own table entry, the English RAM layout', () => {
+test('Gen 3 Emerald in French, Italian and Spanish: its own table entry, the English RAM layout (German: emerald_de)', () => {
   const us = findEntry(TABLE, { platform: 'gba', code: 'BPEE' });
   assert.equal(us.id, 'emerald_us');
   for (const code of ['BPED', 'BPEF', 'BPEI', 'BPES']) {
     const e = findEntry(TABLE, { platform: 'gba', code });
-    assert.equal(e?.id, 'emerald_eu', code);
+    assert.equal(e?.id, code === 'BPED' ? 'emerald_de' : 'emerald_eu', code);
     assert.ok(!e.scanOnly, code);
     // every address as in the English game (the Italian ROM's literal pools, pokebot-gen3's language patch)
     for (const k of ['partyCountAddr', 'partyAddr', 'enemyPartyAddr', 'battleTypeFlagsAddr']) assert.equal(e[k], us[k], k);
@@ -222,6 +227,66 @@ test('Gen 3 FireRed/LeafGreen in German, French, Italian and Spanish: their own 
   const r = readLiveParty(de, m.read, T);
   assert.deepEqual(r.party.map((x) => [x.species, x.nickname, x.level, x.hp, x.maxHp, x.metLocation]), [[1, 'BISASAM', 5, 20, 21, 88]]);
   assert.deepEqual(regionsFor(de), regionsFor(us));
+});
+
+test('Gen 3 PC boxes: a catch sent to the PC (full party) is read – FireRed/LeafGreen in every language, Emerald, Ruby/Sapphire', () => {
+  const party = pk3({ pid: 0x0badf00d, otId: 0xbeefcafe, internal: 1, nick: 'BISASAM', level: 5, hp: 20, maxHp: 21, met: 88 });
+  const caught = pk3({ pid: 0x13572468, otId: 0xbeefcafe, internal: 19, nick: 'RATTFRATZ', level: 3, hp: 12, maxHp: 12, met: 89 }).subarray(0, 80);
+  const traded = pk3({ pid: 0x2468ace1, otId: 0x12345678, internal: 16, nick: 'TAUBSI', level: 7, hp: 1, maxHp: 1, met: 90 }).subarray(0, 80);
+  const pc = (at) => {
+    const m = memory();
+    m.write(at, [3]); // currentBox
+    m.write(at + 4 + 3 * 30 * 80, caught); // box 4, slot 1
+    m.write(at + 4 + (13 * 30 + 29) * 80, traded); // the last slot of box 14
+    return m;
+  };
+  const cases = [
+    // German LeafGreen (the issue's game): gPokemonStoragePtr 0x03004F60, right after the save block pointers
+    { code: 'BPGD', ptr: 0x03004f60, at: 0x0202a000, count: 0x02024029, team: 0x02024284 },
+    { code: 'BPRE', ptr: 0x03005010, at: 0x02029314, count: 0x02024029, team: 0x02024284 },
+    { code: 'BPEE', ptr: 0x03005d94, at: 0x02029808, count: 0x020244e9, team: 0x020244ec },
+    { code: 'AXPE', at: 0x020300a0, count: 0x03004350, team: 0x03004360 },
+  ];
+  for (const c of cases) {
+    const e = findEntry(TABLE, { platform: 'gba', code: c.code });
+    assert.equal(e.partyAddr.toLowerCase(), `0x${c.team.toString(16).padStart(8, '0')}`, c.code);
+    const m = pc(c.at);
+    if (c.ptr) m.write(c.ptr, [c.at & 0xff, (c.at >> 8) & 0xff, (c.at >> 16) & 0xff, c.at >>> 24]);
+    m.write(c.count, [1]);
+    m.write(c.team, party);
+    const r = readLiveParty(e, m.read, T, {});
+    assert.deepEqual(r.party.map((x) => x.nickname), ['BISASAM'], c.code);
+    assert.deepEqual(r.boxes.map((x) => [x.species, x.nickname, x.box, x.slot, x.metLocation, x.metLevel, x.level, x.hp]), [
+      [19, 'RATTFRATZ', 3, 0, 89, 5, null, null],
+      [16, 'TAUBSI', 13, 29, 90, 5, null, null],
+    ], c.code);
+    // the same key as in the party: moving it to the team and back is the same Pokémon
+    assert.equal(r.boxes[0].key, parsePk3(pk3({ pid: 0x13572468, otId: 0xbeefcafe, internal: 19, nick: 'RATTFRATZ', level: 3, hp: 12, maxHp: 12, met: 89 }), T).key);
+  }
+  // not a PC: no pointer, a pointer outside EWRAM, a block of failed checksums – "unknown" (null), never an empty PC
+  const e = findEntry(TABLE, { platform: 'gba', code: 'BPRE' });
+  const team = (m) => {
+    m.write(0x02024029, [1]);
+    m.write(0x02024284, party);
+    return m;
+  };
+  assert.equal(readLiveParty(e, team(memory()).read, T, {}).boxes, undefined, 'no storage pointer');
+  const out = team(memory());
+  out.write(0x03005010, [0, 0, 0, 0x08]); // a ROM address
+  assert.equal(readLiveParty(e, out.read, T, {}).boxes, undefined, 'pointer outside EWRAM');
+  const junk = team(memory());
+  junk.write(0x03005010, [0x14, 0x93, 0x02, 0x02]);
+  junk.write(0x02029314 + 4, Uint8Array.from({ length: 30 * 80 }, (_, i) => (i * 37 + 11) & 0xff));
+  assert.equal(readLiveParty(e, junk.read, T, {}).boxes, undefined, 'failed checksums everywhere');
+  // an empty PC is an empty list (the pointer is right, the boxes are all zeros)
+  const empty = team(memory());
+  empty.write(0x03005010, [0x14, 0x93, 0x02, 0x02]);
+  assert.deepEqual(readLiveParty(e, empty.read, T, {}).boxes, []);
+  // the expanded engines keep their boxes their own way: not read
+  const hack = team(pc(0x02029314));
+  hack.write(0x03005010, [0x14, 0x93, 0x02, 0x02]);
+  const rh = readLiveParty({ ...e, scan3: true, party3Base: { party: 0x02024284, count: 0x02024029 } }, hack.read, T, {});
+  assert.deepEqual([rh.party.length, rh.boxes], [1, undefined]);
 });
 
 test('Gen 3 expanded engines (Run & Bun): the egg flag comes from the plain header, not from bit 30 of the IVs', () => {
@@ -414,4 +479,83 @@ test('Gen 3: a slot the party menu is swapping (plain level/HP/stats) is torn, n
   m.write(at, [...half, ...a]);
   const r2 = readLiveParty(e, m.read, T, state);
   for (const x of r2?.party || []) assert.ok(x.species !== 16 || x.level === 5, 'Pidgey with Bulbasaur’s level');
+});
+
+// Clones: a cloning glitch leaves the same Pokémon twice in the team – one PID, every lasting detail alike. It used to
+// stop live tracking ("a misread"), so the Platinum link recordings' teams were never read. Two Pokémon now, each with
+// its own key; a misread – a swap in progress, another Pokémon's data under the same PID – still isn't taken.
+test('clones, Gen 3 (FireRed): the same Pokémon twice is two Pokémon with keys of their own – once a second read shows it too', () => {
+  const e = findEntry(TABLE, { platform: 'gba', code: 'BPRE' });
+  const A = (hp = 20) => pk3({ pid: 0x12345677, otId: 0xbeefcafe, internal: 277, nick: 'TREECKO', level: 9, hp, maxHp: 28, met: 101 });
+  const B = pk3({ pid: 0x0badf00d, otId: 0xbeefcafe, internal: 16, nick: 'Birdy', level: 4, hp: 15, maxHp: 16, met: 101 });
+  const m = memory();
+  m.write(0x02024029, [3]);
+  m.write(0x02024284, [...A(), ...A(), ...B]);
+  const state = {};
+  assert.ok(readLiveParty(e, m.read, T, state).torn, 'first sight of the same Pokémon twice: once more (a swap looks like that for a moment)');
+  const r = readLiveParty(e, m.read, T, state);
+  assert.deepEqual(r.party.map((x) => x.species), [252, 252, 16]);
+  const [k1, k2, k3] = r.party.map((x) => x.key);
+  assert.equal(k2, `${k1}~2`, 'the clone: a key of its own');
+  assert.equal(k3, 'g3-0badf00d-beefcafe');
+  assert.equal(r.party[0].pid, r.party[1].pid);
+  // the clone faints (an untracked clone or not – only its own HP), then the team is reordered: each keeps its key
+  m.write(0x02024284, [...A(20), ...A(0), ...B]);
+  assert.deepEqual(readLiveParty(e, m.read, T, state).party.map((x) => [x.key, x.hp]), [[k1, 20], [k2, 0], [k3, 15]]);
+  m.write(0x02024284, [...B, ...A(0), ...A(20)]);
+  assert.deepEqual(readLiveParty(e, m.read, T, state).party.map((x) => [x.key, x.hp]), [[k3, 15], [k2, 0], [k1, 20]], 'the fainted one stays the clone');
+  m.write(0x02024284, [...A(0), ...B, ...A(20)]);
+  assert.deepEqual(readLiveParty(e, m.read, T, state).party.map((x) => [x.key, x.hp]), [[k2, 0], [k3, 15], [k1, 20]]);
+  // one of them traded away: the other keeps its key; the team counts one less
+  m.write(0x02024029, [2]);
+  m.write(0x02024284, [...A(0), ...B]);
+  assert.deepEqual(readLiveParty(e, m.read, T, state).party.map((x) => x.key), [k2, k3]);
+});
+
+test('clones, Gen 3: a swap in the party menu (one Pokémon shown twice for a read) and another Pokémon under the same PID are still no team', () => {
+  const e = findEntry(TABLE, { platform: 'gba', code: 'BPRE' });
+  const A = pk3({ pid: 0x12345677, otId: 0xbeefcafe, internal: 277, nick: 'TREECKO', level: 9, hp: 20, maxHp: 28, met: 101 });
+  const B = pk3({ pid: 0x0badf00d, otId: 0xbeefcafe, internal: 16, nick: 'Birdy', level: 4, hp: 15, maxHp: 16, met: 101 });
+  const m = memory();
+  m.write(0x02024029, [2]);
+  m.write(0x02024284, [...A, ...B]);
+  const state = {};
+  const before = readLiveParty(e, m.read, T, state);
+  // the swap: slot 1 already holds A, slot 0 still too – for one read
+  m.write(0x02024284, [...A, ...A]);
+  assert.ok(readLiveParty(e, m.read, T, state).torn);
+  m.write(0x02024284, [...B, ...A]);
+  const after = readLiveParty(e, m.read, T, state);
+  assert.deepEqual(after.party.map((x) => x.key), [before.party[1].key, before.party[0].key], 'no clone key handed out');
+  // the same PID with another species, other met data: never two Pokémon
+  const other = pk3({ pid: 0x12345677, otId: 0xbeefcafe, internal: 16, nick: 'Birdy', level: 4, hp: 15, maxHp: 16, met: 102 });
+  m.write(0x02024284, [...A, ...other]);
+  for (let i = 0; i < 4; i++) assert.ok(readLiveParty(e, m.read, T, state).torn, `read ${i + 1}`);
+});
+
+test('clones, Gen 1 (Red): the same Pokémon twice gets two keys; two others that only share trainer ID and DVs stay as they were', () => {
+  const e = findEntry(TABLE, { platform: 'gb', title: 'POKEMON RED' });
+  const mon = (internal, hp, ot, dv) => {
+    const d = new Uint8Array(44);
+    d[0] = internal;
+    d[2] = hp;
+    d[0x0c] = ot >> 8; d[0x0d] = ot & 0xff;
+    d[0x1b] = dv >> 8; d[0x1c] = dv & 0xff;
+    d[0x21] = 7;
+    d[0x23] = 30;
+    return d;
+  };
+  const A = mon(0x99, 20, 0x1234, 0xabcd); // Bulbasaur
+  const m = memory();
+  m.write(0xd163, [2, 0x99, 0x99, 0xff]);
+  m.write(0xd16b, [...A, ...A]);
+  const state = {};
+  assert.ok(readLiveParty(e, m.read, T, state).torn);
+  const r = readLiveParty(e, m.read, T, state);
+  assert.deepEqual(r.party.map((x) => x.key), ['g1-1234-abcd', 'g1-1234-abcd~2']);
+  // Bulbasaur and a Pidgey with the same trainer ID and DVs: no clones – as before
+  const s2 = {};
+  m.write(0xd163, [2, 0x99, 0x24, 0xff]);
+  m.write(0xd16b, [...A, ...mon(0x24, 12, 0x1234, 0xabcd)]);
+  assert.deepEqual(readLiveParty(e, m.read, T, s2).party.map((x) => x.key), ['g1-1234-abcd', 'g1-1234-abcd']);
 });

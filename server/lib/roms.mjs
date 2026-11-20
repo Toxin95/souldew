@@ -7,7 +7,7 @@ import { loadFile, resolveId, ctrInfo } from './library.mjs';
 import { crc32Hex } from '../../shared/checksum.mjs';
 import { applyPatch, detectPatchFormat } from '../../shared/patchers.mjs';
 import { identifyRom, isCtrExt } from '../../shared/romid.mjs';
-import { writeFileAtomic, httpError } from './fsutil.mjs';
+import { writeFileAtomic, httpError, logLine } from './fsutil.mjs';
 
 /** Known patches, keyed by SHA-1 of the patch file (exact expected results). */
 export const KNOWN_PATCHES = {
@@ -28,6 +28,9 @@ const fileNameOf = (id) => String(id).split('::').pop().split(/[\\/]/).pop();
 function extFor(id, rom) {
   const fromName = extname(String(id).split('::').pop()).slice(1).toLowerCase();
   if (['gb', 'gbc', 'gba', 'nds'].includes(fromName)) return fromName;
+  // a Super Game Boy dump (.sgb) is a Game Boy ROM: cached and built as .gb (.gbc for a Color game) – the emulators,
+  // the randomizer and the run's file names know those
+  if (fromName === 'sgb') return identifyRom(rom.subarray(0, 0x200), 'gb')?.system || 'gb';
   return identifyRom(rom.subarray(0, 0x200))?.system || 'bin';
 }
 
@@ -42,7 +45,8 @@ export function preparePatchedRom(romId, patchId, onLog = () => {}, config = {})
   const baseCrc = crc32Hex(rom);
   const ext = extFor(romId, rom);
   const header = identifyRom(rom.subarray(0, 0x200), ext);
-  onLog(`Basis-ROM geladen (${(rom.length / 1048576).toFixed(1)} MB, CRC32 ${baseCrc})`);
+  const mb = (rom.length / 1048576).toFixed(1);
+  onLog(logLine('romLoaded', `Base ROM loaded (${mb} MB, CRC32 ${baseCrc})`, { mb, crc: baseCrc }));
   mkdirSync(CACHE_DIR, { recursive: true });
   if (!patchId) {
     const path = join(CACHE_DIR, `vanilla-${baseCrc}.${ext}`);
@@ -54,23 +58,26 @@ export function preparePatchedRom(romId, patchId, onLog = () => {}, config = {})
   const patchSha = sha1(patch);
   const known = KNOWN_PATCHES[patchSha];
   if (known && known.baseCrc !== baseCrc) {
-    throw new Error(`Falsches Basis-ROM: ${known.name} erwartet CRC32 ${known.baseCrc}, gefunden ${baseCrc}.`);
+    throw httpError(422, `Wrong base ROM: ${known.name} expects CRC32 ${known.baseCrc}, found ${baseCrc}.`, 'wrongBaseRom', { name: known.name, expected: known.baseCrc, found: baseCrc });
   }
   const path = join(CACHE_DIR, `patched-${patchSha.slice(0, 12)}-${baseCrc}.${ext}`);
   if (existsSync(path)) {
     const buf = readFileSync(path);
     const crc = crc32Hex(buf);
     if (!known || crc === known.resultCrc) {
-      onLog(`Gepatchtes ROM aus Cache (CRC32 ${crc})`);
+      onLog(logLine('patchCached', `Patched ROM from the cache (CRC32 ${crc})`, { crc }));
       return { path, crc, sha1: sha1(buf), size: buf.length, baseCrc, header: identifyRom(new Uint8Array(buf.subarray(0, 0x200)), ext), fromCache: true, patchName: known?.name || fileNameOf(patchId), system: header?.system || ext, patchSha1: patchSha };
     }
   }
-  onLog(`Wende Patch an (${detectPatchFormat(patch)}, ${(patch.length / 1048576).toFixed(1)} MB) …`);
+  const format = detectPatchFormat(patch);
+  const patchMb = (patch.length / 1048576).toFixed(1);
+  onLog(logLine('patchApplying', `Applying the patch (${format}, ${patchMb} MB) …`, { format, mb: patchMb }));
   const t = Date.now();
   const out = applyPatch(rom, patch);
   const crc = crc32Hex(out);
-  onLog(`Patch angewendet in ${((Date.now() - t) / 1000).toFixed(1)} s – Ergebnis CRC32 ${crc}`);
-  if (known && crc !== known.resultCrc) throw new Error(`Patch-Ergebnis unerwartet (CRC32 ${crc}, erwartet ${known.resultCrc}).`);
+  const s = ((Date.now() - t) / 1000).toFixed(1);
+  onLog(logLine('patchApplied', `Patch applied in ${s} s – result CRC32 ${crc}`, { s, crc }));
+  if (known && crc !== known.resultCrc) throw httpError(422, `Unexpected patch result (CRC32 ${crc}, expected ${known.resultCrc}).`, 'patchResult', { name: known.name, found: crc, expected: known.resultCrc });
   writeFileAtomic(path, out);
   return { path, crc, sha1: sha1(out), size: out.length, baseCrc, header: identifyRom(out.subarray(0, 0x200), ext), fromCache: false, patchName: known?.name || fileNameOf(patchId), system: header?.system || ext, patchSha1: patchSha };
 }
@@ -84,12 +91,14 @@ export function fileSha1(path) {
  * randomizer). Returns the same shape as preparePatchedRom with the checksums null and `ext` the file's own extension.
  */
 function prepareCtr(romId, patchId, onLog, config, ext) {
-  if (patchId) throw httpError(400, '3DS-Spiele lassen sich hier nicht patchen', 'ctrNoPatch');
+  if (patchId) throw httpError(400, 'Nintendo 3DS games can’t be patched here', 'ctrNoPatch');
   const { abs, entry } = resolveId(romId, config);
-  if (entry) throw httpError(400, '3DS-Spiele müssen entpackt in der Bibliothek liegen', 'ctrInArchive');
+  if (entry) throw httpError(400, 'Unpack the 3DS game from its archive into the library first', 'ctrInArchive');
   const header = ctrInfo(abs, ext);
-  if (!header) throw httpError(400, 'Kein 3DS-Spiel', 'notCtr');
+  if (!header) throw httpError(400, 'Not a Nintendo 3DS game', 'notCtr');
   const size = statSync(abs).size;
-  onLog(`3DS-Spiel ${header.productCode || header.titleId || ''} (${(size / 1048576).toFixed(0)} MB)`);
+  const code = header.productCode || header.titleId || '';
+  const mb = (size / 1048576).toFixed(0);
+  onLog(logLine('ctrGame', `3DS game ${code} (${mb} MB)`, { code, mb }));
   return { path: abs, crc: null, sha1: null, size, baseCrc: null, header, fromCache: false, patchName: null, system: '3ds', ext };
 }

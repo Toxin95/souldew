@@ -1,7 +1,8 @@
 // Nintendo 3DS in souldew's own player: the native host (native/ctr-host) runs Azahar's libretro core with Vulkan and
 // speaks a small binary protocol on stdin/stdout (see the header of native/ctr-host/ctrhost.c). This module finds the
 // tools, starts one session at a time and hands the host's output to the player page as it comes (one HTTP stream,
-// the host's messages unchanged); the page's commands (input, speed, save states, which memory to watch) go back in.
+// the host's messages unchanged); the page's commands (input, speed, save states, which memory to watch, cheats) go
+// back in.
 //
 // tools/ctr/<platform>-<arch>/ (bundled with the app, or in the data folder's tools):
 //   ctrhost[.exe]                                  the host
@@ -16,6 +17,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import { BUNDLED_TOOLS, TOOLS_DIR, DATA_DIR, DEV, APP_ROOT } from './paths.mjs';
 import { httpError } from './fsutil.mjs';
 import { identifyCtr } from '../../shared/ctr.mjs';
+import { nextRenderer, rendererFailure, withRenderer, withArg, scaleFor } from './ctrrenderer.mjs';
+import { ctrIntegrity } from './ctrcheck.mjs';
 
 export const PLATFORM_DIR = `${process.platform}-${process.arch}`;
 const EXE = process.platform === 'win32' ? 'ctrhost.exe' : 'ctrhost';
@@ -23,8 +26,28 @@ const CORE = process.platform === 'win32' ? 'azahar_libretro.dll' : process.plat
 const VULKAN = { darwin: 'libMoltenVK.dylib', win32: 'vulkan-1.dll', linux: 'libvulkan.so.1' }[process.platform];
 
 /** Message types of the protocol (ctrhost.c). */
-export const MSG = { HELLO: 1, VIDEO: 2, AUDIO: 3, MEM: 4, STATE: 5, LOG: 6, EVENT: 7 };
-export const CMD = { INPUT: 1, SPEED: 2, SAVE: 3, LOAD: 4, WATCH: 5, QUIT: 6, RESET: 7, FRAMESKIP: 8 };
+export const MSG = { HELLO: 1, VIDEO: 2, AUDIO: 3, MEM: 4, STATE: 5, LOG: 6, EVENT: 7, FFSOUND: 8, ROMFS: 9, ROMDATA: 10, SFX: 11 };
+export const CMD = { INPUT: 1, SPEED: 2, SAVE: 3, LOAD: 4, WATCH: 5, QUIT: 6, RESET: 7, FRAMESKIP: 8, WRITE: 9, ROMREAD: 10, MUSIC: 11, SFX: 12 };
+/** The most music streams a MUSIC command names (ctrhost.c MAX_MUSIC_RANGES). */
+export const CTR_MUSIC_MAX = 8192;
+/** The most RomFS bytes one ROMREAD may ask for (ctrhost.c ROMREAD_MAX). */
+export const CTR_ROMREAD_MAX = 1024 * 1024;
+
+/** The game's heaps – the only memory a cheat may write (the host checks the same: ctrhost.c write_ranges). */
+export const CTR_WRITE_RANGES = [[0x08000000, 0x10000000], [0x14000000, 0x1c000000], [0x30000000, 0x40000000]];
+export const CTR_WRITE_MAX = 256;
+
+/**
+ * Is this WRITE payload one souldew's player sends? { u32 id, u32 addr, u32 len, old[len], new[len] }: 1–256 bytes
+ * inside one 4 KB page of the game's heaps.
+ */
+export function ctrWriteOk(p) {
+  if (p.length < 12) return false;
+  const addr = p.readUInt32LE(4);
+  const len = p.readUInt32LE(8);
+  if (!len || len > CTR_WRITE_MAX || p.length !== 12 + 2 * len || (addr & 0xfff) + len > 0x1000) return false;
+  return CTR_WRITE_RANGES.some(([a, b]) => addr >= a && addr + len <= b);
+}
 
 /** Is the system's Vulkan loader there (Windows, Linux)? Looked up where the dynamic linker finds it. */
 export function systemVulkan({ platform = process.platform, env = process.env, exists = existsSync } = {}) {
@@ -84,6 +107,48 @@ export function ctrEncrypted(path) {
     if (fd !== undefined) closeSync(fd);
   }
 }
+
+const fileReports = new Map(); // path|size|time → ctrFileReport (a game file doesn't change under the same stamp)
+
+/**
+ * What souldew knows about a 3DS game file before it starts it – for the start's checks and "Save diagnostics", with
+ * nothing in it that names the player (no path): { size, magic ('NCSD' | 'NCCH' | the first bytes as hex …), format,
+ * encrypted, code, titleId, kind, integrity: { state, why } (server/lib/ctrcheck.mjs) } – or { error } (the file can't
+ * be read: its code, ENOENT / EBUSY / EPERM …). Cached per file stamp; ~40 small reads the first time.
+ */
+export function ctrFileReport(path) {
+  let st;
+  try {
+    st = statSync(path);
+  } catch (e) {
+    return { error: e.code || 'stat' };
+  }
+  const stamp = `${path}|${st.size}|${st.mtimeMs}`;
+  if (fileReports.has(stamp)) return fileReports.get(stamp);
+  let fd;
+  try {
+    fd = openSync(path, 'r');
+    const readAt = (o, n) => {
+      const b = Buffer.alloc(n);
+      return new Uint8Array(b.buffer, b.byteOffset, readSync(fd, b, 0, n, o));
+    };
+    const h = readAt(0, 0x200);
+    const at = (o) => (h.length >= o + 4 ? String.fromCharCode(...h.subarray(o, o + 4)) : '');
+    const magic = at(0x100) === 'NCSD' || at(0x100) === 'NCCH' ? at(0x100) : at(0) === 'Z3DS' || at(0) === '3DSX' ? at(0) : h.length >= 4 && h[0] === 0x20 && h[1] === 0x20 && !h[2] && !h[3] ? 'CIA' : Buffer.from(h.subarray(0, 4)).toString('hex');
+    const info = identifyCtr(readAt, extname(path).slice(1));
+    const integrity = info && !info.encrypted && /^(cci|cxi)$/.test(info.format) ? ctrIntegrity(readAt, st.size, sha256) : { state: 'unchecked', why: info ? (info.encrypted ? 'encrypted' : info.format) : 'format' };
+    const report = { size: st.size, magic, format: info?.format || null, encrypted: info ? !!info.encrypted : null, code: info?.code || null, titleId: info?.titleId || null, kind: info?.kind || null, integrity };
+    if (fileReports.size > 50) fileReports.delete(fileReports.keys().next().value);
+    fileReports.set(stamp, report);
+    return report;
+  } catch (e) {
+    // (not remembered: a file a scanner holds for a moment reads fine on the next start)
+    return { size: st.size, error: e.code || 'read' };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 
 /** A save folder per game / run slot: the 3DS's SD card and system memory of that playthrough. */
 export function saveDirFor(key) {
@@ -151,10 +216,16 @@ export function command(type, payload = Buffer.alloc(0)) {
  */
 export function checkCommands(body) {
   const { messages, rest } = splitMessages(body);
-  if (rest.length || !messages.length) throw httpError(400, 'Ungültiger Befehl', 'badCommand');
-  const limits = { [CMD.INPUT]: 32, [CMD.SPEED]: 4, [CMD.SAVE]: 0, [CMD.LOAD]: 256 * 1024 * 1024, [CMD.WATCH]: 4 + 16 * 8, [CMD.QUIT]: 0, [CMD.RESET]: 0, [CMD.FRAMESKIP]: 4 };
+  if (rest.length || !messages.length) throw httpError(400, 'Invalid command', 'badCommand');
+  const limits = { [CMD.INPUT]: 32, [CMD.SPEED]: 4, [CMD.SAVE]: 0, [CMD.LOAD]: 256 * 1024 * 1024, [CMD.WATCH]: 4 + 16 * 8, [CMD.QUIT]: 0, [CMD.RESET]: 0, [CMD.FRAMESKIP]: 4, [CMD.WRITE]: 12 + 2 * CTR_WRITE_MAX, [CMD.ROMREAD]: 20, [CMD.MUSIC]: 8 + 16 * CTR_MUSIC_MAX, [CMD.SFX]: 4 };
   for (const m of messages) {
-    if (!(m.type in limits) || m.payload.length > limits[m.type]) throw httpError(400, 'Ungültiger Befehl', 'badCommand');
+    if (!(m.type in limits) || m.payload.length > limits[m.type]) throw httpError(400, 'Invalid command', 'badCommand');
+    if (m.type === CMD.WRITE && !ctrWriteOk(m.payload)) throw httpError(400, 'Invalid command', 'badCommand');
+    // (a RomFS read for the music from the ROM: id, tag, offset, length – the host reads only the game's own RomFS)
+    if (m.type === CMD.ROMREAD && (m.payload.length !== 20 || m.payload.readUInt32LE(16) > CTR_ROMREAD_MAX)) throw httpError(400, 'Invalid command', 'badCommand');
+    // (sound effects in fast-forward: where the music streams are – tag, count, count × [start, end) – and on / off)
+    if (m.type === CMD.MUSIC && (m.payload.length < 8 || m.payload.length !== 8 + 16 * m.payload.readUInt32LE(4))) throw httpError(400, 'Invalid command', 'badCommand');
+    if (m.type === CMD.SFX && m.payload.length !== 4) throw httpError(400, 'Invalid command', 'badCommand');
   }
   return body;
 }
@@ -271,7 +342,7 @@ export class CtrSessions {
 
   status() {
     const s = this.current;
-    return s ? { id: s.id, running: !s.exit, exit: s.exit, exitText: exitText(s.exit), events: s.events.slice(-5), gpu: s.gpu || null } : null;
+    return s ? { id: s.id, running: !s.exit, exit: s.exit, exitText: exitText(s.exit), events: s.events.slice(-5), gpu: s.gpu || null, ...(s.renderer ? { renderer: s.renderer, scale: s.scale || 1, fellBack: s.fellBack || [] } : {}), ...(s.file ? { file: s.file } : {}) } : null;
   }
 
   /** For "Save diagnostics": the running session (with the end of its stderr) and how the last failed one ended. */
@@ -284,8 +355,11 @@ export class CtrSessions {
     };
   }
 
-  /** A session ended: remember (and log) it when it didn't end the normal way – a crash, an error from the host. */
-  ended(s, exit) {
+  /**
+   * A session ended: remember (and log) it when it didn't end the normal way – a crash, an error from the host.
+   * `retry`: the renderer the session goes on with (the 3DS player stepped down – see relaunch).
+   */
+  ended(s, exit, retry = null) {
     if (s.recorded) return;
     s.recorded = true;
     const error = [...s.events].reverse().find((e) => e?.event === 'error');
@@ -296,54 +370,89 @@ export class CtrSessions {
       exit: exitText(exit) || null,
       error: error?.message ? redactHome(error.message).slice(0, 1000) : null,
       gpu: s.gpu || null,
+      ...(s.renderer ? { renderer: s.renderer, scale: s.scale || 1 } : {}),
+      ...(s.file ? { file: s.file } : {}),
+      ...(retry ? { retriedWith: retry } : {}),
       startedAt: s.startedAt,
       secondsRun: Math.round((Date.now() - s.startedAt) / 1000),
       stderrStart: redactHome(s.head),
       stderr: redactHome(s.log.join('').slice(-4000)),
     };
     appendPlayerLog({ player: this.label || '3ds', ...this.last }, this.logFile);
-    console.warn(`[${this.label || '3ds'}] the host ended: ${this.last.exit || '?'}${this.last.error ? ` – ${this.last.error}` : ''}${s.gpu ? ` – GPU ${s.gpu.name} (driver ${s.gpu.driver})` : ''}`);
+    console.warn(`[${this.label || '3ds'}] the host ended: ${this.last.exit || '?'}${this.last.error ? ` – ${this.last.error}` : ''}${s.gpu ? ` – GPU ${s.gpu.name} (driver ${s.gpu.driver})` : ''}${retry ? ` – renderer ${s.renderer}, trying ${retry}` : ''}`);
     const tail = this.last.stderr.trim().split('\n').slice(-8).join('\n');
     if (tail) console.warn(tail);
   }
 
-  /** Start the game `rom` (a path) with the save folder of `key`; ends a session that still runs. */
-  start({ rom, key, tools, scale = 1 }) {
+  /**
+   * Start the game `rom` (a path) with the save folder of `key`; ends a session that still runs. `renderer`: how the
+   * host draws (server/lib/ctrrenderer.mjs); `auto`: a crash in the first seconds steps down to the next safer one.
+   */
+  start({ rom, key, tools, scale = 1, renderer = 'vulkan', auto = false, file = null }) {
     this.stop();
     const save = saveDirFor(key);
     const system = join(save, 'system');
     mkdirSync(system, { recursive: true });
-    const args = ['--core', tools.core, '--vulkan', tools.vulkan, '--rom', rom, '--system', system, '--save', save, '--scale', String(scale)];
-    return this.launch(tools.host, args, save);
+    const sc = scaleFor(scale, renderer);
+    const args = ['--core', tools.core, '--vulkan', tools.vulkan, '--rom', rom, '--system', system, '--save', save, '--scale', String(sc), '--renderer', renderer];
+    // (file: what ctrFileReport found about the game file – size, header, integrity – for "Save diagnostics")
+    return this.launch(tools.host, args, save, { renderer, scale: sc, auto: !!auto, fellBack: [], file });
   }
 
-  /** Start a host (`exe` with `args`) as the current session – shared with the DS / GBA / GB host (native.mjs). */
-  launch(exe, args, save) {
+  /**
+   * Start a host (`exe` with `args`) as the current session – shared with the DS / GBA / GB host (native.mjs).
+   * `extra`: more of the session (the 3DS renderer).
+   */
+  launch(exe, args, save, extra = {}) {
     this.stop();
+    const s = { id: randomBytes(8).toString('hex'), exe, args, save, child: null, stream: null, buffered: [], bufferedBytes: 0, events: [], exit: null, closed: false, held: false, log: [], head: '', startedAt: Date.now(), lastCmds: {}, ...extra };
+    s.orphan = setTimeout(() => {
+      if (!s.stream && this.current === s) this.stop();
+    }, NEVER_ATTACHED);
+    s.orphan.unref?.();
+    this.current = s;
+    this.run(s);
+    return s.id;
+  }
+
+  /** Spawn the session's host (again, after relaunch: the page's stream goes on). */
+  run(s) {
     const env = this.hostEnv?.();
-    const child = this.spawn(exe, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, ...(env ? { env } : {}) });
-    const s = { id: randomBytes(8).toString('hex'), save, child, stream: null, buffered: [], bufferedBytes: 0, events: [], exit: null, closed: false, held: false, log: [], head: '', startedAt: Date.now() };
+    let child;
+    try {
+      child = this.spawn(s.exe, s.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, ...(env ? { env } : {}) });
+    } catch (e) {
+      // (Windows: a file that isn't a program fails right here, not with an 'error' event – the session just ends)
+      Object.assign(s, { child: null, exit: { error: e.message }, held: false, events: [], heldErrors: [], startedAt: Date.now() });
+      this.ended(s, s.exit);
+      s.closed = true;
+      clearTimeout(s.orphan);
+      s.stream?.end();
+      return;
+    }
+    Object.assign(s, { child, exit: null, recorded: false, held: false, events: [], heldErrors: [], startedAt: Date.now() });
+    // the host may still step down (3DS, "auto"): its error event waits until it is clear the session doesn't go on
+    // with another renderer – the page would show "the game has stopped" for a game that is about to run
+    const mayRetry = !!(s.auto && s.renderer && nextRenderer(s.renderer));
+    const mine = () => s.child === child;
     const split = new MessageSplitter();
     child.stdout.on('data', (chunk) => {
+      if (!mine()) return;
       // whole messages only: a page that connects later (or a new one) must start at a message's beginning
       for (const m of split.push(chunk)) {
-        if (m.type === MSG.EVENT) this.peek(s, m.data);
-        this.onMessage?.(s, m, writable(s.stream)); // (native.mjs: the last battery save after the page has gone)
-        if (writable(s.stream)) {
-          // the page reads the host's messages as they are; a slow page holds the host back (no frames pile up)
-          if (!s.stream.write(m.data) && !s.held) {
-            s.held = true;
-            child.stdout.pause();
-            s.stream.once('drain', () => this.release(s));
+        if (m.type === MSG.EVENT) {
+          const e = this.peek(s, m.data);
+          if (mayRetry && e?.event === 'error') {
+            s.heldErrors.push(m.data);
+            continue;
           }
-        } else if (s.bufferedBytes + m.data.length <= BUFFER_LIMIT || this.keepTypes.includes(m.type)) {
-          // before the page connects: keep the start (the "loaded" event, a few frames) and what is answered
-          s.buffered.push(m.data);
-          s.bufferedBytes += m.data.length;
         }
+        this.onMessage?.(s, m, writable(s.stream)); // (native.mjs: the last battery save after the page has gone)
+        this.forward(s, m);
       }
     });
     child.stderr.on('data', (d) => {
+      if (!mine()) return;
       // the start (the Vulkan loader, the graphics cards, the device) is kept apart: the core's warnings later would
       // push it out of the tail
       if (s.head.length < 10000) s.head += String(d).slice(0, 10000 - s.head.length);
@@ -351,10 +460,8 @@ export class CtrSessions {
       if (s.log.length > 200) s.log.splice(0, s.log.length - 200);
     });
     child.on('exit', (code, signal) => {
-      s.exit = { code, signal };
+      if (mine()) s.exit = { code, signal };
     });
-    // (after the last output is read: the host's error event comes right before it leaves)
-    child.on('close', (code, signal) => this.ended(s, s.exit || { code, signal }));
     // the end of the stream once the host's output is all read: 'exit' can come before the last of it (the error
     // event a failing host sends right before it leaves), and a write after end() is an unhandled 'error'
     const done = () => {
@@ -362,46 +469,106 @@ export class CtrSessions {
       clearTimeout(s.orphan);
       s.stream?.end();
     };
+    // (after the last output is read: the host's error event comes right before it leaves)
     child.on('close', (code, signal) => {
+      if (!mine()) return;
       s.exit ||= { code, signal };
+      if (this.relaunch(s)) return;
+      this.ended(s, s.exit);
+      for (const data of s.heldErrors.splice(0)) this.forward(s, { type: MSG.EVENT, data });
       done();
     });
     child.on('error', (e) => {
+      if (!mine()) return;
       s.exit = { error: e.message };
       this.ended(s, s.exit);
+      for (const data of s.heldErrors.splice(0)) this.forward(s, { type: MSG.EVENT, data });
       done();
     });
     child.stdin.on('error', () => {});
-    s.orphan = setTimeout(() => {
-      if (!s.stream && this.current === s) this.stop();
-    }, NEVER_ATTACHED);
-    s.orphan.unref?.();
-    this.current = s;
-    return s.id;
+  }
+
+  /** One whole message of the host to the page – or kept for a page that connects later. */
+  forward(s, m) {
+    if (writable(s.stream)) {
+      // the page reads the host's messages as they are; a slow page holds the host back (no frames pile up)
+      if (!s.stream.write(m.data) && !s.held) {
+        s.held = true;
+        s.child.stdout.pause();
+        s.stream.once('drain', () => this.release(s));
+      }
+    } else if (s.bufferedBytes + m.data.length <= BUFFER_LIMIT || this.keepTypes.includes(m.type)) {
+      // before the page connects: keep the start (the "loaded" event, a few frames) and what is answered
+      s.buffered.push(m.data);
+      s.bufferedBytes += m.data.length;
+    }
+  }
+
+  /**
+   * 3DS, renderer "auto": the host ended in its first seconds the way a graphics driver problem ends – start it again
+   * with the next safer renderer in the same session (the page's stream goes on, the memory it watches, its speed and
+   * pause are handed to the new host). onRendererFailed remembers the step for this graphics card. False: not this case.
+   */
+  relaunch(s) {
+    if (s.quit || this.current !== s || !s.auto || !s.renderer) return false;
+    const next = nextRenderer(s.renderer);
+    if (!next || !rendererFailure({ exit: s.exit, events: s.events, ms: Date.now() - s.startedAt })) return false;
+    const from = s.renderer;
+    this.ended(s, s.exit, next);
+    s.heldErrors = [];
+    s.fellBack.push(from);
+    this.onRendererFailed?.({ gpu: s.gpu || null, from, to: next });
+    s.log.push(`[souldew] the 3DS host ended in its first seconds with the renderer "${from}" – starting it again with "${next}"\n`);
+    s.renderer = next;
+    // (back to 1× resolution as well: a higher one asks more of a graphics card that just failed)
+    s.scale = 1;
+    s.args = withArg(withRenderer(s.args, next), '--scale', 1);
+    this.run(s);
+    for (const b of Object.values(s.lastCmds)) s.child?.stdin.write(b);
+    return true;
+  }
+
+  /** The page's commands the next host needs as well (relaunch): the last WATCH, SPEED and FRAMESKIP. */
+  keepCommands(s, body) {
+    for (const m of splitMessages(body).messages) {
+      if (m.type === CMD.WATCH || m.type === CMD.SPEED || m.type === CMD.FRAMESKIP) s.lastCmds[m.type] = command(m.type, Buffer.from(m.payload));
+    }
   }
 
   /** Let the host write again (the page caught up, or another page / none reads now). */
   release(s) {
     s.held = false;
-    s.child.stdout.resume();
+    s.child?.stdout.resume();
   }
 
-  /** Remember the host's events (loaded, title, errors) for the status. `data`: one whole EVENT message. */
+  /** Remember the host's events (loaded, title, errors) for the status. `data`: one whole EVENT message. Returns it. */
   peek(s, data) {
     try {
       const e = JSON.parse(data.subarray(8).toString('utf8'));
+      if (e?.event === 'ffrate') return e; // (the fast-forward sound's ratio, many a second: not worth keeping)
       s.events.push(e);
       if (s.events.length > 50) s.events.shift();
-      if (e?.event === 'gpu') s.gpu = { name: e.name, type: e.type, vendor: e.vendor, device: e.device, driver: e.driver, api: e.api, index: e.index, count: e.count };
+      if (e?.event === 'gpu') {
+        s.gpu = { name: e.name, type: e.type, vendor: e.vendor, device: e.device, driver: e.driver, api: e.api, index: e.index, count: e.count };
+        this.onGpu?.(s.gpu);
+      }
+      return e;
     } catch {
-      // not JSON – skip
+      return null; // not JSON – skip
     }
   }
 
   get(id) {
     const s = this.current;
-    if (!s || s.id !== id) throw httpError(404, 'Keine laufende 3DS-Sitzung', 'noCtrSession');
+    if (!s || s.id !== id) throw httpError(404, 'No 3DS game is running', 'noCtrSession');
     return s;
+  }
+
+  /** The game file a session runs (its --rom). */
+  romOf(id) {
+    const s = this.get(id);
+    const i = s.args.indexOf('--rom');
+    return i >= 0 ? s.args[i + 1] : null;
   }
 
   /** The page's stream of host messages (only one: a new one replaces the old). */
@@ -433,8 +600,9 @@ export class CtrSessions {
 
   send(id, body) {
     const s = this.get(id);
-    if (s.exit) throw httpError(409, 'Die 3DS-Sitzung ist beendet', 'ctrEnded');
+    if (s.exit) throw httpError(409, 'The 3DS game has stopped', 'ctrEnded');
     s.child.stdin.write(this.check(body));
+    if (s.auto) this.keepCommands(s, body);
   }
 
   /** The commands a page may send this host (checkCommands for the 3DS host). */
@@ -457,7 +625,7 @@ export class CtrSessions {
     // (a host held back by a page that no longer reads couldn't see the QUIT – let it write)
     this.release(s);
     s.stream?.end();
-    if (s.exit) return;
+    if (s.exit || !s.child) return;
     const kill = setTimeout(() => s.child.kill('SIGKILL'), 3000);
     kill.unref?.();
     s.child.once('exit', () => clearTimeout(kill));

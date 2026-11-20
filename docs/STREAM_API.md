@@ -76,16 +76,18 @@ Every data endpoint takes `?lang=en|de|fr|es|it` for Pokémon, item and place na
     "createdAt": "2026-10-01T10:00:00Z",
     "status": null,
     "rules": { "typeClause": "global", "dupes": "line", "shinyClause": true, "levelCaps": true, "…": "…" },
-    "counts": { "alive": 1, "dead": 1, "caught": 2, "missed": 1, "encounters": 3 }
+    "counts": { "alive": 1, "dead": 1, "caught": 2, "missed": 1, "encounters": 3 },
+    "lives": { "total": 20, "pool": "shared", "left": 19, "used": 1 }
   },
   "players": [{
     "slot": "p1", "name": "Ana", "color": "#7f9ddb", "live": true, "updatedAt": 1762790000000,
     "badges": 2, "levelCap": { "cap": 19, "boss": { "key": "whitney", "name": "Whitney" } }, "playTime": { "h": 3, "m": 7 },
+    "lives": { "left": 19, "used": 1 },
     "location": { "id": 177, "gen": 4, "name": "Route 29", "at": 1762790000000,
                   "battle": { "kind": "wild", "species": 245, "name": "Suicune", "level": 40, "legendary": "legendary", "sprites": { "…": "…" } } },
     "party": [{
       "slot": "p1", "key": "a", "area": "route-29", "areaName": "Route 29",
-      "species": 17, "name": "Pidgeotto", "nickname": "Pip", "level": 18,
+      "species": 17, "form": 0, "name": "Pidgeotto", "nickname": "Pip", "level": 18,
       "hp": 20, "maxHp": 30, "status": "", "fainted": false, "item": { "id": 245, "name": "Poison Barb" },
       "shiny": true, "egg": false, "dead": false, "alive": true, "inParty": true, "legendary": null,
       "sprites": {
@@ -110,11 +112,19 @@ Every data endpoint takes `?lang=en|de|fr|es|it` for Pokémon, item and place na
 
 Field notes:
 
-- `run.mode`: `soullink` (2–4 players) or `nuzlocke` (one player). `run.gen`: 1–5. `run.status`: `null` while the
-  run is on, else `{ state: "failed" | "won" | "ended", reason, at, by }`.
+- `run.mode`: `soullink` (2–4 players), `nuzlocke` (one player) or `together` (3.0, Play together: 2–4 players in their own games, no challenge – no encounters, deaths or a status; teams, badges and the log as usual). `run.gen`: 1–5. `run.status`: `null` while the
+  run is on, else `{ state: "failed" | "won" | "ended", reason, at, by }` – `reason` when souldew ended it: `wipe`,
+  `blackout`, `deathless` or `lives`.
 - `run.rules`: the run's rules with souldew's defaults filled in (SoulLink: `typeClause`, `dupes`, `shinyClause`,
   `gifts`, `levelCaps`, `failKillsPair`, …; Nuzlocke: `blackout`, `deathless`, `dupes`, `statics`, `nicknames`,
-  `levelCaps` (`false` / `"warn"` / `"strict"`), …).
+  `levelCaps` (`false` / `"warn"` / `"strict"`), …). `lives` is `0` while the lives rule is off.
+- `run.lives`: `null` unless the run plays with lives. `total`: lives per pool; `pool`: `shared` (one pool for the run –
+  always so in a Nuzlocke) or `player` (each player their own). `left` / `used`: the shared pool, `null` with a pool
+  per player – then read `players[].lives`. Every death costs one life: one per Pokémon that fell (in a SoulLink not
+  its partners that die with it), bonus Pokémon included; an undone death gives it back. The death that takes the last
+  life ends the run (`run.status.reason: "lives"`).
+- `players[].lives`: `{ left, used }` of the pool this player spends from (the shared one or their own), `null` without
+  lives.
 - `players[].color`: the player's colour in souldew (p1 blue, p2 pink, p3 green, p4 violet). `live`: the game sent
   data in the last 10 minutes. `badges`, `playTime`, `levelCap` and `location` are `null` until the game has been
   read. `levelCap`: HeartGold/SoulSilver's curated caps, else the vanilla gym aces of Gen 1/2; `null` when the run
@@ -125,7 +135,9 @@ Field notes:
   `hp`/`maxHp` `null` when unknown; `status`: `slp psn tox brn frz par` or `""`; `fainted`: 0 HP; `dead`: its link is
   in the graveyard; `alive`: neither. `item`: the held item (`name` from the Gen 3–5 tables, `null` in Gen 1/2) or
   `null`. `area` / `areaName`: the encounter area it counts for (`null` = not tracked). `legendary`:
-  `"legendary"`, `"mythical"` or `null`. `inParty: false` marks a link member that sits in the box.
+  `"legendary"`, `"mythical"` or `null`. `form`: the game's form number (`0` = the species' own; a Mega, an Alolan
+  form, Rotom's appliances …) – `species`, `name` and `sprites` stay the species'. `inParty: false` marks a link member that sits in the box. An egg isn't
+  listed until it hatches (its species would give away what hatches – in a randomized game a surprise).
 - `links[]`: every area where all players caught something (`alive`) or whose group died (`dead`), with each
   player's Pokémon (`null` if none). In a Nuzlocke a link has one member.
 - `encounters[]`: every area with any result, in the order they happened. `state`: `alive`, `dead`, `failed`
@@ -133,7 +145,7 @@ Field notes:
   With the rule "a missed encounter costs the whole pair/group" off (`run.rules.failKillsPair: false`), the
   others' catches of a `failed` area stay usable – `results` shows whose they are.
 - `graveyard[]`: dead links, newest first, with the killer when souldew saw the battle.
-- `feed[]`: the 20 newest log entries (`catch`, `death`, `badge`, `evolve`, …).
+- `feed[]`: the 20 newest log entries (`catch`, `death`, `badge`, `evolve`, …). A `linkBattle` entry also has `winners`, `losers`, `draw`, `battles` and `wager` (as the `link-battle` event), a `raid` entry `won`, `players`, `mvp`, `survivors`, `ms` and `size` (as the `raid` event).
 - Times are milliseconds since 1970 (`Date.now()`).
 
 ## Live events (Server-Sent Events)
@@ -167,6 +179,8 @@ needed; `hello` with `run: null` means there is no run any more. Every event's d
 | `battle-end` | `slot, kind, species, name` |
 | `legendary` | Same as `encounter`, for a wild legendary or mythical |
 | `coffee` | The coffee pop-up (below) |
+| `link-battle` | `winners: [slots], losers: [slots], draw, battles, wager` – a link battle between the players (3.0) once every player's souldew read the same result; `wager`: the in-game money (₽) the losers paid, 0 for none |
+| `raid` | `won, players: [slots], mvp, survivors: [slots], ms, size` – a raid is over (3.0): the players fought one trainer with a shared HP pool; `mvp`: who took the most off the pool, `survivors`: whose team still stood, `ms`: how long it took, `size`: the trainer's Pokémon |
 
 `mon` is `{ slot, key, species, name, nickname, level, shiny, sprites }`.
 

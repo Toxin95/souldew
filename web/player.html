@@ -141,6 +141,10 @@
     // own (applySkip below).
     desmume_advanced_timing: 'disabled',
     lockMouse: 'disabled', // melonDS/DeSmuME report supportsMouse → EmulatorJS would pointer-lock on every click
+    // the keyboard stays EmulatorJS' 12 game buttons only: with direct input the core's own RetroArch hotkeys (F1 menu,
+    // Space fast-forward, P pause, H reset …) would act on keys the player gave to a game button or a shortcut
+    keyboardInput: 'disabled',
+    altKeyboardInput: 'disabled',
     'save-save-interval': '15',
   };
   // No pointer lock at all in here (EmulatorJS' canvas click handler, RetroArch's mouse grab): the mouse must
@@ -468,6 +472,28 @@
     }
     return { x, y, w, h };
   }
+  // Pixels at any size (lib/pixelscale.mjs): RetroArch draws into a buffer of the canvas's own size in device pixels,
+  // with hard edges – at an uneven factor some game pixels come out a screen pixel wider than others. The box shrinks
+  // to a whole multiple of the game's picture when that costs little (sharp: up to SHARP_LOSS of the area, "Whole
+  // pixels only" – ?px=whole, setWholePixels – up to the usual ~15 %); the frame's black shows around it. No transform
+  // and no faked pixel ratio: the pointer (DS touch) stays exactly where RetroArch measures it.
+  const SHARP_LOSS = 0.06;
+  let wholePixels = q.get('px') === 'whole';
+  let pxScale = null;
+  import('/lib/pixelscale.mjs').then((m) => { pxScale = m; fit(); }, () => {});
+  const PICTURE = { gba: { w: 240, h: 160 }, gbc: { w: 160, h: 144 }, gb: { w: 160, h: 144 } };
+  function fit() {
+    const box = document.getElementById('game');
+    if (!pxScale || !box) return;
+    const src = system === 'nds' ? (sideBySide ? { w: 512, h: 192 } : { w: 256, h: 384 }) : PICTURE[system];
+    if (!src) return;
+    const s = pxScale.sharpScale(src, { w: innerWidth, h: innerHeight }, window.devicePixelRatio || 1, { whole: true, maxLoss: wholePixels ? pxScale.WHOLE_MAX_LOSS : SHARP_LOSS });
+    // (inline: EmulatorJS sets the element's classes itself)
+    Object.assign(box.style, s.whole
+      ? { inset: 'auto', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', width: `${s.w}px`, height: `${s.h}px` }
+      : { inset: '', left: '', top: '', transform: '', width: '', height: '' });
+  }
+  addEventListener('resize', fit);
   // WebGL canvases without preserveDrawingBuffer read back empty outside the frame that drew them.
   // A rAF callback queued from outside a frame runs after EmulatorJS' own one in the same frame, so the
   // buffer is still intact there. If that still reads black we fall back to RetroArch's own screenshot
@@ -1114,6 +1140,8 @@
       cutAudio();
       return GM().restart();
     },
+    /** Settings › Controls / Controller changed while the game runs: { controls, pads } as in config. */
+    setControls: (config) => setControls(config),
     /** 1–4, or Infinity: as fast as this computer can. */
     setSpeed(ratio) {
       ratio = ratio === Infinity ? Infinity : Math.max(1, Number(ratio) || 1);
@@ -1270,6 +1298,18 @@
         gl: glLog.slice(),
       };
     },
+    /**
+     * Diagnostics: the controller table EmulatorJS really plays with (game button → keyboard code and controller label)
+     * next to the one souldew handed it – EmulatorJS keeps settings of its own, which could win over ours.
+     */
+    padInfo() {
+      const table = (set) => Object.fromEntries(Object.entries(set?.[0] || {}).map(([k, v]) => [k, [v?.value ?? null, v?.value2 ?? null]]));
+      try {
+        return { player: 'emulatorjs', live: table(E()?.controls), ours: table(window.EJS_defaultControls), device: E()?.gamepadSelection?.[0] ?? null };
+      } catch (e) {
+        return { player: 'emulatorjs', error: String(e?.message || e) };
+      }
+    },
     /** Timing and sound facts for "Save diagnostics": the sound card, the pacing, the last measuring window, totals. */
     perf() {
       const ac = GM()?.Module?.AL?.currentCtx?.audioCtx;
@@ -1297,8 +1337,16 @@
         skip1x = String(v); // the page's choice for 1× – fast-forward picks its own (applySkip)
         return applySkip();
       }
-      if (/screens?_layout$/.test(k)) sideBySide = /left/i.test(v);
+      if (/screens?_layout$/.test(k)) {
+        sideBySide = /left/i.test(v);
+        fit();
+      }
       E().menuOptionChanged(k, v);
+    },
+    /** Settings › "Whole pixels only" switched while playing. */
+    setWholePixels(on) {
+      wholePixels = !!on;
+      fit();
     },
     fullscreen: () => document.documentElement.requestFullscreen?.(),
   };
@@ -1360,15 +1408,26 @@
     window.parent?.postMessage({ type: 'emu-started', core: E().getCore(), system: E().getCore(true) }, location.origin);
   };
   const forwardKey = (e, down) => window.parent?.postMessage({
-    type: 'emu-key', key: e.key, code: e.code, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey, down, repeat: e.repeat,
+    type: 'emu-key', key: e.key, code: e.code, keyCode: e.keyCode, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey, down, repeat: e.repeat,
+    blur: e.blur || undefined,
   }, location.origin);
-  window.addEventListener('keydown', (e) => forwardKey(e, true));
+  let hotkeys = null; // the shortcuts' keys (Settings › Controls – lib/controls.mjs resolveHotkeys), handled by the play view
+  // (capture: before EmulatorJS' own key listener, which presses the game buttons)
+  window.addEventListener('keydown', (e) => {
+    forwardKey(e, true);
+    // a shortcut's exact key belongs to the play view: EmulatorJS never sees it (Shift+R as reset while R is the B
+    // button), and Tab fast-forwards here instead of moving the focus out of the game (before the controls are read: Tab)
+    if (controlsLib ? controlsLib.isHotkeyKey(e, hotkeys) : e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
   window.addEventListener('keyup', (e) => forwardKey(e, false));
   // Focus left the game while keys were held (alt-tab, a click outside): the keyups never come. End the turbo and
   // let go of every game button – otherwise the player keeps walking in one direction when they come back.
   let release = () => {};
   window.addEventListener('blur', () => {
-    forwardKey({ key: 'Tab', code: 'Tab' }, false);
+    forwardKey({ key: 'Tab', code: 'Tab', blur: true }, false); // ends a held fast-forward
     release();
   });
 
@@ -1378,8 +1437,11 @@
   // most controller-like one. EmulatorJS gives player 1 to whatever the browser lists first – on Windows that can be a
   // USB microphone (issue #2), and the real controller then pressed nothing. So its gamepad events go through here:
   // only the chosen device's reach the game, always as player 1.
-  function startPads(c, wanted) {
-    const idx = Object.fromEntries(c.BUTTONS.map((b) => [b.id, b.ejs]));
+  let padWanted = null; // config.pads.device – Settings › Controller › "Controller to use"
+  let padActions = {}; // controller shortcuts: standard button index → action (lib/controls.mjs padActions, set with the controls)
+  function startPads(c) {
+    const joypad = c.BUTTONS.filter(c.isJoypad); // (not the 3DS half tilt)
+    const idx = Object.fromEntries(joypad.map((b) => [b.id, b.ejs]));
     const stick = { up: false, down: false, left: false, right: false };
     const held = {};
     let chosen = null; // `${id}_${index}` of the device that plays (EmulatorJS' name for it)
@@ -1389,11 +1451,11 @@
       try { GM()?.simulateInput(0, idx[dir], on ? 1 : 0); } catch { /* core not ready */ }
     };
     release = () => {
-      for (const b of c.BUTTONS) try { GM()?.simulateInput(0, b.ejs, 0); } catch { /* core not ready */ }
+      for (const b of joypad) try { GM()?.simulateInput(0, b.ejs, 0); } catch { /* core not ready */ }
       for (const d of Object.keys(stick)) stick[d] = false;
     };
     const choose = () => {
-      const pad = c.pickPad(navigator.getGamepads?.() || [], wanted);
+      const pad = c.pickPad(navigator.getGamepads?.() || [], padWanted);
       const name = pad ? `${pad.id}_${pad.index}` : null;
       if (name !== chosen) {
         if (chosen) release(); // a new device: nothing stays pressed from the old one
@@ -1432,7 +1494,6 @@
         g.loop();
       }
     };
-    const HOT = { 7: 'turbo', 6: 'pause', 16: 'pause' };
     let wasMuted = false;
     setInterval(() => {
       route(); // as soon as EmulatorJS is there – a controller may appear before the game runs
@@ -1447,19 +1508,41 @@
       set('right', x > 0.5);
       set('up', y < -0.5);
       set('down', y > 0.5);
-      for (const [i, action] of Object.entries(HOT)) {
-        const on = !!pad.buttons[i]?.pressed;
-        if (on && !held[i]) window.parent?.postMessage({ type: 'emu-pad', action }, location.origin);
-        held[i] = on;
-      }
+      for (const m of c.padHotkeyPresses(pad, padActions, held, muted)) window.parent?.postMessage(m, location.origin);
     }, 16);
   }
-  // Key mapping from Settings › Controls (config.controls) – read once before EmulatorJS boots.
+  // Settings › Controls and › Controller changed while the game runs (play.mjs → __emu.setControls): the game often
+  // keeps running in the corner while the player re-binds buttons, and a reset doesn't load this page again
+  // (ticket #18). EmulatorJS looks every key and gamepad event up in its controls table, so the new bindings go there.
+  let controlsLib = null;
+  let controlsSig = '';
+  function setControls(config) {
+    const c = controlsLib;
+    const sig = JSON.stringify([config?.controls || null, config?.pads || null]);
+    if (!c || sig === controlsSig) return; // (the play view hands them over once the game runs – mostly what was read at start)
+    controlsSig = sig;
+    const table = c.ejsControls(config?.controls, undefined, config?.pads)[0];
+    padWanted = config?.pads?.device || null;
+    hotkeys = c.resolveHotkeys(config?.controls);
+    padActions = c.padActions(config?.pads);
+    window.parent?.postMessage({ type: 'emu-pad', action: 'ffHold', down: false }, location.origin); // (held under the old buttons)
+    release(); // what was held under the old buttons
+    // (not booted yet: EmulatorJS still takes the table it was handed – the same object, so it is updated in place)
+    if (window.EJS_defaultControls?.[0]) Object.assign(window.EJS_defaultControls[0], table);
+    const now = E()?.controls?.[0];
+    if (now && now !== window.EJS_defaultControls?.[0]) for (const [n, v] of Object.entries(table)) now[n] = { ...(now[n] || {}), ...v };
+  }
+  // Key mapping from Settings › Controls (config.controls) – read before EmulatorJS boots.
   Promise.all([import('/lib/controls.mjs'), fetch('/api/status').then((r) => r.json()).catch(() => null)])
     .then(async ([c, st]) => {
       await c.detectLayout(st?.config?.lang); // keyCodes follow the printed letters (QWERTZ, AZERTY …)
       window.EJS_defaultControls = c.ejsControls(st?.config?.controls, undefined, st?.config?.pads);
-      startPads(c, st?.config?.pads?.device || null);
+      controlsLib = c;
+      controlsSig = JSON.stringify([st?.config?.controls || null, st?.config?.pads || null]);
+      padWanted = st?.config?.pads?.device || null;
+      hotkeys = c.resolveHotkeys(st?.config?.controls);
+      padActions = c.padActions(st?.config?.pads);
+      startPads(c);
     })
     .catch((e) => console.warn('controls not applied', e))
     .then(() => pacerReady)
@@ -1476,5 +1559,6 @@
     });
 })();
 </script>
+<script type="module" src="/lib/browserworld.mjs"></script>
 </body>
 </html>

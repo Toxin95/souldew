@@ -108,7 +108,7 @@ test('moveToGraveyard moves a party mon into the last box and keeps the save val
   assert.equal(after.boxes[0].key, dead);
   assert.equal(after.boxes[0].nickname, 'Zwei');
   assert.ok(after.boxes[0].checksumOk);
-  assert.throws(() => moveToGraveyard(file, after.party.map((m) => m.key)), /leer/);
+  assert.throws(() => moveToGraveyard(file, after.party.map((m) => m.key)), { code: 'teamEmpty' });
 });
 
 test('a save DeSmuME cut after the last written byte (256 KB + 1, first partition only) still parses', () => {
@@ -124,5 +124,5 @@ test('a save DeSmuME cut after the last written byte (256 KB + 1, first partitio
   assert.equal(s.counter, 3);
   assert.equal(s.trainer.name, 'Lou');
   assert.equal(s.party.length, 1);
-  assert.throws(() => parseHgssSave(sav.slice(0, 0x20000), data), /zu klein/);
+  assert.throws(() => parseHgssSave(sav.slice(0, 0x20000), data), { code: 'saveTooSmall', vars: { size: 0x20000 } });
 });

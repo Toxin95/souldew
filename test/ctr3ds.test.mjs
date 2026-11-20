@@ -12,7 +12,7 @@ import { romFeatures } from '../shared/live/features.mjs';
 
 const DATA = mkdtempSync(join(tmpdir(), 'sls-ctr3ds-'));
 process.env.SLS_DATA_DIR = DATA;
-const { splitMessages, command, checkCommands, saveStamp, CMD, MSG } = await import('../server/lib/ctr.mjs');
+const { splitMessages, command, checkCommands, ctrWriteOk, saveStamp, CMD, MSG, CTR_WRITE_RANGES } = await import('../server/lib/ctr.mjs');
 const { ctrData, romDataFor } = await import('../server/lib/romloc.mjs');
 test.after(() => rmSync(DATA, { recursive: true, force: true }));
 
@@ -201,6 +201,50 @@ test('commands a page may send: known types and sane sizes only', () => {
   bad(input.subarray(0, 20)); // cut off
 });
 
+test('a cheat (WRITE): a few bytes inside one page of the game\'s heaps, the bytes expected there and the new ones', () => {
+  const write = (addr, len, extra = 0) => {
+    const p = Buffer.alloc(12 + 2 * len + extra);
+    p.writeUInt32LE(7, 0);
+    p.writeUInt32LE(addr, 4);
+    p.writeUInt32LE(len, 8);
+    return p;
+  };
+  // Sun's Medicine pocket, X/Y's (application heap), the old linear heap
+  for (const [a, n] of [[0x330d647c, 4], [0x08c67ece, 2], [0x14001000, 256], [0x3ffffffc, 4]]) {
+    assert.equal(ctrWriteOk(write(a, n)), true, a.toString(16));
+    assert.equal(checkCommands(command(CMD.WRITE, write(a, n))).length, 8 + 12 + 2 * n);
+  }
+  const bad = (p) => {
+    assert.equal(ctrWriteOk(p), false);
+    assert.throws(() => checkCommands(command(CMD.WRITE, p)), (e) => e.status === 400 && e.code === 'badCommand');
+  };
+  bad(write(0x00100000, 4)); // the game's code
+  bad(write(0x1f000000, 4)); // VRAM
+  bad(write(0x07fffffc, 8)); // starts before the heap
+  bad(write(0x330d6ffe, 4)); // across a page
+  bad(write(0x330d647c, 0));
+  bad(write(0x330d6000, 257)); // too long
+  bad(write(0x330d647c, 4, 1)); // the length doesn't match
+  bad(Buffer.alloc(8));
+});
+
+test('a cheat is written by the core itself (souldew_write_memory), into the same heaps the server and the host allow', () => {
+  const host = readFileSync(new URL('../native/ctr-host/ctrhost.c', import.meta.url), 'utf8');
+  const patch = readFileSync(new URL('../native/azahar-patch/souldew-memory.patch', import.meta.url), 'utf8');
+  // the host's ranges are the server's
+  const table = host.match(/write_ranges\[\]\[2\] = \{([\s\S]*?)\};/)[1];
+  const ranges = [...table.matchAll(/\{(0x[0-9A-F]+), (0x[0-9A-F]+)\}/gi)].map((m) => [Number(m[1]), Number(m[2])]);
+  assert.deepEqual(ranges, CTR_WRITE_RANGES);
+  // the core exports the write (Windows: RETRO_API, macOS: the .def list) and keeps to Azahar's heap constants
+  assert.match(patch, /^\+RETRO_API bool souldew_write_memory\(uint32_t addr, const void\* data, uint32_t size\)/m);
+  assert.match(patch, /^\+_souldew_write_memory$/m);
+  for (const k of ['HEAP_VADDR', 'LINEAR_HEAP_VADDR', 'NEW_LINEAR_HEAP_VADDR']) assert.ok(patch.includes(`inside(Memory::${k}, Memory::${k}_END)`), k);
+  assert.match(patch, /memory\.WriteBlock\(\*process, addr, data, size\)/);
+  // the host takes it when the core has it – the page scan only for an older core
+  assert.match(host, /souldew_write_memory = dlsym\(lib, "souldew_write_memory"\)/);
+  assert.match(host, /if \(!souldew_write_memory\) return scan_write\(/);
+});
+
 test('the in-game save fingerprint: only the games\' save data on the SD card, changes when the game saves', () => {
   const dir = join(DATA, 'save');
   assert.equal(saveStamp(dir), null);
@@ -259,7 +303,8 @@ const write = (b) => new Promise((r) => (process.stdout.write(b) ? r() : process
 })();
 `;
 const { Writable } = await import('node:stream');
-const { spawn } = await import('node:child_process');
+const { fakeHostSpawn, killFakeHosts } = await import('./fixtures/fakehosts.mjs');
+test.afterEach(killFakeHosts); // (a test that failed half way leaves its stand-in host running)
 class FakeRes extends Writable {
   constructor({ hold = false } = {}) {
     super({ highWaterMark: 64 * 1024 });
@@ -283,7 +328,7 @@ const until = async (fn, ms = 10000) => {
 };
 const fakeSessions = async () => {
   const { CtrSessions } = await import('../server/lib/ctr.mjs');
-  return new CtrSessions({ spawn: (cmd, args, o) => spawn(process.execPath, ['-e', FAKE_HOST, '--', ...args], o) });
+  return new CtrSessions({ spawn: fakeHostSpawn(FAKE_HOST) });
 };
 const tools = { host: 'ctrhost', core: 'core', vulkan: 'vk' };
 

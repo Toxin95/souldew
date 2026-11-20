@@ -189,9 +189,9 @@ test('join through the server: a HeartGold invite, built from SoulSilver – the
     assert.equal(m.base.crc, crc32Hex(new Uint8Array(ss)));
     assert.equal(m.outputs.p2.matchesFriend, false);
     assert.match(m.outputs.p2.rom, /SoulSilver/);
-    const log = built.body.log.join('\n');
-    assert.match(log, /andere Edition des Spielepaars/);
-    assert.doesNotMatch(log, /weicht/);
+    const log = built.body.log.map((l) => l.code);
+    assert.ok(log.includes('romPairMate'), log.join());
+    assert.ok(!log.includes('romDiffers'), log.join());
     // the identity of the run is the host's: same room and secret, so the two apps sync
     assert.equal(m.room, 'room-pair-0123456789');
     assert.equal(m.id, 'abcd0123');
@@ -203,7 +203,7 @@ test('join through the server: a HeartGold invite, built from SoulSilver – the
       runId: hackPack.id, romId: rom.id, randomize: false, seeds: hackPack.randomizer.seeds, players: hackPack.players, buildFor: ['p2'], mode: 'soullink',
       expectedOutputs: hackPack.expectedOutputs, gameId: hackPack.game.id, hackId: 'some-hack',
     });
-    assert.match(hackBuild.body.log.join('\n'), /weicht vom Run-Paket ab/);
+    assert.ok(hackBuild.body.log.some((l) => l.code === 'romDiffers'), JSON.stringify(hackBuild.body.log));
   } finally {
     server.closeAllConnections();
     server.close();

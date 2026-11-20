@@ -107,6 +107,15 @@ test('meta: cleaned and cut to the contract, links and control characters out, f
   // `app` only as a version
   assert.equal(buildMeta({ eventId: 'e', headline: 'x', app: '2.6.0-beta.1' }).meta.app, '2.6.0-beta.1');
   assert.equal(buildMeta({ eventId: 'e', headline: 'x', app: 'evil' }).meta.app, undefined);
+  // the Hall of Fame's optional tags: generation 1–9, ROM hack and randomized as booleans – anything else left out
+  const tags = buildMeta({ eventId: 'e', kind: 'victory', headline: 'x', gen: 4, hack: false, randomized: true }).meta;
+  assert.deepEqual([tags.gen, tags.hack, tags.randomized], [4, false, true]);
+  assert.equal(metaProblem(tags), null);
+  const odd = buildMeta({ eventId: 'e', headline: 'x', gen: '4', hack: 'yes', randomized: 1 }).meta;
+  assert.ok(!('gen' in odd) && !('hack' in odd) && !('randomized' in odd));
+  assert.equal(buildMeta({ eventId: 'e', headline: 'x', gen: 12 }).meta.gen, undefined);
+  assert.equal(metaProblem({ ...tags, gen: 0 }), 'gen');
+  assert.equal(metaProblem({ ...tags, hack: 'no' }), 'hack');
 });
 
 test('link code and card PNG checks', () => {
@@ -226,6 +235,11 @@ test('card model: headline, killer, place and teams from the run doc', async () 
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
     const u = String(url);
+    // the game catalog (game titles, ROM hacks) as /api/catalog serves it
+    if (u.startsWith('/api/catalog')) {
+      const cat = JSON.parse(readFileSync(new URL('../shared/data/catalog.json', import.meta.url), 'utf8'));
+      return { ok: true, headers: { get: () => 'application/json' }, json: async () => cat };
+    }
     if (!u.startsWith('/shared/')) return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ games: [], hacks: [] }) };
     const body = readFileSync(new URL(`..${u}`, import.meta.url), 'utf8');
     return { ok: true, headers: { get: () => 'application/json' }, json: async () => JSON.parse(body) };
@@ -289,8 +303,54 @@ test('card model: headline, killer, place and teams from the run doc', async () 
   assert.equal(wipe.model.cause.species, 74, 'the last one to fall and its killer');
   const won = build('soullink-2-victory');
   assert.equal(won.event.kind, 'victory');
-  assert.equal(won.model.headline, 'Robin & Kim beat the Champion!');
-  assert.equal(won.model.cause.title, 'Volt', 'the strongest Pokémon still standing');
+  assert.equal(won.model.headline, 'Robin & Kim beat HeartGold!');
+  assert.equal(won.model.tag, 'Hall of Fame');
+
+  // the Hall of Fame card: the final team as linked groups, the run in numbers, its rules; the tags for the post
+  const pt = build('hof-soullink-2');
+  assert.equal(pt.model.headline, 'Lena & Tim beat Platinum!');
+  assert.deepEqual(pt.model.highlights.map((h) => h.text), ['Lena', 'Tim']);
+  const hof = pt.model.hof;
+  assert.equal(hof.groups.length, 6, 'the six living pairs – the dead ones are not in the final team');
+  assert.deepEqual(hof.groups.map((g) => g.mons.map((m) => m.name)), [['Blaze', 'Admiral'], ['Volt', 'Hawk'], ['Thorn', 'Slug'], ['Gengar', 'Spoon'], ['Chomp', 'Aura'], ['Halo', 'Claw']]);
+  assert.deepEqual(hof.groups[0].mons.map((m) => [m.slot, m.level, m.sub]), [['p1', 62, 'Infernape'], ['p2', 61, 'Empoleon']]);
+  assert.deepEqual(hof.boxes.map((b) => [b.value, b.label]), [['2', 'deaths'], ['33:05', 'played'], ['8', 'badges'], ['6', 'links alive']], 'the longest clock of the two');
+  assert.deepEqual(hof.rules, ['Level caps', 'Dupes clause', 'Type rule', 'Missed = link lost']);
+  assert.equal(pt.metaInput.detail, 'Run won with 6 alive and 2 lost on the way · 33:05 played');
+  const ptMeta = buildMeta(pt.metaInput).meta;
+  assert.equal(metaProblem(ptMeta), null);
+  assert.deepEqual([ptMeta.kind, ptMeta.game, ptMeta.gen, ptMeta.hack, ptMeta.randomized], ['victory', 'Pokémon Platinum Version', 4, false, false]);
+  assert.deepEqual(ptMeta.players, ['Lena', 'Tim']);
+  assert.equal(pt.event.id, eventIdFor('5e1a90bb', 'victory', { at: 1763040000000 + 30 * 86400e3 }), 'one id for the run: a partner’s post is the same event');
+
+  const em = build('hof-nuzlocke');
+  assert.equal(em.model.headline, 'Lena beat Emerald!');
+  assert.equal(em.model.hof.groups.length, 6);
+  assert.ok(em.model.hof.groups.every((g) => g.mons.length === 1));
+  assert.deepEqual(em.model.hof.rules, ['Hardcore', 'Dupes clause'], 'a hardcore Nuzlocke says so once');
+  assert.equal(em.model.hof.labels.attempt, 'Attempt #2');
+  assert.equal(em.model.hof.boxes[3].label, 'alive');
+
+  const b2 = build('hof-soullink-4-randomized');
+  assert.equal(b2.model.headline, 'Lena, Tim, Mo & Ida beat Black 2!');
+  assert.equal(b2.model.hof.groups.length, 5);
+  assert.ok(b2.model.hof.groups.every((g) => g.mons.length === 4 && g.mons.every(Boolean)));
+  assert.ok(b2.model.hof.rules.includes('Randomized'));
+  assert.equal(buildMeta(b2.metaInput).meta.randomized, true);
+
+  const us = build('hof-soullink-3-3ds');
+  assert.deepEqual(us.model.hof.boxes[1], { value: '30', label: 'days', tone: 'ink', icon: 'clock' }, 'no play time read: the days from start to win');
+  assert.equal(us.model.hof.boxes[2].label, 'caught', 'no badges (Alola): the catches');
+  assert.equal(us.model.headline, 'Lena, Tim & Kai beat Ultra Sun!');
+
+  // the short names in the other languages
+  const L2 = await import('../web/lib/liveshare.mjs');
+  const m = (id, hackId) => ({ game: { id, ...(hackId ? { hackId } : {}) } });
+  assert.equal(L2.shortGameName(m('pokemon-platinum'), 'de'), 'Platin');
+  assert.equal(L2.shortGameName(m('pokemon-black-2'), 'fr'), 'Noire 2');
+  assert.equal(L2.shortGameName(m('pokemon-yellow'), 'es'), 'Amarillo');
+  assert.equal(L2.shortGameName(m('pokemon-heartgold'), 'it'), 'Oro HeartGold');
+  assert.equal(L2.shortGameName(m('pokemon-firered', 'radical-red'), 'de'), 'Radical Red', 'a ROM hack keeps its name');
 
   // no file names, paths or invite codes anywhere on a card or in its text (streamer mode)
   for (const f of LIVE_FIXTURES) {
@@ -370,7 +430,10 @@ const seen = []; // every answer of the local server and every log line, checked
 const logs = [];
 const realConsole = { log: console.log, warn: console.warn, error: console.error };
 
-before(async () => {
+// (the start is kept: should it be cut short, `after` still waits for both servers and closes them – a server left
+// listening would keep the test file, and `npm test`, from ever ending)
+let starting;
+before(() => (starting = (async () => {
   bot = mockBot();
   await new Promise((r) => bot.server.listen(0, '127.0.0.1', r));
   process.env.SOULDEW_LIVE_URL = `http://127.0.0.1:${bot.server.address().port}`;
@@ -378,11 +441,14 @@ before(async () => {
   const { startServer } = await import('../server/app.mjs');
   app = await startServer({ port: 0, background: false });
   base = app.url;
-});
-after(() => {
+})()));
+after(async () => {
+  await starting?.catch(() => {});
   Object.assign(console, realConsole);
-  app?.server.close();
-  bot?.server.close();
+  for (const s of [app?.server, bot?.server]) {
+    s?.closeAllConnections?.();
+    s?.close();
+  }
   rmSync(DATA, { recursive: true, force: true });
 });
 

@@ -17,7 +17,7 @@ const ELSE = mkdtempSync(join(tmpdir(), 'sls-zip3ds-else-'));
 process.env.SLS_DATA_DIR = DATA;
 process.env.HOME = HOME; // "Search my Mac / PC" and the import look through ~/Downloads of this fake home
 process.env.USERPROFILE = HOME;
-const { listZip, extractZipEntry, entryFileName, freeBytes } = await import('../server/lib/zip.mjs');
+const { listZip, extractZipEntry, entryFileName, freeBytes, inflateRatioTooHigh, MAX_CD_BYTES, MAX_ZIP_ENTRIES, MAX_INFLATE_RATIO } = await import('../server/lib/zip.mjs');
 const { scanLibrary, importFiles, zipCtrGames, unpackZipGames, unpackLibraryZip, discoverRoms, ctrInfo } = await import('../server/lib/library.mjs');
 const { startServer } = await import('../server/app.mjs');
 test.after(() => {
@@ -172,6 +172,49 @@ test('extractZipEntry: a wrong CRC32, a short or an oversized entry leave nothin
   await assert.rejects(extractZipEntry(zip, { ...e, method: 14 }, join(dir, 'lzma.3ds')), (x) => x.zipCode === 'method');
   assert.ok(noPartFiles(dir));
   assert.deepEqual(readdirSync(dir).filter((n) => n.endsWith('.3ds')), []);
+});
+
+test('listZip refuses an oversized central directory or too many entries', () => {
+  const dir = mkdtempSync(join(ELSE, 'cd-'));
+  const cdSize = MAX_CD_BYTES + 1;
+  const bigCd = Buffer.alloc(cdSize + 22);
+  const eocd = cdSize;
+  bigCd.writeUInt32LE(0x06054b50, eocd);
+  bigCd.writeUInt16LE(1, eocd + 8);
+  bigCd.writeUInt16LE(1, eocd + 10);
+  bigCd.writeUInt32LE(cdSize, eocd + 12);
+  bigCd.writeUInt32LE(0, eocd + 16);
+  writeFileSync(join(dir, 'big-cd.zip'), bigCd);
+  assert.throws(() => listZip(join(dir, 'big-cd.zip')), /central directory too large/);
+
+  const many = Buffer.alloc(22);
+  many.writeUInt32LE(0x06054b50, 0);
+  many.writeUInt16LE(MAX_ZIP_ENTRIES + 1, 8);
+  many.writeUInt16LE(MAX_ZIP_ENTRIES + 1, 10);
+  writeFileSync(join(dir, 'many.zip'), many);
+  assert.throws(() => listZip(join(dir, 'many.zip')), /too many entries/);
+});
+
+test('extractZipEntry refuses a highly compressible deflate bomb before writing', async () => {
+  const dir = mkdtempSync(join(ELSE, 'ratio-'));
+  // zeros deflate to a tiny payload; declared size is honest, CRC would match – classic disk-fill bomb
+  const zeros = Buffer.alloc(2 * 1024 * 1024, 0);
+  const zip = join(dir, 'zeros.zip');
+  writeFileSync(zip, makeZip([{ name: 'a.3ds', data: zeros, method: 8 }]));
+  const [e] = listZip(zip);
+  assert.ok(e.compSize > 0 && e.uncompSize / e.compSize > MAX_INFLATE_RATIO);
+  assert.equal(inflateRatioTooHigh(e), true);
+  const out = join(dir, 'a.3ds');
+  await assert.rejects(extractZipEntry(zip, e, out), (x) => x.zipCode === 'tooLarge');
+  assert.ok(!existsSync(out));
+  assert.ok(noPartFiles(dir));
+  // high-entropy 3DS-like payload stays under the ratio and still unpacks
+  const game = fakeGame(512 * 1024);
+  writeFileSync(zip, makeZip([{ name: 'a.3ds', data: game, method: 8 }]));
+  const [ok] = listZip(zip);
+  assert.equal(inflateRatioTooHigh(ok), false);
+  await extractZipEntry(zip, ok, out);
+  assert.ok(readFileSync(out).equals(game));
 });
 
 test('entry names that leave the folder are refused', () => {

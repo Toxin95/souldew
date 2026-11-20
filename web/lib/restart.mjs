@@ -20,6 +20,7 @@ export function mySlotIn(m) {
 /**
  * Restart `oldManifest` (full manifest or just { id }) as a new run and build its games.
  * opts.rules: the old run's live doc rules (else they are read from its saved doc / manifest).
+ * opts.introSave: this computer's player starts from the intro save kept for the game (if there is one).
  * Resolves to { manifest, pack, mySlot, log }: the new full manifest, its invite pack
  * (what the other players import) and the slot this computer plays – the others keep theirs.
  * The caller should setRunId / setMe(mySlot, manifest.id) / reloadStatus afterwards.
@@ -42,7 +43,8 @@ export async function restartRun(oldManifest, opts = {}) {
     mySlot,
     gameTitle: hack?.name || (game ? gameTitle(game) : null),
   });
-  const res = await api.post('/api/runs/build', body);
+  // "Start from my intro save" (server/lib/introsave.mjs): only this computer's player, only their own save
+  const res = await api.post('/api/runs/build', opts.introSave ? { ...body, introSave: true, introSlot: mySlot } : body);
   // The Discord webhook is local (not part of the rules): carry this computer's over to the new run.
   try {
     const { webhook } = await api.get(`/api/runs/${old.id}/discord`);

@@ -8,8 +8,8 @@
 //          [--lang de]   (starts past the onboarding, in that language – for a screenshot of the library)
 //          [--emulators] (also installs melonDS and mGBA through the app, as the one-click button does – needs internet)
 // Linux CI has no screen: run it under xvfb-run.
-// The app always tries port 47390 first – this refuses to run while something (e.g. your installed souldew)
-// already listens there, so it never talks to an app it didn't start.
+// The app always tries port 47390 first. While something (e.g. your installed souldew) already listens there, this finds
+// the started app's own port (macOS / Linux) or refuses to run (Windows), so it never talks to an app it didn't start.
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
@@ -41,10 +41,19 @@ const portTaken = () => new Promise((r) => {
   s.once('error', () => r(false));
 });
 
-if (await portTaken()) {
+// Taken (your own souldew is open): the app it starts then falls back to a random port – on macOS / Linux that port is
+// asked of the started process itself (lsof), so this still never talks to an app it didn't start.
+const taken = await portTaken();
+if (taken && process.platform === 'win32') {
   console.error(`Port ${PORT} is already in use – quit the running souldew (or whatever listens there) first.`);
   process.exit(2);
 }
+/** The port the started app listens on (macOS / Linux, lsof), or null while it doesn't yet. */
+const childPort = (pid) => {
+  const r = spawnSync('lsof', ['-a', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-P', '-n', '-Fn'], { encoding: 'utf8' });
+  const m = /^n(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)$/m.exec(r.stdout || '');
+  return m ? Number(m[1]) : null;
+};
 
 const profile = mkdtempSync(join(tmpdir(), 'souldew-smoke-'));
 if (opt('lang')) writeFileSync(join(profile, 'config.json'), JSON.stringify({ onboarded: true, lang: opt('lang'), playerName: 'Smoke' }));
@@ -60,12 +69,21 @@ const check = (ok, what) => {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`);
   if (!ok) failures.push(what);
 };
-const base = `http://127.0.0.1:${PORT}`;
+let port = PORT;
+let base = `http://127.0.0.1:${PORT}`;
 
 try {
   let status = null;
   const started = Date.now();
   while (Date.now() - started < timeoutMs && exited === null) {
+    if (taken) {
+      port = childPort(child.pid);
+      if (!port) {
+        await sleep(1000);
+        continue;
+      }
+      base = `http://127.0.0.1:${port}`;
+    }
     try {
       const res = await fetch(`${base}/api/status`, { headers: { 'x-soullink': '1' } }); // the status is for the app's own pages
       if (res.ok) {
@@ -77,7 +95,7 @@ try {
     }
     await sleep(1000);
   }
-  check(!!status, `embedded server answers on ${PORT} (${Math.round((Date.now() - started) / 1000)} s)`);
+  check(!!status, `embedded server answers on ${port}${taken ? ` (${PORT} was taken)` : ''} (${Math.round((Date.now() - started) / 1000)} s)`);
   if (status) {
     console.log(`     platform ${status.platform}/${status.arch}, java ${status.java?.version} (${status.java?.bin})`);
     check(status.app === true, dev ? 'runs as the desktop app (data in the profile folder)' : 'runs as the packaged app (data in the profile folder)');

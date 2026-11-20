@@ -166,7 +166,7 @@ retail Italian Ruby (`AXVI` rev 1, CRC32 `9305E793`) loads `gPlayerParty` `0x030
 (`scripts/rom-matrix/plans/ruby-sapphire.json`): team, place sign, a wild battle. Sapphire and the French and Spanish
 games are taken to share it and weren't at hand. Badges aren't read there, as in the German games.
 
-**Other-language Emerald** (`emerald_eu`): the English game's RAM, address for address. pokebot-gen3's
+**French, Italian and Spanish Emerald** (`emerald_eu`; the German game has its own entry, `emerald_de`): the English game's RAM, address for address. pokebot-gen3's
 `modules/data/symbols/patches/language/pokeemerald.yml` overrides, for D/F/I/S, only ROM symbols and one EWRAM symbol
 souldew doesn't read (`sSavedPokeblockData`); `gMain`, `gSaveBlock1Ptr`/`gSaveBlock2Ptr`, `gPlayerParty`, `gEnemyParty`,
 `gBattleMons`, `gBattleTypeFlags`, `gMapHeader` … get a Japanese override alone. The retail Italian ROM (`BPEI`, CRC32
@@ -428,4 +428,64 @@ Gen 3 `68` (pokeruby/pokefirered `#define ITEM_RARE_CANDY 68`, pokeemerald enum 
 
 Gen 4/5 find SaveData through the party reader: its `saveBase` (pointer chain) or, after a scan, party address +
 8 − `partyMonsOffset`. A bag with nothing in it is refused (zeros pass every other check). Rare Candy is in the
-Items pocket in Gen 1–3 and in the Medicine pocket in Gen 4/5.
+Items pocket in Gen 1–3 and in the Medicine pocket in Gen 4–7.
+
+**Gen 6/7 (3DS, souldew's own player – researched 2026-11-15).** The bag is the save data's MyItem block, kept at a
+fixed address in the game process per game and update (the 3DS game's virtual memory; `addresses.json`
+`partyAddrs[].bag`). Pockets per PKHeX `PlayerBag6XY/6AO/7SM/7USUM.cs`; Gen 6 slots { u16 id, u16 count }, Gen 7 slots
+one u32 (`InventoryItem7.cs`): id bits 0–9, count 10–19, place in the Free Space pocket 20–29 (0 = not in it), NEW
+bit 30. 999 per slot, Rare Candy (50) in Medicine.
+
+| Game | Bag (Items pocket) | Medicine | Source |
+|---|---|---|---|
+| X/Y 1.5 | `0x08C67564` | `+0x968` (64) | Multi-PokemonFramework (semaj14, GPL-3) `Sources/Folders/Trainer.cpp` `Pouch::Items/Medicines` (its money `0x08C6A6AC` sits right before the trackers' badge byte `0x08C6A6B0`) |
+| X/Y 1.0 | `0x08C67554` | same | [derived] 1.5 − `0x10`, the distance the party and the badges move between the updates – **not checked in a game** |
+| ORAS 1.4 | `0x08C6EC70` | `+0x970` (64) | Multi-PokemonFramework (money `0x08C71DC0` right before the badges `0x08C71DC4`) |
+| ORAS 1.0 | `0x08C6AC80` | same | [derived] 1.4 − `0x3FF0` like the party and badges – **not checked in a game** |
+| Sun/Moon | `0x330D5934` | `+0xB48` (64) | Multi-PokemonFramework (1.2); **checked live in Sun 1.0**: the object's vtable at `0x330D5930` (PokeReader's bag base), the pockets, then the game's own pointers to its six pockets right behind the block (`0x330D6714`: Medicine, Items, TMs, Berries, Key Items, Z-Crystals); Hala's Sparkling Stone = `0x4000074D` (NEW, Free Space 0) |
+| Ultra Sun/Ultra Moon | `0x33011934` | `+0xB74` (60) | Multi-PokemonFramework (1.2: Medicine `0x330124A8`), PokeReader's bag base `0x33011930` (4 before, as in Sun); **checked live in Ultra Moon 1.0** (2026-11-18, US cartridge): the same address as 1.2, the game's pointers to its seven pockets right behind the block (`0x3301275C`: Medicine, Items, TMs, Berries, Key Items, Z-Crystals, Rotom Powers – there from Kukui's intro on, the bag itself all zeros until the game puts a first item in) |
+
+Every slot of every pocket has to look like an item (id ≤ the game's last, count 1–999, Medicine and TM ids from
+PKHeX's lists), and when the pointer table is there it must point at exactly these pockets. An empty bag is only
+taken where that table vouches for it (2.8.4 – 2.8.3 refused every empty bag, and the Sun/Moon/USUM bag stays empty for
+a while after the starter: the cheats said "not found" there).
+
+**When the bag isn't at a known address (2.8.4, `locateCtrBag`).** The 3DS player reads up to six windows of 64 KB
+at a time next to the game's own regions (`__emu.watch`), ±`0x50000` around each known address, overlapping by more
+than a bag. Sun/Moon/USUM are found by the pocket table alone (the words at T that point at exactly T − size + each
+pocket's offset, every slot of that block an item of its pocket): over the whole heap `0x30000000–0x34800000` of Sun
+1.0 and Ultra Moon 1.0 exactly one place passes – the bag. X/Y and ORAS (no table seen there) by their slots: every
+pocket packed from the front, items in at least two pockets, no item twice, and only one such place in the range. (The
+slots alone, with items in one pocket allowed, pass at a few hundred places in those Gen 7 heaps; with two pockets
+required, none.) The place found is kept for the session; the diagnostics log every address tried and why it wasn't the
+bag (`unread`, `empty`, `pointers`, `slot <pocket>#<n> <value>`) and how the search went.
+The 3DS host writes through the core's FCRAM block (the stack page in the libretro memory map points into it; the page
+is found by content and only kept where the change shows at the game's address – `native/ctr-host/ctrhost.c`
+`mem_write`), only inside the heaps and only while the bytes are still what souldew read.
+
+---
+
+## 8. The place sign: copies of ROM data in RAM (2.8.0)
+
+Every generation keeps a copy of the current map's header in RAM, made from the ROM's own bytes – so the copy can be
+checked against the ROM (and found again) in any language, where a fixed address is only verified for the build it
+comes from. `shared/live/location.mjs` reads the place from these copies; `server/lib/romloc.mjs` hands over the ROM's
+side (cache VERSION 19).
+
+| Game | Copy in RAM | ROM side | Source / check |
+|---|---|---|---|
+| Red/Blue | `wCurMapHeader` `0xD367` (10 bytes: tileset, height, width, blocks/text/script pointers, connections), `wCurMap` 9 bytes before | MapHeaderPointers `00:01AE` + MapHeaderBanks `03:423D` | [sym] `pokered.sym:19176`; `home/overworld.asm` LoadMapHeader copies `wCurMapHeaderEnd − wCurMapHeader` bytes. Live: Red US, 2026-11-16 |
+| Yellow | `0xD366`, `wCurMap` `0xD35D` | `3F:41F2` / `3F:43E4` | [sym] `pokeyellow.sym:22393` (not run live) |
+| Gold/Silver | `wMapPartial` `0xD081` + `wMapAttributes` (5 + 12 bytes) | MapGroupPointers `25:40ED`, 9-byte map headers, 12-byte attributes | [sym] `pokegold.sym:41357`, `pokesilver.sym:41356`; `home/map.asm` CopyMapPartial / CopyMapAttributes. Live: Silver |
+| Crystal | `0xD198` + attributes | `25:4000` | [sym] `pokecrystal.sym:55845` (= pokecrystal11). Live: Crystal US; Crystal Legacy keeps it 11 bytes further (romwram shift) |
+| Gen 3 | `gMapHeader` (struct MapHeader) | gMapGroups: events pointer (+0x04) and section (+0x14) per map – not the layout pointer, which LoadCurrentMapData replaces with the save's layout (Trick House, Battle Pyramid) | `pokeemerald src/overworld.c` LoadCurrentMapData. Emerald: 518 maps, 11 events pointers shared, never across sections |
+| Gen 4 | – (the map id lives in the save data) | – | the save data must be the party reader's, or hold a trainer: PKHeX Trainer1 (name 1–7 chars + 0xFFFF, money ≤ 999,999, gender 0/1) at SaveData + 0x74 (HGSS) / 0x7C (Pt) / 0x278 (DP). Live: Pearl, Platinum (the name, TID/SID, 3000 money, language 2 at +0x19) |
+| Black/White | zone header copy (48 bytes, own id +0x16, parent +0x18, id again +0x30) | a/0/1/2 file 0 | 2.7.5 |
+| Black 2/White 2 | main pointer + `0x41B2C` (48 bytes; parent at +0x18, name at +0x1A, the zone id after it at +0x30 – the header holds no own id) | a/0/1/2 file 0 | NDS-Ironmon-Tracker parentMapHeader `0x41B44` = +0x18, childMapHeader `0x41B5C` = +0x30. Live: Black 2 and White 2 US, 2026-11-16 (room 428 → parent 427 Aspertia City, 435, 438, 437). At power-on the pointer is already set and the copy zeroed: zone 0, Black City – what the old reader showed |
+
+Where the copy isn't at the fixed address, it is searched for (Game Boy: 8 KB WRAM, ≤ 1 ms, every 2 s at most; DS: 4 MB
+main RAM, ~20–25 ms, every 3 s, after four searches without a hit every 30 s – as Black/White's since the 2.7.5
+review), only a single copy counts, and its address is remembered in the live reader's state and re-checked (a few
+bytes) at every poll. Black 2/White 2 also take over the rest of the Black/White hardening: a remembered copy keeps
+the place for a few mismatching polls, and an English game's copy behind its own pointer counts when the zone after
+it and the parent in it are the ROM's and most bytes agree (a header the game changes while it runs) – never zone 0.

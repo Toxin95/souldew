@@ -11,21 +11,25 @@ import { join, extname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import zlib from 'node:zlib';
-import { romLocations, gen3MapTable } from '../../shared/live/romloc.mjs';
-import { romSpecies, gen3ItemNames, gen3MoveNames, gen3MoveMap } from '../../shared/live/romspecies.mjs';
+import { romLocations, gen3MapTable, gen3MapHeaders, gen3RamMoved, gbMapHeaders } from '../../shared/live/romloc.mjs';
+import { romSpecies, gen3Forms, gen3ItemNames, gen3MoveNames, gen3MoveMap } from '../../shared/live/romspecies.mjs';
 import { romTypes } from '../../shared/live/romtypes.mjs';
 import { romCaps } from '../../shared/live/romcaps.mjs';
 import { gbWramShift } from '../../shared/live/romwram.mjs';
 import { findEntry } from '../../shared/live/parse.mjs';
 import { identifyRom } from '../../shared/romid.mjs';
+import { isQuetzal } from '../../shared/live/quetzal.mjs';
 import { crc32 } from '../../shared/checksum.mjs';
 import { resolveId } from './library.mjs';
 import { isCtrExt } from '../../shared/romid.mjs';
 import { identifyCtr } from '../../shared/ctr.mjs';
 import { ctrZonePlaces } from '../../shared/live/ctrzones.mjs';
+import { musicIndex } from '../../shared/ctr/musicindex.mjs';
 
-const VERSION = 15; // bump when romData() / ctrData() change what they find or the shape of the result (13: types and level caps from the ROM, 14: 3DS zone tables, 15: their header)
-const memo = new Map();
+const VERSION = 25; // bump when romData() / ctrData() change what they find or the shape of the result (13: types and level caps from the ROM, 14: 3DS zone tables, 15: their header, 16: Gen 3 hacks with moved RAM, badge flags by the leaders' order, 17: Black/White zone headers, 18: catch rates with the types, the Game Boy enemy's status / catch rate / battle type moved with a hack's RAM, 19: the Game Boy map headers, Gen 3 map headers, Black 2/White 2 zone headers – the place sign checks the game's copy of the current map's header against them, 20: Yellow's map headers (249 maps) and its memory table entry found from its ROM header, 21: Gen 5 forms' types, 22: a 3DS game's music streams – shared/ctr/musicindex.mjs, 23: GBA species' abilities and the ability names – romtypes.mjs gbaAbilities, 24: an expanded GBA engine's species after a gap of left-out ones and its Megas / Primal forms – romspecies.mjs gen3Forms, 25: Pokémon Quetzal – its own party struct (`layout3`), place names, item names and one species table, not two)
+const memo = new Map(); // ROM id → { result, failedAt? }
+/** A scan that failed is tried again after this long (a file a scanner held, a drive that slept). */
+const RETRY_FAILED_MS = (process.env.NODE_TEST_CONTEXT && Number(process.env.SLS_ROMDATA_RETRY_MS)) || 30000;
 let tables = null;
 
 function opts(sharedDir) {
@@ -42,7 +46,7 @@ function opts(sharedDir) {
       const k = past ? Object.keys(past).map(Number).sort((a, b) => a - b).find((x) => x >= gen) : undefined;
       return k !== undefined ? past[k] : api.types?.[id] || [];
     };
-    tables = { gen3Charset: j('charset_gen3.json'), gen4Chars: j('gen4.json').chars, retail, gen3Index, dexNames: api.names?.en || [], dexNamesOther: ['de', 'fr', 'es', 'it'].map((l) => api.names?.[l]).filter(Boolean), addresses: j('addresses.json'), maps: j('maps.json'), baseTypes, moveNames: ['en', 'de', 'fr', 'es', 'it'].map((l) => api.moves?.[l]).filter(Boolean) };
+    tables = { gen3Charset: j('charset_gen3.json'), gen4Chars: j('gen4.json').chars, retail, gen3Index, dexNames: api.names?.en || [], dexNamesOther: ['de', 'fr', 'es', 'it'].map((l) => api.names?.[l]).filter(Boolean), addresses: j('addresses.json'), maps: j('maps.json'), baseTypes, moveNames: ['en', 'de', 'fr', 'es', 'it'].map((l) => api.moves?.[l]).filter(Boolean), abilityNames: ['en', 'de', 'fr', 'es', 'it'].map((l) => api.abilities?.[l]).filter(Boolean) };
   }
   return tables;
 }
@@ -53,7 +57,7 @@ export function romCrc(bytes) {
   return (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
 }
 
-/** All results for a ROM's bytes: { data (locations or null), species, wram, types, caps, capsWhy, items, moves, vanilla }. */
+/** All results for a ROM's bytes: { data (locations or null), species, wram, gbMaps, types, caps, capsWhy, items, moves, vanilla }. */
 export function romData(u8, sharedDir) {
   const o = opts(sharedDir);
   let vanilla = false;
@@ -65,21 +69,56 @@ export function romData(u8, sharedDir) {
   const data = romLocations(u8, o);
   if (data) data.vanilla = vanilla;
   const species = romSpecies(u8, o);
-  // an expanded GBA engine moved gMapHeader: the place comes from SaveBlock1's map and the ROM's map table instead
+  // an expanded GBA engine moved gMapHeader: the place comes from SaveBlock1's map and the ROM's map table instead.
+  // So did a decomp hack that kept the retail species but added variables of its own (its code never names the base
+  // game's gPlayerParty): its team is searched for like an expanded engine's (`moved`, web/views/play.mjs)
   if (data && species?.engine === 'expanded') data.maps3 = gen3MapTable(u8);
+  else if (data && species && !vanilla) {
+    const h = identifyRom(u8.subarray(0, 0x200));
+    const entry = h?.system === 'gba' ? findEntry(o.addresses, { platform: 'gba', code: h.code, title: h.title }) : null;
+    if (entry?.gen === 3 && gen3RamMoved(u8, entry)) data.maps3 = { ...gen3MapTable(u8), moved: true };
+  }
+  // a retail engine's gMapHeader is checked against the ROM's own map headers (shared/live/location.mjs readGen3)
+  if (data?.gen === 3 && !data.maps3) data.headers3 = gen3MapHeaders(u8);
   // an expanded engine numbers its items and moves its own way (Complete FireRed Upgrade: Unbound, Radical Red): the
   // game's item names (held items by name) and its moves in the app's numbering (the battle helper's moves)
   const own = species?.engine === 'expanded' ? ownTables3(u8, o) : { items: null, moves: null };
   // the game's types – names, each Pokémon's, the chart, the moves' (shared/live/romtypes.mjs): any ROM, so a hack that
   // changed them shows what it uses; a retail ROM reads as the app's own data
-  const types = romTypes(u8, { gen3Charset: o.gen3Charset, speciesMap: species?.map ? species : null, vanillaIndex: o.gen3Index, baseTypes: o.baseTypes, moveMap: own.moves?.map || null });
+  const types = romTypes(u8, { gen3Charset: o.gen3Charset, speciesMap: species?.map ? species : null, vanillaIndex: o.gen3Index, baseTypes: o.baseTypes, moveMap: own.moves?.map || null, abilityNames: o.abilityNames });
+  // an expanded engine's alternate forms are species of their own, mapped to their species by name: which of them are
+  // Megas and Primal forms (shown as such – the rules go by the species) comes from the base stats romTypes found
+  if (species?.engine === 'expanded') {
+    const forms = gen3Forms(u8, species, types?.source?.baseStats != null ? { offset: types.source.baseStats, stride: types.source.stride } : null);
+    if (forms) species.forms = forms;
+  }
   // level caps from the game's trainers (shared/live/romcaps.mjs) – only a clean result; `capsWhy` says why not
   const c = romCaps(u8, { gen3Charset: o.gen3Charset, gen4Chars: o.gen4Chars });
   const caps = c.caps ? { caps: c.caps, leaders: c.leaders, final: c.final, badgeFlags: c.badgeFlags ?? null } : null;
   // the header (system, game code, title): which memory table entry reads it (shared/live/features.mjs)
   const h = identifyRom(u8.subarray(0, 0x200));
   const header = h?.system ? { system: h.system, code: h.code || '', title: h.title || '' } : null;
-  return { data, species, wram: vanilla ? null : gbShift(u8, o), types, caps, capsWhy: caps ? null : c.why || null, ...own, header, vanilla };
+  // an engine whose party struct isn't the base game's (Pokémon Quetzal: 104 bytes – shared/live/quetzal.mjs): the live
+  // readers convert it (parse.mjs LiveTables.withRom)
+  const layout3 = isQuetzal(header) ? 'quetzal' : null;
+  return { data, species, wram: vanilla ? null : gbShift(u8, o), gbMaps: gbMaps(u8, o), types, caps, capsWhy: caps ? null : c.why || null, ...own, header, vanilla, layout3 };
+}
+
+/**
+ * Game Boy games: the ROM's map headers, which the live reader finds the game's copy of the current map's header by
+ * (shared/live/romloc.mjs gbMapHeaders, shared/live/location.mjs readGen1/readGen2) – in every language.
+ */
+function gbMaps(u8, o) {
+  // (on its own: whatever goes wrong here costs the place sign its check, never the rest of the ROM's data)
+  try {
+    const h = identifyRom(u8.subarray(0, 0x200));
+    if (!h || (h.system !== 'gb' && h.system !== 'gbc')) return null;
+    const entry = findEntry(o.addresses, { platform: h.system, code: h.code, title: h.title });
+    const m = entry ? o.maps.games?.[entry.id] : null;
+    return m ? gbMapHeaders(u8, m.gen, o.maps.tables?.[`gen${m.gen}`]?.[m.table]) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -114,20 +153,36 @@ function gbShift(u8, o) {
  */
 export function ctrData(file) {
   let fd;
+  let ioError = null;
   try {
-    fd = openSync(file, 'r');
+    // (a file that's there but can't be opened – EBUSY, EPERM – throws: a failed scan isn't remembered on disk, see
+    // romDataFor; no file at all is simply no data)
+    try {
+      fd = openSync(file, 'r');
+    } catch (e) {
+      if (e.code === 'ENOENT') return { ...ROMDATA_NONE };
+      throw e;
+    }
     const readAt = (o, n) => {
       const b = Buffer.alloc(n);
-      const got = readSync(fd, b, 0, n, o);
-      return new Uint8Array(b.buffer, b.byteOffset, got);
+      try {
+        return new Uint8Array(b.buffer, b.byteOffset, readSync(fd, b, 0, n, o));
+      } catch (e) {
+        ioError = e;
+        throw e;
+      }
     };
     const info = identifyCtr(readAt, extname(file).slice(1));
     const z = info ? ctrZonePlaces(readAt, info) : null;
+    // its music streams and their loops, for "music from the ROM" (web/lib/rommusic.mjs) – a few KB of each RomFS file
+    const music = info && !info.encrypted ? musicIndex(readAt) : null;
+    // identifyCtr and ctrZonePlaces never throw – a read that failed on the way (a virus scanner or backup holding the
+    // 3 GB file for a moment, a drive that went to sleep) read as "no zone table" and was cached on disk for good: the
+    // place sign was gone in every later session of that game. It throws instead, so the next request reads again.
+    if (ioError) throw ioError;
     // the header: which memory table entry reads it (shared/live/features.mjs) – the game code, else the title ID
     const header = info ? { system: '3ds', code: info.code || '', title: '', titleId: info.titleId || null } : null;
-    return { ...ROMDATA_NONE, data: z ? { gen: z.gen, ctr: { family: z.family, places: z.places } } : null, header };
-  } catch {
-    return { ...ROMDATA_NONE };
+    return { ...ROMDATA_NONE, data: z ? { gen: z.gen, ctr: { family: z.family, places: z.places } } : null, header, music };
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
@@ -137,7 +192,7 @@ export function ctrData(file) {
 export const isCtrFile = (file) => Boolean(file) && isCtrExt(extname(file).slice(1));
 
 /** What romDataFor finds when there's nothing to find – also the list of fields the disk cache must give back. */
-export const ROMDATA_NONE = Object.freeze({ data: null, species: null, wram: null, types: null, caps: null, capsWhy: null, items: null, moves: null, header: null, vanilla: null });
+export const ROMDATA_NONE = Object.freeze({ data: null, species: null, wram: null, gbMaps: null, types: null, caps: null, capsWhy: null, items: null, moves: null, header: null, vanilla: null, music: null, layout3: null });
 /** A disk-cache entry back into romDataFor's result (every field of ROMDATA_NONE – a missing one would be lost on the
  * next start, as the own types of Too Many Types were). */
 export const fromRomCache = (v) => Object.fromEntries(Object.keys(ROMDATA_NONE).map((k) => [k, v[k] ?? null]));
@@ -226,6 +281,8 @@ export async function romDataFor(src, { sharedDir, cacheDir, timeoutMs = TIMEOUT
       msg = { file: src.file };
     } else if (src.lib) {
       const { abs, entry } = resolveId(src.lib.id, src.lib.config);
+      // a 3DS game still inside its zip (1–4 GB): never inflated into memory to be read – it is played unpacked
+      if (entry && isCtrFile(entry)) return none;
       const st = statSync(abs);
       id = `${abs}::${entry || ''}|${st.size}|${st.mtimeMs}`;
       msg = { lib: { id: src.lib.id, config: src.lib.config } };
@@ -246,7 +303,8 @@ export async function romDataFor(src, { sharedDir, cacheDir, timeoutMs = TIMEOUT
   } catch {
     return none;
   }
-  if (memo.has(id)) return memo.get(id);
+  const known = memo.get(id);
+  if (known && !(known.failedAt && Date.now() - known.failedAt > RETRY_FAILED_MS)) return known.result;
   const hash = createHash('sha1').update(`${VERSION}|${id}`).digest('hex');
   const cached = cacheDir && join(cacheDir, 'romloc', `${hash}.json`);
   if (cached && existsSync(cached)) {
@@ -254,7 +312,7 @@ export async function romDataFor(src, { sharedDir, cacheDir, timeoutMs = TIMEOUT
       const v = JSON.parse(readFileSync(cached, 'utf8'));
       if (v.version === VERSION) {
         const r = fromRomCache(v);
-        memo.set(id, r);
+        memo.set(id, { result: r });
         return r;
       }
     } catch {
@@ -264,7 +322,7 @@ export async function romDataFor(src, { sharedDir, cacheDir, timeoutMs = TIMEOUT
   if (pending.has(id)) return pending.get(id);
   const p = runJob({ ...msg, sharedDir }, timeoutMs).then((result) => {
     const r = fromRomCache(result || {});
-    memo.set(id, r);
+    memo.set(id, { result: r });
     if (cached) {
       try {
         mkdirSync(join(cacheDir, 'romloc'), { recursive: true });
@@ -275,9 +333,9 @@ export async function romDataFor(src, { sharedDir, cacheDir, timeoutMs = TIMEOUT
     }
     return r;
   }, () => {
-    // (remembered in memory only: the same damaged file isn't scanned again on every click until it changes or the app
-    // restarts – and nothing about it lands in the disk cache)
-    memo.set(id, none);
+    // (remembered in memory only, and only for a while: the same damaged file isn't scanned again on every click – a
+    // file that couldn't be read for a moment is read again later – and nothing about it lands in the disk cache)
+    memo.set(id, { result: none, failedAt: Date.now() });
     return none;
   }).finally(() => pending.delete(id));
   pending.set(id, p);

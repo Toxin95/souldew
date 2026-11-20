@@ -10,6 +10,9 @@
 // again, over the party stats; the four 56-byte blocks are shuffled by ((EC >> 13) & 31) % 24 like in Gen 4/5; the
 // checksum (0x06) is the 16-bit sum of 0x08–0xE7.
 
+import { summaryPk67 } from '../monstats.mjs';
+import { formSpriteId, formKind } from '../forms.mjs';
+
 const u16 = (b, o) => b[o] | (b[o + 1] << 8);
 const u32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
 const w16 = (b, o, v) => {
@@ -122,6 +125,8 @@ export function pk6Mon(raw, gen) {
     gender: ['M', 'F', '-'][(formByte >> 1) & 3] || '-',
     shiny: ((tid ^ sid ^ (pid >>> 16) ^ (pid & 0xffff)) >>> 0) < 16,
     status: statusCode(status), level, hp, maxHp,
+    // nature, ability, IVs, EVs (shared/monstats.mjs)
+    summary: summaryPk67(d, gen),
   };
 }
 
@@ -179,37 +184,97 @@ export function regions67(entry) {
 const popcount = (n) => n.toString(2).replace(/0/g, '').length;
 
 /**
- * Read the party of a running Gen 6/7 game. The first address that holds a party wins and is kept for the session
- * (the game's update version doesn't change while it runs).
+ * The update version a running game plays, as addresses.json names it ('1.0', '1.5' …), from what souldew's 3DS player
+ * says it started the game with (web/lib/ctrplayer.mjs update() – server/lib/ctrupdate.mjs prepareUpdate): null – no
+ * update: '1.0'; one that isn't used (randomized, encrypted, failed): '1.0'; one installed that souldew knows as the
+ * latest: its game version. An older update, or a player that doesn't say (undefined): null – not known.
+ */
+export function runningVersion(update) {
+  if (update === undefined) return null;
+  if (!update || update.installed === false) return '1.0';
+  return update.installed && update.gameVersion ? String(update.gameVersion) : null;
+}
+
+/** Polls in a row the locked address holds no party while another one does, before the lock moves there. */
+const LOCK_MISSES = 3;
+/** Changes seen at another address while the locked one stood still, before the lock moves there. */
+const STALE_CHANGES = 2;
+
+/** A 32-bit FNV-1a of a party region: did the bytes change since the last poll? */
+function regionSig(b) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193);
+  return h >>> 0;
+}
+
+/**
+ * Read the party of a running Gen 6/7 game: every known update's address is read on each poll, and the one that holds
+ * a party is locked for the session.
+ *  - `state.ctrVersion` (runningVersion): the update souldew knows the game runs – its address is taken first.
+ *  - The lock is checked on every poll: when its party stands still while another address's party changes (twice), it
+ *    was a leftover copy and the lock moves; when it holds no party for a few polls while another address does, too
+ *    (ticket #35). Each move goes into `state.g67Log` ({ from, to, why: 'update' | 'stale' | 'invalid' }) for the
+ *    diagnostics.
  * @returns {{party, badges?, version}|null}
  */
 export function readGen67(entry, read, state = {}) {
   const addrs = entry.partyAddrs || [];
-  const order = state.g67 != null ? [state.g67, ...addrs.keys()].filter((v, i, a) => a.indexOf(v) === i) : [...addrs.keys()];
-  for (const i of order) {
-    const a = addrs[i];
+  if (!addrs.length) return null;
+  const seen = (state.g67Seen ||= {});
+  const cands = addrs.map((a, i) => {
     const region = read(hex(a.addr ?? a), PARTY_BYTES);
     // (Bad Egg counters per address: the update's addresses are tried in turn)
     const bad = ((state.g67Bad ||= {})[i] ||= {});
     const party = partyFromRegion(region, entry.gen, bad);
-    if (!party) continue;
-    state.g67 = i;
-    // fewer Pokémon than last time: only once a second read agrees (a slot the game is rewriting ends the party early)
-    const sig = party.map((m) => m.key).join();
-    if (state.g67Len && party.length < state.g67Len && state.g67Shrink !== sig) {
-      state.g67Shrink = sig;
-      return null;
-    }
+    const sig = party ? regionSig(region.subarray(0, PARTY_BYTES)) : null;
+    const changed = !!party && seen[i]?.sig != null && seen[i].sig !== sig;
+    seen[i] = { sig };
+    return { i, a, party, changed };
+  });
+  const valid = cands.filter((c) => c.party);
+  if (!valid.length) return null;
+  const pref = state.ctrVersion ? cands.find((c) => c.a.version === state.ctrVersion && c.party) : null;
+  const lock = state.g67 != null ? cands[state.g67] : null;
+  let pick;
+  let why = null;
+  if (lock?.party) {
+    state.g67Miss = 0;
+    const moving = valid.find((c) => c !== lock && c.changed);
+    if (lock.changed) state.g67Stale = 0;
+    else if (moving) state.g67Stale = (state.g67Stale || 0) + 1;
+    if (moving && state.g67Stale >= STALE_CHANGES) [pick, why] = [moving, 'stale'];
+    // (locked before the update was known – never back once a stale copy was left)
+    else if (pref && pref !== lock && !state.g67Moved) [pick, why] = [pref, 'update'];
+    else pick = lock;
+  } else if (lock) {
+    state.g67Miss = (state.g67Miss || 0) + 1;
+    if (state.g67Miss < LOCK_MISSES) return null;
+    [pick, why] = [pref || valid[0], 'invalid'];
+  } else pick = pref || valid[0];
+  if (lock && pick !== lock) {
+    (state.g67Log ||= []).push({ from: lock.a.version || null, to: pick.a.version || null, why });
+    if (why === 'stale') state.g67Moved = true;
+    state.g67Stale = 0;
+    state.g67Miss = 0;
+    state.g67Len = 0;
     state.g67Shrink = null;
-    state.g67Len = party.length;
-    const res = { party, version: a.version || null };
-    if (a.badges) {
-      const b = read(hex(a.badges), 1);
-      if (b) res.badges = popcount(b[0]);
-    }
-    return res;
   }
-  return null;
+  state.g67 = pick.i;
+  const { party, a } = pick;
+  // fewer Pokémon than last time: only once a second read agrees (a slot the game is rewriting ends the party early)
+  const sig = party.map((m) => m.key).join();
+  if (state.g67Len && party.length < state.g67Len && state.g67Shrink !== sig) {
+    state.g67Shrink = sig;
+    return null;
+  }
+  state.g67Shrink = null;
+  state.g67Len = party.length;
+  const res = { party, version: a.version || null };
+  if (a.badges) {
+    const b = read(hex(a.badges), 1);
+    if (b) res.badges = popcount(b[0]);
+  }
+  return res;
 }
 
 // ---- battles ------------------------------------------------------------------------------------------------------
@@ -220,6 +285,10 @@ export function readGen67(entry, read, state = {}) {
 // per battle kind (wild / trainer) and clears it after the battle; Gen 7 uses one base for both and leaves the last
 // battle in memory, so two flags say whether a battle runs and whether it is a trainer's.
 const BATTLE_BLOCKS = 12;
+// The battler's form right now (a Mega Evolution, Primal Reversion, a form the battle changes – Pokémon Stream Tool,
+// Readek: Raw Pokemon Battle.mjs formIndex, 1/2 for Mega X/Y): one byte at +0x14B (Gen 6) / +0x231 (Gen 7). Taken only
+// when it names a form shared/forms.mjs knows of that species – shown, never counted.
+const BATTLE_FORM = { 6: 0x14b, 7: 0x231 };
 
 export function battleRegions(entry) {
   const b = entry?.battle;
@@ -243,7 +312,9 @@ function battleMons(bytes, stride, gen, blocks = BATTLE_BLOCKS) {
     const level = bytes[o + 0x10];
     const slot = bytes[o + 0x11];
     if (!species || species > (gen >= 7 ? 807 : 721) || !maxHp || maxHp > 999 || hp > maxHp || level < 1 || level > 100) continue;
-    out.push({ species, maxHp, hp, level, slot, block: i });
+    const f = BATTLE_FORM[gen] && BATTLE_FORM[gen] < stride ? bytes[o + BATTLE_FORM[gen]] : 0;
+    const form = f > 0 && f < 32 && (formSpriteId(species, f) !== species || formKind(species, f, gen)) ? f : 0;
+    out.push({ species, maxHp, hp, level, slot, block: i, ...(form ? { form } : {}) });
   }
   return out;
 }
@@ -288,8 +359,28 @@ export function readGen67Battle(entry, read, party = null) {
   const index = party ? party.findIndex((p) => p.species === me.species && p.level === me.level && p.maxHp === me.maxHp) : -1;
   return {
     kind,
-    enemy: { species: foe.species, level: foe.level, hp: foe.hp, maxHp: foe.maxHp },
+    enemy: { species: foe.species, level: foe.level, hp: foe.hp, maxHp: foe.maxHp, ...(foe.form ? { form: foe.form } : {}) },
     active: index >= 0 ? { index, hp: me.hp, maxHp: me.maxHp } : null,
   };
 }
 
+
+/**
+ * Why no team is read (diagnostics – ticket #21: a team that wasn't found after reopening a game): per known update
+ * address whether its memory arrived and what slot 0 holds there ('empty' – zeros, 'ok' – a Pokémon, 'checksum' – data
+ * that fails its checksum – garbage, not a Pokémon; 'invalid' – passes it but isn't a party Pokémon, e.g. a blank slot
+ * before the first Pokémon; 'unread' – no memory there), and the zone.
+ * Nothing about the Pokémon itself.
+ */
+export function probeGen67(entry, read) {
+  const addrs = (entry?.partyAddrs || []).map((a) => {
+    const region = read(hex(a.addr ?? a), PARTY_BYTES);
+    if (!region || region.length < PARTY_BYTES) return { version: a.version || null, slot0: 'unread' };
+    const raw = slotBytes(region, 0);
+    if (raw.every((b) => b === 0)) return { version: a.version || null, slot0: 'empty' };
+    if (!decryptPK6(raw).checksumOk) return { version: a.version || null, slot0: 'checksum' };
+    return { version: a.version || null, slot0: pk6Mon(raw, entry.gen) ? 'ok' : 'invalid' };
+  });
+  const z = entry?.zoneAddr ? read(hex(entry.zoneAddr), 2) : null;
+  return { addrs, zone: z && z.length >= 2 ? u16(z, 0) : null };
+}

@@ -1,5 +1,6 @@
 // Update check and install for the desktop app (main process). Checks the feed at start and every few
-// hours, pushes its state to the window ('update' channel) and does the download / install on request.
+// hours – unless Settings › About "Check for updates automatically" is off (config.json updateCheck: false; then only
+// "Check for updates" asks) – pushes its state to the window ('update' channel) and does the download / install on request.
 // The platform work itself is in update-core.mjs: macOS swaps the .app bundle, Windows runs the NSIS installer,
 // Linux replaces the AppImage file.
 import { app, ipcMain, shell } from 'electron';
@@ -11,6 +12,7 @@ import {
   feedKeyPolicy, fetchFeed, downloadFile, verifyFile, bundleFromExe, canReplace, cleanupStaging, stageFromDmg, swapBundle,
   nsisInstallDir, launchInstaller, windowsInstallPlan, cleanupWorkDir,
   appImageFromEnv, appImageStagedPath, canReplaceAppImage, makeExecutable, swapAppImage, cleanupAppImageStaging, appImageRelaunch,
+  scheduleUpdateChecks,
 } from './update-core.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -33,10 +35,11 @@ function readUpdatesConfig() {
 const assetName = (u) => basename(u.asset?.name || '') || (WIN ? winAssetName(u.version, process.arch) : LINUX ? linuxAssetName(u.version, process.arch) : dmgAssetName(u.version));
 
 /**
- * @param {{ send: Function, trusted: (e: Electron.IpcMainInvokeEvent) => boolean }} opts
+ * @param {{ send: Function, trusted: (e: Electron.IpcMainInvokeEvent) => boolean, autoCheck?: () => boolean }} opts
  *   `trusted` decides per IPC call whether the sender is the app's main frame on the app origin.
+ *   `autoCheck` is asked before every automatic check (the setting in config.json); a manual check always runs.
  */
-export function setupUpdater({ send, trusted = () => false }) {
+export function setupUpdater({ send, trusted = () => false, autoCheck = () => true }) {
   const current = app.getVersion();
   const cfg = readUpdatesConfig();
   // SLS_UPDATE_FEED overrides the feed for testing – only while developing (`npm run app`): an installed app
@@ -71,7 +74,8 @@ export function setupUpdater({ send, trusted = () => false }) {
     update: null, // validated feed + { action, page, asset }
     progress: null, // { received, total }
     step: null, // installing: verify · mount · copy (macOS) · launch (Windows)
-    error: null, // download / install failure (shown in the banner)
+    error: null, // download / install failure (shown in the banner, in English)
+    errorCode: null, // …and its code, which the page words in the app language (web/views/update.mjs updateErrorText)
     checkError: null, // last failed check (shown in Settings; BAD_SIGNATURE also in the sidebar)
     checkedAt: null,
     reason: null, // why the manual route was taken
@@ -132,7 +136,7 @@ export function setupUpdater({ send, trusted = () => false }) {
       const action = actionFor(feed, current, target); // (minVersion never sends Windows to the manual route)
       if (action === 'none') return set({ phase: 'uptodate', update: null, checkedAt: Date.now() });
       const asset = assetFor(feed, target.platform, target.arch);
-      return set({ phase: 'available', update: { ...feed, action, asset, page: pageFor(feed) }, error: null, checkedAt: Date.now() });
+      return set({ phase: 'available', update: { ...feed, action, asset, page: pageFor(feed) }, error: null, errorCode: null, checkedAt: Date.now() });
     } catch (e) {
       if (!manual || e.code === 'BAD_SIGNATURE' || e.code === 'NO_KEY') console.warn('update check failed:', e.code || '', e.message);
       // A refused signature is shown in the sidebar too (UpdateBanner); nothing of that feed is used.
@@ -171,14 +175,14 @@ export function setupUpdater({ send, trusted = () => false }) {
   async function install() {
     const u = state.update;
     if (!u || !['available', 'error'].includes(state.phase)) return state;
-    if (updateAction(u, current) === 'none') return set({ phase: 'error', error: 'Refusing to install an older or the same version' });
+    if (updateAction(u, current) === 'none') return set({ phase: 'error', error: 'Refusing to install an older or the same version', errorCode: 'SAME_VERSION' });
     const asset = u.asset;
-    if (!asset) return set({ phase: 'error', error: 'This update has no download for this computer' });
+    if (!asset) return set({ phase: 'error', error: 'This update has no download for this computer', errorCode: 'NO_ASSET' });
     abort = new AbortController();
     // Linux: straight into the AppImage's folder when it can be replaced there (the swap is then a single rename).
     const inPlace = appImage && canReplaceAppImage(appImage).ok ? appImageStagedPath(appImage) : null;
     const file = inPlace || join(workDir, assetName(u));
-    set({ phase: 'downloading', progress: { received: 0, total: asset.size }, error: null, step: null });
+    set({ phase: 'downloading', progress: { received: 0, total: asset.size }, error: null, errorCode: null, step: null });
     try {
       mkdirSync(workDir, { recursive: true });
       let last = 0;
@@ -222,7 +226,7 @@ export function setupUpdater({ send, trusted = () => false }) {
       abort = null;
       if (cancelled) return set({ phase: 'available', progress: null, step: null });
       console.warn('update failed:', e.message);
-      return set({ phase: 'error', error: e.message, progress: null, step: null });
+      return set({ phase: 'error', error: e.message, errorCode: e.code || null, progress: null, step: null });
     }
   }
 
@@ -243,7 +247,7 @@ export function setupUpdater({ send, trusted = () => false }) {
         await verifyFile(download, state.update.asset); // it sat in the temp folder since the download
       } catch (e) {
         download = null;
-        return set({ phase: 'error', error: e.message, step: null });
+        return set({ phase: 'error', error: e.message, errorCode: e.code || null, step: null });
       }
       // Only quit here: the installer starts in will-quit, when closing can't be called off any more (the
       // unsaved-progress question may still keep the game open – then the card goes back to "Restart now").
@@ -259,7 +263,7 @@ export function setupUpdater({ send, trusted = () => false }) {
         staged = null;
         download = null;
         cleanupAppImageStaging(appImage);
-        return set({ phase: 'error', error: e.message, step: null });
+        return set({ phase: 'error', error: e.message, errorCode: e.code || null, step: null });
       }
       // back to "ready": if the unsaved-progress question keeps the app open, the card offers the restart again
       set({ phase: 'ready', step: null });
@@ -324,9 +328,6 @@ export function setupUpdater({ send, trusted = () => false }) {
     return shell.openPath(download);
   });
 
-  if (feedUrl) {
-    setTimeout(() => check(), FIRST_CHECK);
-    setInterval(() => check(), CHECK_EVERY);
-  }
+  if (feedUrl) scheduleUpdateChecks({ check: () => check(), enabled: autoCheck, first: FIRST_CHECK, every: CHECK_EVERY });
   return { check };
 }

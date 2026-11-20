@@ -1,5 +1,5 @@
 // The 3DS player (player3ds.html): the game runs in souldew's native host (server/lib/ctr.mjs, native/ctr-host) and
-// arrives here as a stream of pictures, sound and memory; input, speed and save states go back. It offers the Play
+// arrives here as a stream of pictures, sound and memory; input, speed, save states and cheats go back. It offers the Play
 // view the same window.__emu as player.html (EmulatorJS) – save states, speed, screenshots, the partner's mini view
 // and the live reader work the same way. 3DS saves aren't one battery file: they live in the host's save folder of the
 // game / run slot (server side), so getSave() has nothing to hand over.
@@ -7,18 +7,25 @@ import * as controls from '/lib/controls.mjs';
 import { setLang, guessLang, t } from '/lib/i18n.mjs';
 import { serverErrorText } from '/lib/errors.mjs';
 import { findEntry, regionsFor } from '/shared/live/parse.mjs';
-import { CTR_LAYOUTS, ctrLayout, ctrTouchAt } from '/shared/ctrlayout.mjs';
+import { cheatRegions } from '/shared/live/cheats.mjs';
+import { CTR_LAYOUTS, ctrLayout, ctrTouchAt, blackPicture } from '/shared/ctrlayout.mjs';
+import { CTR_BIT, ctrInput } from '/shared/ctrinput.mjs';
+import { RomMusic } from '/lib/rommusic.mjs';
+import { sharpScale } from '/lib/pixelscale.mjs';
 
 const q = new URLSearchParams(location.search);
-const MSG = { VIDEO: 2, AUDIO: 3, MEM: 4, STATE: 5, LOG: 6, EVENT: 7 };
-const CMD = { INPUT: 1, SPEED: 2, SAVE: 3, LOAD: 4, WATCH: 5, QUIT: 6, RESET: 7, FRAMESKIP: 8 };
+const MSG = { VIDEO: 2, AUDIO: 3, MEM: 4, STATE: 5, LOG: 6, EVENT: 7, FFSOUND: 8, ROMFS: 9, ROMDATA: 10, SFX: 11 };
+const CMD = { INPUT: 1, SPEED: 2, SAVE: 3, LOAD: 4, WATCH: 5, QUIT: 6, RESET: 7, FRAMESKIP: 8, WRITE: 9, ROMREAD: 10, MUSIC: 11, SFX: 12 };
 const post = (m) => window.parent?.postMessage(m, location.origin);
 
 const st = {
   id: null, ready: false, paused: false, speed: 1, volume: 1, frames: 0, fps: 0, title: null, width: 400, height: 480,
-  mem: [], watching: '', liveMemory: false, error: null, log: [],
+  mem: [], watching: '', liveMemory: false, error: null, log: [], renderer: null, turboAudio: 'music',
+  hostFrame: 0, hostFrames: false, hostSpeed: 0, // the host's count of emulated frames and its real speed (stats event)
+  scale: 1, // the internal resolution the host draws at (the server's answer to start: Settings › Play › 3DS resolution)
+  sfxCore: false, sfxWant: false, // the core can leave the music out of its sound (sound effects in fast-forward) / asked
 };
-const waiters = { state: [], loaded: [] };
+const waiters = { state: [], loaded: [], written: new Map() }; // written: write id → resolve
 
 // ---- commands -----------------------------------------------------------------------------------------------------
 // One request at a time, and what comes meanwhile goes along with the next one (the server takes several framed
@@ -83,7 +90,6 @@ function ask(list, type, payload, fallback, map = (x) => x) {
   });
 }
 const f32 = (x) => new Uint8Array(new Float32Array([x]).buffer);
-const u32 = (x) => new Uint8Array(new Uint32Array([x]).buffer);
 
 // ---- picture (WebGL: the host sends BGRA or RGBA rows, top row first) -------------------------------------------
 // The core always renders its default layout (top screen above the bottom one, 400×480 at 1×). The page arranges the
@@ -95,6 +101,18 @@ let tex = null;
 let swizzleLoc = null;
 let quadBuf = null;
 let layoutId = CTR_LAYOUTS.includes(q.get('layout')) ? q.get('layout') : 'tb';
+// "Smooth picture" (the play view's screen layout menu): the screens scaled with linear filtering instead of crisp
+// pixels – both where the page draws a screen smaller or larger (the layouts) and where the frame scales the canvas
+let smooth = q.get('smooth') === '1';
+// (the canvas's own scaling follows in layout(): smooth then means no whole-number prescale either)
+function applyFilter() {
+  if (!gl || !tex) return;
+  const f = smooth ? gl.LINEAR : gl.NEAREST;
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+}
+let wholePixels = q.get('px') === 'whole'; // Settings › "Whole pixels only" (lib/pixelscale.mjs)
 function initGl() {
   const vs = '#version 300 es\nin vec2 p;in vec2 t;out vec2 uv;void main(){uv=t;gl_Position=vec4(p,0.,1.);}';
   const fs = '#version 300 es\nprecision mediump float;in vec2 uv;uniform sampler2D s;uniform bool bgra;out vec4 o;void main(){vec4 c=texture(s,uv);o=vec4(bgra?c.bgr:c.rgb,1.);}';
@@ -119,8 +137,7 @@ function initGl() {
   gl.vertexAttribPointer(tloc, 2, gl.FLOAT, false, 16, 8);
   tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  applyFilter();
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   swizzleLoc = gl.getUniformLocation(prog, 'bgra');
@@ -133,17 +150,24 @@ const arrangement = (w, h) => ctrLayout(layoutId, w, h);
 
 let pendingFrame = null;
 let lastFrame = null;
+// the arranged picture's size in the core's pixels and the whole factor it is drawn at
+const pic = { w: 0, h: 0, pre: 1 };
 function drawFrame() {
   const f = pendingFrame || lastFrame;
   pendingFrame = null;
   if (!f || !gl) return;
   lastFrame = f;
   const lay = arrangement(f.w, f.h);
-  if (canvas.width !== lay.width || canvas.height !== lay.height) {
-    canvas.width = lay.width;
-    canvas.height = lay.height;
-    gl.viewport(0, 0, lay.width, lay.height);
+  if (pic.w !== lay.width || pic.h !== lay.height) {
+    pic.w = lay.width;
+    pic.h = lay.height;
     layout();
+  }
+  // the canvas holds the arranged picture blown up by a whole number (lib/pixelscale.mjs)
+  if (canvas.width !== lay.width * pic.pre || canvas.height !== lay.height * pic.pre) {
+    canvas.width = lay.width * pic.pre;
+    canvas.height = lay.height * pic.pre;
+    gl.viewport(0, 0, canvas.width, canvas.height);
   }
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, f.w, f.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, f.px);
   gl.uniform1i(swizzleLoc, f.bgra ? 1 : 0);
@@ -164,6 +188,23 @@ function drawFrame() {
   gl.bufferData(gl.ARRAY_BUFFER, v, gl.DYNAMIC_DRAW);
   gl.clear(gl.COLOR_BUFFER_BIT);
   for (let i = 0; i < lay.quads.length; i++) gl.drawArrays(gl.TRIANGLE_STRIP, i * 4, 4);
+  streamFrame();
+}
+
+// The partners' video (captureStream) at the picture's own size, as before the sharp scaling: the bigger drawing buffer
+// would only cost upload and encoder time. Drawn only while someone watches.
+let streamCanvas = null;
+function streamFrame() {
+  if (!streamCanvas) return;
+  const w = pic.w || canvas.width;
+  const h = pic.h || canvas.height;
+  if (streamCanvas.width !== w || streamCanvas.height !== h) {
+    streamCanvas.width = w;
+    streamCanvas.height = h;
+  }
+  const x = streamCanvas.getContext('2d');
+  x.imageSmoothingEnabled = false; // a whole factor down: the game's pixels exactly
+  x.drawImage(canvas, 0, 0, w, h);
 }
 function onVideo(p) {
   const v = new DataView(p.buffer, p.byteOffset, 8);
@@ -174,6 +215,7 @@ function onVideo(p) {
   if (!pendingFrame) requestAnimationFrame(drawFrame);
   pendingFrame = { w, h, bgra, px: p.subarray(8, 8 + w * h * 4) };
   st.frames++;
+  watchBlack(pendingFrame.px, w, h);
   st.width = w;
   st.height = h;
   if (!st.ready) {
@@ -185,56 +227,261 @@ function onVideo(p) {
   }
 }
 
-// keep the picture's proportions in the frame (the page decides the frame's size)
+// A game that never draws anything (ticket #19: a cut-off copy of the game, or a driver that can't draw it): the
+// host runs, pictures come – all black. Once a second a few hundred pixels are looked at; after BLACK_MS of running
+// game without a single lit picture the play view hears it once (it says so and records it for "Save diagnostics").
+const BLACK_MS = 45000;
+const black = { lit: false, ms: 0, last: 0, told: false };
+function watchBlack(px, w, h) {
+  if (black.lit || black.told) return;
+  const now = performance.now();
+  if (now - black.last < 1000) return;
+  const dt = black.last ? Math.min(now - black.last, 2000) : 0;
+  black.last = now;
+  if (!blackPicture(px, w, h)) {
+    black.lit = true;
+    return;
+  }
+  if (st.paused) return;
+  black.ms += dt;
+  if (black.ms < BLACK_MS) return;
+  black.told = true;
+  st.log.push(`black picture for ${Math.round(black.ms / 1000)} s`);
+  post({ type: 'emu-black', seconds: Math.round(black.ms / 1000), renderer: st.renderer, title: st.title, frames: st.hostFrame || st.frames, liveMemory: st.liveMemory });
+}
+
+// the picture as big as the frame allows, its proportions kept (the page decides the frame's size): pixels blown up by a
+// whole number with hard edges, the rest smoothed – or whole multiples only (Settings) – lib/pixelscale.mjs
 function layout() {
   const box = document.body.getBoundingClientRect();
-  const k = Math.min(box.width / canvas.width, box.height / canvas.height) || 1;
-  canvas.style.width = `${Math.floor(canvas.width * k)}px`;
-  canvas.style.height = `${Math.floor(canvas.height * k)}px`;
+  const src = pic.w ? pic : { w: canvas.width, h: canvas.height };
+  const sharp = sharpScale(src, { w: box.width, h: box.height }, devicePixelRatio || 1, { whole: wholePixels });
+  // "Smooth picture" (the play view's 3DS menu): linear filtering all the way – no crisp whole-number prescale
+  const s = smooth ? { ...sharp, pre: 1, smooth: true } : sharp;
+  canvas.style.width = `${s.w}px`;
+  canvas.style.height = `${s.h}px`;
+  canvas.style.imageRendering = s.smooth ? 'auto' : 'pixelated';
+  if (pic.w && s.pre !== pic.pre) {
+    pic.pre = s.pre;
+    drawFrame(); // the new buffer size, with the last picture
+  }
 }
 addEventListener('resize', layout);
 new ResizeObserver(layout).observe(document.body);
+// the window moved to a screen with another pixel density: the whole factor changes, the frame's size doesn't
+(function watchDensity() {
+  matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener('change', () => {
+    layout();
+    watchDensity();
+  }, { once: true });
+})();
 layout();
 
-// ---- sound ----------------------------------------------------------------------------------------------------------
-const audio = { ctx: null, node: null, gain: null, rate: 0, started: false };
+// ---- sound: the host's samples through souldew's turbo mixer (lib/native-audio-worklet.mjs, as the fast player) -----
+// While fast-forwarding the host sends the sound sped up by the real speed, resampled to real time (ctrhost.c
+// ff_frame), and says by how much ("ffrate", right before that sound – the worklet hands the ratio to the mixer when the
+// sound plays); the mixer then plays what Settings › "Turbo audio" asks for: the music recorded at 1× going on
+// ("music"), silence ("mute"), the sped-up original ("original"), or the host's sound with no mixer at all ("plain").
+// For "music" the host also sends the core's own sound while it fast-forwards (message 8: the game's pace, its normal
+// pitch, full bandwidth): the mixer records that instead of slowing the sped-up sound back down, which kept only a k-th
+// of the bandwidth (the sped-up sound is low-passed before it is sped up) – at 4× muffled music.
+// The worklet keeps more in hand than for the fast player: the sound comes between pictures of up to 7 MB.
+const MAX_SOUND_RATIO = 16; // the host speeds its fast-forward sound up at most this much
+const audio = { ctx: null, node: null, gain: null, key: null, events: [], subs: new Set(), probes: [], taps: [], quiet: new Map(), quietId: 0, rate: 0, exact: false, win: null, last: null, rom: null, romQueue: [] };
+/**
+ * The worklet's buffer (frames, lib/jitterring.mjs): start / restart once 60 ms are there – more after each gap, up to
+ * 180 ms, for a PC whose sound arrives late now and then (back down after 6 s without one – longer after repeated gaps
+ * or while the stalls are only just covered: a core that stalls 90 ms every 10 s had a gap at nearly every stall with
+ * 2.8.2's first builds, 120 ms at most and 6 s to shrink) –, read a little faster
+ * ~30 ms above that (the late sound queued behind a gap; ctrhost paces 1× by the core's sound, so nothing else piles up),
+ * skip ahead above 250 ms. Speed steps, loaded states, pauses and sound-mode changes start it over at 60 ms (rebase).
+ * Until 2.8.2: up to 240 ms, 30 s to shrink, faster only above 200 ms, and every one of those breaks counted as a gap –
+ * a Windows player's sound effects came 250–300 ms after the picture after a few speed toggles.
+ */
+const ringFor = (rate) => ({ prime: Math.round(rate * 0.06), primeMax: Math.round(rate * 0.18), trim: Math.round(rate * 0.04), maxLag: Math.round(rate * 0.25) });
+/**
+ * Diagnostics (perf().last, logged by the play view every 10 s): what the sound buffer went through over the last 10 s
+ * of sound – gaps (and breaks the player asked for), how long it was silent for them, how much it skipped, how long it read faster or slower, its fill.
+ */
+function ringWindow(r) {
+  const rate = audio.ctx?.sampleRate || 32728;
+  const w = audio.win;
+  if (!w || r.underruns < w.underruns) audio.win = { ...r, at: performance.now() };
+  else if (performance.now() - w.at >= 10000) {
+    audio.last = {
+      soundGaps: r.underruns - w.underruns,
+      soundBreaks: (r.breaks || 0) - (w.breaks || 0), // (running dry around a speed step, a loaded state, … – no gap)
+      soundSilentMs: Math.round(((r.silent - w.silent) / rate) * 1000),
+      soundSkippedMs: Math.round(((r.dropped - w.dropped) / rate) * 1000),
+      soundResampledPct: Math.round(((r.resampled - w.resampled) * 128 * 100) / (((performance.now() - w.at) / 1000) * rate)),
+      soundMs: Math.round((r.lag / rate) * 1000),
+      soundPrimeMs: Math.round((r.prime / rate) * 1000),
+    };
+    audio.win = { ...r, at: performance.now() };
+  }
+}
+function tellAudio(m) {
+  audio.node?.port.postMessage(m);
+}
+const audioInit = () => [
+  { type: 'mode', mode: st.turboAudio },
+  { type: 'paused', paused: st.paused },
+  ...(audio.key ? [{ type: 'song', key: audio.key }] : []),
+  { type: 'speed', ratio: Math.min(st.speed, MAX_SOUND_RATIO) },
+];
 async function startAudio(rate) {
-  if (audio.ctx || !rate) return;
+  if (audio.ctx || !rate || q.get('audio') === '0') return; // (?audio=0: no sound at all – diagnostics)
   try {
     audio.rate = rate;
     audio.ctx = new AudioContext({ sampleRate: Math.round(rate), latencyHint: 'interactive' });
-    await audio.ctx.audioWorklet.addModule('/lib/ctr-audio-worklet.mjs');
-    audio.node = new AudioWorkletNode(audio.ctx, 'ctr-sink', { outputChannelCount: [2] });
+    await audio.ctx.audioWorklet.addModule('/lib/native-audio-worklet.mjs');
+    audio.node = new AudioWorkletNode(audio.ctx, 'native-audio', { outputChannelCount: [2], processorOptions: { init: audioInit(), ...ringFor(audio.ctx.sampleRate) } });
+    audio.node.port.onmessage = (e) => {
+      if (e.data?.type === 'quiet') return audio.quiet.get(e.data.id)?.(true);
+      if (e.data?.type === 'tap') return audio.taps.splice(0).forEach((f) => f(e.data));
+      if (e.data?.type === 'ring') return ringWindow(e.data.ring);
+      const ev = e.data?.e;
+      if (!ev) return;
+      if (ev.type === 'error') st.log.push(`turbo audio: ${ev.message}`);
+      if (ev.type === 'probe') audio.probes.splice(0).forEach((f) => f(ev));
+      if (ev.type === 'rom-missing') audio.rom?.missing(ev.id);
+      if (ev.type === 'state' || ev.type === 'error') {
+        audio.events.push({ t: Math.round(performance.now()), ...ev });
+        if (audio.events.length > 40) audio.events.shift();
+      }
+      // every mixer decision (loops found, switches, song keys) to the page's music log for "Save diagnostics" – as player.html;
+      // without it a native player's diagnostics showed only the speed steps (a Windows player's Pokémon Y report, 2.7.4)
+      if (ev.type !== 'probe') {
+        for (const f of audio.subs) {
+          try {
+            f({ t: Math.round(performance.now()), ...ev });
+          } catch {
+            // the page's problem
+          }
+        }
+      }
+    };
+    if (audio.rom) {
+      audio.rom.attach(audio.ctx);
+      for (const [m, tr] of audio.romQueue.splice(0)) audio.node.port.postMessage(m, tr);
+    }
     audio.gain = audio.ctx.createGain();
     audio.gain.gain.value = st.volume;
     audio.node.connect(audio.gain).connect(audio.ctx.destination);
     audio.ctx.resume().catch(() => {});
+    for (const m of audioInit()) tellAudio(m); // (the state may have changed while the module loaded)
   } catch (e) {
     st.log.push(`audio: ${e.message}`);
   }
+}
+/**
+ * Music from the ROM (lib/rommusic.mjs): a core with souldew's RomFS patch says which music stream the game reads – from
+ * the first frames on (the reads that start the title music come before the sound worklet is up: what it should get
+ * waits here until it is).
+ */
+function startRomMusic(rate) {
+  const transfer = (m) => (m.type === 'rom-track' ? [m.file?.buffer, m.l?.buffer, m.r?.buffer].filter(Boolean) : []);
+  const id = st.id;
+  audio.rom = new RomMusic({
+    rate,
+    send: (payload) => cmd(CMD.ROMREAD, payload),
+    // the server's index of the game file's streams, and its bytes straight from the file (server/app.mjs /api/ctr/music)
+    index: fetch(`/api/ctr/music?id=${id}`).then((r) => (r.ok ? r.json() : null)).then((j) => j?.music || null).catch(() => null),
+    fetchBytes: (off, len) => fetch(`/api/ctr/romfs?id=${id}&off=${off}&len=${len}`).then((r) => (r.ok ? r.arrayBuffer() : null)).then((b) => (b && b.byteLength === len ? new Uint8Array(b) : null)),
+    ranges: (tag, pairs) => {
+      if (!st.sfxCore) return;
+      const b = new Uint8Array(8 + pairs.length * 16);
+      const v = new DataView(b.buffer);
+      v.setUint32(0, tag, true);
+      v.setUint32(4, pairs.length, true);
+      pairs.forEach(([a, e], i) => {
+        v.setBigUint64(8 + i * 16, BigInt(a), true);
+        v.setBigUint64(16 + i * 16, BigInt(e), true);
+      });
+      cmd(CMD.MUSIC, b);
+    },
+    tell: (m) => {
+      if (audio.node) audio.node.port.postMessage(m, transfer(m));
+      else if (m.type === 'rom-track' || audio.romQueue.length < 64) audio.romQueue.push([m, transfer(m)]);
+    },
+    log: (e) => {
+      const ev = { t: Math.round(performance.now()), ...e };
+      for (const f of audio.subs) {
+        try {
+          f(ev);
+        } catch {
+          // the page's problem
+        }
+      }
+      if (/failed|error|calibrated|rom-track|rom-learned/.test(e.type)) {
+        audio.events.push(ev);
+        if (audio.events.length > 40) audio.events.shift();
+      }
+    },
+  });
+  audio.rom.enabled = st.turboAudio === 'music';
+  audio.rom.pause(st.paused);
 }
 // browsers keep sound asleep until the first click / key in the frame
 const wake = () => audio.ctx?.state === 'suspended' && audio.ctx.resume().catch(() => {});
 addEventListener('pointerdown', wake);
 addEventListener('keydown', wake);
-function onAudio(p) {
-  if (!audio.node || st.paused) return;
+/** The host's s16 stereo samples as floats (interleaved). */
+function floats(p) {
   const s = new Int16Array(p.buffer.slice(p.byteOffset, p.byteOffset + (p.length & ~1)));
   const f = new Float32Array(s.length);
   for (let i = 0; i < s.length; i++) f[i] = s[i] / 32768;
+  return f;
+}
+function onAudio(p) {
+  if (!audio.node || st.paused) return;
+  const f = floats(p);
+  if (audio.rom && st.speed === 1) audio.rom.onGameSound(f); // (the game's 1× sound: the music's lead is measured on it)
   audio.node.port.postMessage(f, [f.buffer]);
 }
+/**
+ * Sound effects in fast-forward: with "Music continues" and a music track from the ROM, the host leaves the voices that
+ * play the game's music out of its fast-forward sound (ctrhost.c SFX, native/azahar-patch/souldew-sfx.patch) – asked
+ * for at 1× already, the host only does it while it fast-forwards. Message 11 then brings the rest (the sound effects)
+ * with the places new sounds began; the mixer plays each one at its normal speed over the track (lib/sfxplayer.mjs).
+ */
+function updateSfx() {
+  const want = st.sfxCore && st.turboAudio === 'music' && !!audio.rom?.enabled && !!audio.rom?.hasTrack && !!audio.node;
+  if (want === st.sfxWant) return;
+  st.sfxWant = want;
+  cmd(CMD.SFX, new Uint8Array([want ? 1 : 0, 0, 0, 0]));
+}
+function onSfx(p) {
+  if (p.length < 8) return;
+  const v = new DataView(p.buffer, p.byteOffset, p.length);
+  const flags = v.getUint32(0, true);
+  const n = v.getUint32(4, true);
+  if (8 + n * 4 > p.length) return;
+  if (!audio.node || st.paused || st.turboAudio !== 'music') return;
+  const onsets = [];
+  for (let i = 0; i < n; i++) onsets.push(v.getUint32(8 + i * 4, true));
+  const f = floats(p.subarray(8 + n * 4));
+  // (flags 4: somewhere in it the core kept the music in – it isn't played)
+  audio.node.port.postMessage({ type: 'sfx', f, onsets, ok: !(flags & 4) }, [f.buffer]);
+}
+/** Fast-forward: the core's own sound (message 8) – only "Music continues" records it, the other modes never use it. */
+function onFfSound(p) {
+  if (!audio.node || st.paused || st.turboAudio !== 'music') return;
+  const f = floats(p);
+  audio.node.port.postMessage({ type: 'ffsound', f }, [f.buffer]);
+}
 
-// ---- memory (the regions the live reader needs, ten times a second) -------------------------------------------------
+// ---- memory (the regions the live reader needs – and the bag for the cheats – ten times a second) ---------------------
 let addresses = null;
-let extraRegions = []; // __emu.watch(): more regions on top of the game's (diagnostics, research)
+let extraRegions = []; // __emu.watch(): more regions on top of the game's (the bag's search, diagnostics, research)
+/** Tell the host what to read; → the regions asked for (at most 16 – the game's own first). */
 async function watchFor(titleId) {
   try {
     addresses ||= await fetch('/shared/data/addresses.json').then((r) => r.json());
     const entry = titleId ? findEntry(addresses, { platform: '3ds', titleId }) : null;
-    const regions = [...(entry ? regionsFor(entry) : []), ...extraRegions].slice(0, 16);
+    const regions = [...(entry ? [...regionsFor(entry), ...cheatRegions(entry)] : []), ...extraRegions].slice(0, 16);
     const sig = regions.map((r) => `${r.addr}:${r.len}`).join();
-    if (sig === st.watching) return;
+    if (sig === st.watching) return regions;
     st.watching = sig;
     const b = new Uint8Array(4 + regions.length * 8);
     const v = new DataView(b.buffer);
@@ -244,27 +491,79 @@ async function watchFor(titleId) {
       v.setUint32(8 + i * 8, r.len, true);
     });
     cmd(CMD.WATCH, b);
+    return regions;
   } catch (e) {
     st.log.push(`watch: ${e.message}`);
+    return null;
   }
 }
+// waiting for the first memory message that has every one of some regions (__emu.watch) – (unmapped ones come empty)
+const memWaiters = new Set(); // { want: Set of region addresses, done }
 function onMem(p) {
   const v = new DataView(p.buffer, p.byteOffset, p.length);
   const n = v.getUint32(0, true);
   const out = [];
+  const asked = new Set();
   let o = 4;
   for (let i = 0; i < n && o + 8 <= p.length; i++) {
     const addr = v.getUint32(o, true);
     const len = v.getUint32(o + 4, true);
     o += 8;
+    asked.add(addr);
     if (len) out.push({ addr, b: p.slice(o, o + len) });
     o += len;
   }
   st.mem = out;
+  for (const w of memWaiters) if ([...w.want].every((a) => asked.has(a))) w.done(true);
+}
+function memFor(regions, ms = 3000) {
+  if (!regions.length) return Promise.resolve(true);
+  return new Promise((res) => {
+    const w = { want: new Set(regions.map((r) => r.addr >>> 0)) };
+    const timer = setTimeout(() => w.done(false), ms);
+    w.done = (ok) => {
+      memWaiters.delete(w);
+      clearTimeout(timer);
+      res(ok);
+    };
+    memWaiters.add(w);
+  });
 }
 function read(addr, len) {
   for (const { addr: a, b } of st.mem) if (addr >= a && addr + len <= a + b.length) return b.subarray(addr - a, addr - a + len);
   return null;
+}
+
+// A cheat: a few bytes inside the memory souldew watches (never anywhere else), written by the host between two frames
+// – and only while the game still holds what souldew read there (the host compares). Resolves true once written (the
+// copy here has it too); { ok: false, why } when the host refused (its reason: ctrhost.c mem_write); false when it
+// never reached the host or no answer came.
+let writeId = 0;
+function write(addr, bytes) {
+  const len = bytes?.length || 0;
+  if (!st.liveMemory || st.ended || !st.id || !len || len > 256 || (addr & 0xfff) + len > 0x1000) return Promise.resolve(false);
+  const old = read(addr, len);
+  if (!old) return Promise.resolve(false);
+  const id = ++writeId;
+  const p = new Uint8Array(12 + 2 * len);
+  const v = new DataView(p.buffer);
+  v.setUint32(0, id, true);
+  v.setUint32(4, addr >>> 0, true);
+  v.setUint32(8, len, true);
+  p.set(old, 12);
+  p.set(bytes, 12 + len);
+  const val = Uint8Array.from(bytes);
+  return new Promise((res) => {
+    const done = (ok, why) => {
+      if (!waiters.written.delete(id)) return;
+      clearTimeout(timer);
+      if (ok) read(addr, len)?.set(val); // (the next memory message brings the same)
+      res(ok ? true : why ? { ok: false, why: String(why) } : false);
+    };
+    const timer = setTimeout(() => done(false), 5000);
+    waiters.written.set(id, done);
+    cmd(CMD.WRITE, p).then((sent) => sent || done(false));
+  });
 }
 
 // ---- events ---------------------------------------------------------------------------------------------------------
@@ -277,12 +576,45 @@ function onEvent(p) {
   }
   if (e.event === 'loaded') {
     st.liveMemory = !!e.memory;
+    st.sfxCore = !!e.sfx && q.get('sfx') !== '0';
+    st.sfxWant = false; // (a new host: it knows nothing yet)
+    if (e.romfs && !audio.rom && q.get('rommusic') !== '0') startRomMusic(e.sampleRate);
+    else if (audio.rom) {
+      // (a new host: what the old one was asked never comes – asked again; it knows nothing of the music's ranges)
+      audio.rom.hostRestarted();
+      for (const tag of audio.rom.streamRanges.keys()) audio.rom.tellRanges(tag);
+    }
     startAudio(e.sampleRate);
+    // a second "loaded" with another renderer: the server started the host again with a safer one (renderer "auto",
+    // server/lib/ctrrenderer.mjs) – the play view says so
+    if (e.renderer && st.renderer && e.renderer !== st.renderer) {
+      post({ type: 'emu-renderer', from: st.renderer, to: e.renderer });
+      st.scale = 1; // (the safer renderer always starts at 1×: server/lib/ctr.mjs)
+    }
+    if (e.renderer) st.renderer = e.renderer;
   } else if (e.event === 'title') {
     st.title = e.titleId;
     if (!/^0+$/.test(e.titleId)) watchFor(e.titleId);
-  } else if (e.event === 'stats') st.fps = e.fps;
+  } else if (e.event === 'stats') {
+    st.fps = e.fps;
+    if (Number.isFinite(e.speed)) st.hostSpeed = e.speed;
+    if (Number.isFinite(e.frame)) {
+      st.hostFrame = e.frame;
+      st.hostFrames = true;
+    }
+    // the sped-up sound's real speed, for the mixer to slow it down again (as the fast player) – unless the host says
+    // its exact ratio itself (ffrate)
+    if (!audio.exact && st.speed > 1 && !st.paused && e.speed > 0.5) tellAudio({ type: 'rate', ratio: Math.round(Math.min(e.speed, MAX_SOUND_RATIO) * 100) / 100 });
+  } else if (e.event === 'ffrate') {
+    if (!(e.k >= 1)) return;
+    audio.exact = true;
+    tellAudio({ type: 'rate', ratio: e.k, exact: true, inband: true });
+  }
   else if (e.event === 'stateLoaded') waiters.loaded.splice(0).forEach((f) => f(!!e.ok));
+  else if (e.event === 'written') {
+    if (!e.ok) st.log.push(`write ${Number(e.addr || 0).toString(16)}: ${e.why}`);
+    waiters.written.get(e.id)?.(!!e.ok, e.why);
+  }
   else if (e.event === 'error') {
     st.error = e.message;
     showError(t('ctr.failed', 'The 3DS game can’t run: {why}', { why: e.message }));
@@ -331,6 +663,13 @@ async function pump() {
       const p = buf.subarray(o + 8, o + 8 + len);
       if (type === MSG.VIDEO) onVideo(p.slice());
       else if (type === MSG.AUDIO) onAudio(p);
+      else if (type === MSG.FFSOUND) onFfSound(p);
+      else if (type === MSG.SFX) onSfx(p);
+      else if (type === MSG.ROMFS) {
+        audio.rom?.onRomfs(p); // (before that frame's AUDIO: the position goes in band)
+        updateSfx();
+      }
+      else if (type === MSG.ROMDATA) audio.rom?.onRomData(p);
       else if (type === MSG.MEM) onMem(p);
       else if (type === MSG.EVENT) onEvent(p);
       else if (type === MSG.STATE) waiters.state.shift()?.(p.slice());
@@ -346,7 +685,9 @@ async function pump() {
   // the host is gone: nothing answers what's still waiting (a quick save / load would hang the play view)
   st.ended = true;
   waiters.state.splice(0).forEach((f) => f(null));
+  [...audio.quiet.values()].forEach((f) => f(false));
   waiters.loaded.splice(0).forEach((f) => f(false));
+  [...waiters.written.values()].forEach((f) => f(false));
   if (st.error) return;
   // how the host ended (a crash in the graphics driver shows only as an exit code): asked before the page closes it
   let why = '';
@@ -360,23 +701,12 @@ async function pump() {
 }
 
 // ---- input ------------------------------------------------------------------------------------------------------------
-// libretro joypad bits (the same numbers EmulatorJS uses, lib/controls.mjs BUTTONS.ejs) – plus ZL 12, ZR 13
-const BIT = { b: 0, y: 1, select: 2, start: 3, up: 4, down: 5, left: 6, right: 7, a: 8, x: 9, l: 10, r: 11, zl: 12, zr: 13 };
-const inp = { keys: 0, pad: 0, lx: 0, ly: 0, rx: 0, ry: 0, px: 0, py: 0, touch: false, stickX: 0, stickY: 0 };
+// the joypad bits and the Circle Pad (shared/ctrinput.mjs): keyboard and controller together, the half tilt
+const BIT = CTR_BIT;
+const inp = { keys: 0, pad: 0, lx: 0, ly: 0, rx: 0, ry: 0, px: 0, py: 0, touch: false, stickX: 0, stickY: 0, slowKey: false, slowPad: false, slowTest: false };
 let sentInput = '';
-// Sun/Moon walk with the Circle Pad only (the D-pad scrolls menus): the direction keys move it too – full tilt –
-// unless a controller's stick does
-function stickFromKeys() {
-  const k = inp.keys;
-  const x = (k & (1 << BIT.right) ? 1 : 0) - (k & (1 << BIT.left) ? 1 : 0);
-  const y = (k & (1 << BIT.down) ? 1 : 0) - (k & (1 << BIT.up) ? 1 : 0);
-  return [x * 0x7fff, y * 0x7fff];
-}
 function sendInput() {
-  const buttons = inp.keys | inp.pad;
-  const [kx, ky] = stickFromKeys();
-  const lx = inp.lx || inp.stickX || kx;
-  const ly = inp.ly || inp.stickY || ky;
+  const { buttons, lx, ly } = ctrInput({ ...inp, slow: inp.slowKey || inp.slowPad || inp.slowTest });
   const sig = [buttons, lx, ly, inp.rx, inp.ry, inp.px, inp.py, inp.touch].join();
   if (sig === sentInput) return;
   sentInput = sig;
@@ -389,11 +719,21 @@ function sendInput() {
 }
 
 let keyMap = {}; // keyCode → button
+let halfTiltKey = null; // Settings › Controls "Circle Pad: half tilt" – held: the Circle Pad goes only part of the way
+let hotkeys = controls.resolveHotkeys(null); // the shortcuts' keys (Settings › Controls) – handled by the play view
 function forwardKey(e, down) {
-  post({ type: 'emu-key', key: e.key, code: e.code, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey, down, repeat: e.repeat });
+  post({ type: 'emu-key', key: e.key, code: e.code, keyCode: e.keyCode, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey, down, repeat: e.repeat, blur: e.blur || undefined });
 }
 addEventListener('keydown', (e) => {
   forwardKey(e, true);
+  // a shortcut's exact key: the play view's, never also the game's (Shift+R as reset while R is B) – and Tab
+  // fast-forwards here instead of moving the focus
+  if (controls.isHotkeyKey(e, hotkeys)) return e.preventDefault();
+  if (halfTiltKey && e.keyCode === halfTiltKey.keyCode) {
+    e.preventDefault();
+    inp.slowKey = true;
+    return sendInput();
+  }
   const b = keyMap[e.keyCode];
   if (b === undefined) return;
   e.preventDefault();
@@ -402,15 +742,20 @@ addEventListener('keydown', (e) => {
 });
 addEventListener('keyup', (e) => {
   forwardKey(e, false);
+  if (halfTiltKey && e.keyCode === halfTiltKey.keyCode) {
+    inp.slowKey = false;
+    return sendInput();
+  }
   const b = keyMap[e.keyCode];
   if (b === undefined) return;
   inp.keys &= ~(1 << BIT[b]);
   sendInput();
 });
 addEventListener('blur', () => {
-  forwardKey({ key: 'Tab', code: 'Tab' }, false);
+  forwardKey({ key: 'Tab', code: 'Tab', blur: true }, false); // ends a held fast-forward
   inp.keys = 0;
   inp.pad = 0;
+  inp.slowKey = false;
   inp.touch = false;
   sendInput();
 });
@@ -445,26 +790,54 @@ const lift = () => {
 canvas.addEventListener('pointerup', lift);
 canvas.addEventListener('pointercancel', lift);
 
+// Settings › Controls and › Controller (config.controls, config.pads): read when the page starts, and again whenever
+// they change while the game runs (__emu.setControls from the play view, as lib/nativeplayer.mjs)
+let padCfg = null; // config.pads
+let padButtons = controls.padMap(null); // game button → controller button label
+const padRec = controls.padRecorder(); // (diagnostics: __emu.padInfo)
+let padActions = controls.padActions(null); // controller hotkeys: standard button index → action
+let controlsSig = '';
+function applyControls(config) {
+  const sig = JSON.stringify([config?.controls || null, config?.pads || null]);
+  if (sig === controlsSig) return; // (the play view hands them over once the game runs – mostly what was read at start)
+  controlsSig = sig;
+  keyMap = controls.keyButtons(config?.controls);
+  halfTiltKey = controls.resolve(config?.controls).sneak;
+  hotkeys = controls.resolveHotkeys(config?.controls);
+  padCfg = config?.pads || null;
+  padButtons = controls.padMap(padCfg);
+  padActions = controls.padActions(padCfg);
+  post({ type: 'emu-pad', action: 'ffHold', down: false }); // (a fast-forward button held under the old buttons)
+  // what was held under the old buttons is let go (the next poll presses what is still down)
+  inp.keys = 0;
+  inp.pad = 0;
+  inp.slowKey = false;
+  inp.slowPad = false;
+  if (st.id) sendInput();
+}
+
 // controllers: the chosen device (lib/controls.mjs pickPad) – buttons by Settings › Controller, the left stick is the
 // Circle Pad, the right one the C-Stick; ZR/RT/R2 toggles turbo, ZL/LT/L2 and Home pause (as in player.html)
-function startPads(pads) {
-  const pm = controls.padMap(pads);
+function startPads() {
   const IDX = Object.fromEntries(controls.PAD_LABELS.map((l, i) => [l, i]));
-  const HOT = { 7: 'turbo', 6: 'pause', 16: 'pause' };
   const held = {};
   const axis = (x) => (Math.abs(x) < 0.12 ? 0 : Math.round(Math.max(-1, Math.min(1, x)) * 0x7fff));
   setInterval(() => {
     if (!st.ready || document.visibilityState === 'hidden') return;
-    const pad = controls.pickPad(navigator.getGamepads?.() || [], pads?.device || null);
+    const pad = controls.pickPad(navigator.getGamepads?.() || [], padCfg?.device || null);
+    padRec.see(pad, padButtons, controls.appHasPad());
     if (!pad) {
-      if (inp.pad || inp.lx || inp.ly || inp.rx || inp.ry) Object.assign(inp, { pad: 0, lx: 0, ly: 0, rx: 0, ry: 0 }), sendInput();
+      if (inp.pad || inp.slowPad || inp.lx || inp.ly || inp.rx || inp.ry) Object.assign(inp, { pad: 0, slowPad: false, lx: 0, ly: 0, rx: 0, ry: 0 }), sendInput();
       return;
     }
     let bits = 0;
-    for (const [btn, label] of Object.entries(pm)) {
+    for (const [btn, label] of Object.entries(padButtons)) {
       const i = IDX[label];
-      if (i !== undefined && pad.buttons[i]?.pressed) bits |= 1 << BIT[btn];
+      if (i !== undefined && pad.buttons[i]?.pressed && btn in BIT) bits |= 1 << BIT[btn];
     }
+    // the half tilt on a controller button (Settings › Controller): caps the left stick, and the D-pad sneaks too
+    const slow = IDX[padButtons.sneak];
+    inp.slowPad = !controls.appHasPad() && slow !== undefined && !!pad.buttons[slow]?.pressed;
     // the app's menus have the controller (lib/padnav.mjs): no buttons, sticks centred
     const [lx = 0, ly = 0, rx = 0, ry = 0] = controls.appHasPad() ? [] : pad.axes;
     inp.pad = controls.appHasPad() ? 0 : bits;
@@ -472,11 +845,7 @@ function startPads(pads) {
     inp.ly = axis(ly);
     inp.rx = axis(rx);
     inp.ry = axis(ry);
-    for (const [i, action] of Object.entries(HOT)) {
-      const on = !!pad.buttons[i]?.pressed;
-      if (on && !held[i]) post({ type: 'emu-pad', action });
-      held[i] = on;
-    }
+    for (const m of controls.padHotkeyPresses(pad, padActions, held, controls.appHasPad())) post(m);
     sendInput();
   }, 16);
 }
@@ -484,56 +853,114 @@ function startPads(pads) {
 // ---- window.__emu: what the Play view uses (see player.html) ----------------------------------------------------------
 async function snapshot({ maxW = 192, type = 'image/jpeg', quality = 0.5 } = {}) {
   if (!st.ready) return null;
-  const k = Math.min(1, maxW / canvas.width);
+  // at the arranged picture's own size at most (the canvas holds it blown up by a whole number)
+  const w0 = pic.w || canvas.width;
+  const h0 = pic.h || canvas.height;
+  const k = Math.min(1, maxW / w0);
   const c = document.createElement('canvas');
-  c.width = Math.round(canvas.width * k);
-  c.height = Math.round(canvas.height * k);
-  c.getContext('2d').drawImage(canvas, 0, 0, c.width, c.height);
+  c.width = Math.round(w0 * k);
+  c.height = Math.round(h0 * k);
+  const x = c.getContext('2d');
+  x.imageSmoothingEnabled = k < 1;
+  x.drawImage(canvas, 0, 0, c.width, c.height);
   return new Promise((res) => c.toBlob(res, type, quality));
 }
 
 window.__emu = {
   ready: false,
+  /** Diagnostics: the controller settings this page plays with, the device it picked and the last presses. */
+  padInfo: () => padRec.info(padCfg, padButtons),
   system: () => '3ds',
   locateRam() {},
   ramInfo: () => ({ base: st.liveMemory && st.mem.length ? 0 : -1, tried: 0 }),
   read,
-  write: null, // no cheats for 3DS games
+  /** A cheat (shared/live/cheats.mjs): a Promise – the host writes between two frames. */
+  write,
   paused: () => st.paused,
   pause() {
     st.paused = true;
+    audio.rom?.pause(true); // (the host answers no ROMREAD while paused: none times out)
     cmd(CMD.SPEED, f32(0));
+    tellAudio({ type: 'paused', paused: true });
   },
   resume() {
     st.paused = false;
+    audio.rom?.pause(false);
     cmd(CMD.SPEED, f32(st.speed === Infinity ? 1000 : st.speed));
+    tellAudio({ type: 'paused', paused: false });
   },
   togglePause() {
     if (st.paused) this.resume();
     else this.pause();
   },
-  restart: () => cmd(CMD.RESET),
-  /** 1–4, or Infinity: as fast as this computer can. */
+  restart: () => {
+    tellAudio('clear');
+    tellAudio({ type: 'cut' });
+    audio.rom?.cut();
+    return cmd(CMD.RESET);
+  },
+  /** 1–4, or Infinity: as fast as this computer can. (In fast-forward the host sends about 60 pictures a second.) */
   setSpeed(ratio) {
     st.speed = ratio === Infinity ? Infinity : Math.max(1, Number(ratio) || 1);
     if (!st.paused) cmd(CMD.SPEED, f32(st.speed === Infinity ? 1000 : st.speed));
-    // fast-forward: every 2nd–4th picture is enough to see where you are (the host skips the others)
-    cmd(CMD.FRAMESKIP, u32(st.speed > 1 ? Math.min(4, Math.ceil(st.speed)) : 1));
-    if (st.speed > 1) audio.node?.port.postMessage('clear');
+    tellAudio({ type: 'speed', ratio: Math.min(st.speed, MAX_SOUND_RATIO) });
+    audio.rom?.speed(st.speed);
   },
   speed: () => st.speed,
-  setFullTurbo() {},
-  frames: () => st.frames,
+  setFullTurbo() {}, // the native host always runs fast-forward at full power
+  /** Settings › Controls / Controller changed while the game runs: { controls, pads } as in config. */
+  setControls(config) {
+    applyControls(config);
+  },
+  /**
+   * Emulated frames so far – the host's count (four times a second), not the pictures that arrived: in fast-forward
+   * the host sends only about 60 pictures a second, and counting those made every step look like 1× to the play view
+   * (lib/reach.mjs then offered only 1× and 4×).
+   */
+  frames: () => (st.hostFrames ? st.hostFrame : st.frames),
   fastForward: () => st.speed > 1,
   ffRatio: () => (st.speed > 1 ? st.speed : 3),
-  /** A save state (the host serializes between two frames). */
+  /** The internal resolution this game runs with (1–3): the play view's hint when it holds back fast-forward (lib/ffhint.mjs). */
+  scale: () => st.scale,
+  /**
+   * A save state. The host copies it between two frames (a 3DS core with souldew-state.patch packs it on a thread
+   * meanwhile; an older one packs it right there – 0.4 s without sound on a Windows PC): the sound may run dry for that
+   * moment, so the worklet takes it as a break, not as a gap that grows its buffer.
+   */
   getState() {
     if (st.ended) return Promise.resolve(null);
+    tellAudio({ type: 'stall' });
     return ask(waiters.state, CMD.SAVE, undefined, null, (b) => (b && b.length ? b : null));
+  },
+  /**
+   * Resolves true at the next quiet moment of the game's sound (200 ms in a row below −40 dBFS: a scene change, a menu,
+   * a fade), right away while paused or fast-forwarding (the music then doesn't come from the host), false after
+   * `within` ms without one – the play view takes its resume state then, so the host's moment without sound (getState)
+   * falls where it isn't heard.
+   */
+  quietMoment(within = 180000) {
+    if (st.ended || !audio.node) return Promise.resolve(false);
+    if (st.paused || st.speed > 1) return Promise.resolve(true);
+    return new Promise((res) => {
+      const id = ++audio.quietId;
+      const done = (v) => {
+        clearTimeout(timer);
+        audio.quiet.delete(id);
+        res(v);
+      };
+      const timer = setTimeout(() => {
+        tellAudio({ type: 'quiet', cancel: true });
+        done(false);
+      }, within);
+      audio.quiet.set(id, done);
+      tellAudio({ type: 'quiet', id, ms: 200 });
+    });
   },
   loadState(u8) {
     if (st.ended) return Promise.resolve(false);
-    audio.node?.port.postMessage('clear');
+    tellAudio('clear');
+    tellAudio({ type: 'cut' });
+    audio.rom?.cut();
     return ask(waiters.loaded, CMD.LOAD, u8 instanceof Uint8Array ? u8 : new Uint8Array(u8), false);
   },
   async screenshot() {
@@ -543,7 +970,10 @@ window.__emu = {
   canvas: () => (st.ready ? canvas : null),
   captureStream(fps = 15) {
     try {
-      return st.ready && canvas.captureStream ? canvas.captureStream(fps) : null;
+      if (!st.ready || !canvas.captureStream) return null;
+      streamCanvas ||= document.createElement('canvas');
+      streamFrame();
+      return streamCanvas.captureStream(fps);
     } catch {
       return null;
     }
@@ -567,8 +997,54 @@ window.__emu = {
     if (audio.gain) audio.gain.gain.value = v;
   },
   muted: () => st.volume === 0,
-  setTurboAudio() {},
-  perf: () => ({ fps: st.fps, frames: st.frames, title: st.title, liveMemory: st.liveMemory, error: st.error, log: st.log.slice(-20) }),
+  /** What plays while fast-forwarding: 'music' | 'mute' | 'original' | 'plain' (as the fast player). */
+  setTurboAudio(mode) {
+    st.turboAudio = mode;
+    tellAudio({ type: 'mode', mode });
+    if (audio.rom) audio.rom.enabled = mode === 'music';
+    updateSfx();
+  },
+  /** The music the game plays now (location.mjs musicKey), when the live reader knows it: the turbo mixer follows it. */
+  songKey(key) {
+    if (!key || key === audio.key) return;
+    audio.key = key;
+    tellAudio({ type: 'song', key });
+  },
+  /** The mixer's last state changes (diagnostics). */
+  /** Every mixer event from now on (the page keeps them for "Save diagnostics"); returns the unsubscribe. */
+  onAudio(f) {
+    audio.subs.add(f);
+    return () => audio.subs.delete(f);
+  },
+  turboAudio: () => ({ mode: st.turboAudio, key: audio.key, events: audio.events.slice(-10), rom: audio.rom?.state() ?? null }),
+  /** Tests: what the mixer plays right now ({ playing, turbo, key, … }), or null without sound. */
+  audioProbe() {
+    if (!audio.node) return Promise.resolve(null);
+    return new Promise((res) => {
+      audio.probes.push(res);
+      tellAudio({ type: 'probe' });
+      setTimeout(() => res(null), 2000);
+    });
+  },
+  /**
+   * Tests, diagnostics: a recording of what the sound worklet plays over the next `seconds` (before the volume) –
+   * { sampleRate, l, r, ring } (ring: the buffer's numbers, lib/jitterring.mjs) – or null without sound. `part` 'sfx':
+   * only what the sound effects add while fast-forwarding (lib/sfxplayer.mjs).
+   */
+  audioTap(seconds = 10, part = null) {
+    if (!audio.node) return Promise.resolve(null);
+    return new Promise((res) => {
+      audio.taps.push(res);
+      tellAudio({ type: 'tap', frames: Math.round(audio.ctx.sampleRate * seconds), part });
+      setTimeout(() => res(null), seconds * 1000 + 5000);
+    });
+  },
+  perf: () => ({
+    fps: st.fps, speed: st.hostSpeed, frames: st.hostFrame, shown: st.frames, title: st.title, liveMemory: st.liveMemory, error: st.error, renderer: st.renderer, scale: st.scale, log: st.log.slice(-20),
+    picture: { lit: black.lit, blackSeconds: Math.round(black.ms / 1000) }, // (a game that only ever showed black)
+    sound: audio.ctx ? { contextRate: audio.ctx.sampleRate, state: audio.ctx.state, baseLatencyMs: +(audio.ctx.baseLatency * 1000).toFixed(1), outputLatencyMs: +((audio.ctx.outputLatency || 0) * 1000).toFixed(1) } : null,
+    last: audio.last,
+  }),
   /** Tests / diagnostics: hold buttons by name (["a"], ["up", "b"] …) – what a controller would do. */
   hold(names = []) {
     inp.keys = names.reduce((m, n) => (n in BIT ? m | (1 << BIT[n]) : m), 0);
@@ -580,6 +1056,13 @@ window.__emu = {
     inp.stickY = Math.round(Math.max(-1, Math.min(1, y)) * 0x7fff);
     sendInput();
   },
+  /** Tests / diagnostics: hold the half-tilt key (Settings › Controls "Circle Pad: half tilt") or let it go. */
+  halfTilt(on = true) {
+    inp.slowTest = !!on;
+    sendInput();
+  },
+  /** Diagnostics: what the page sends to the game right now – joypad bits and the Circle Pad (int16). */
+  input: () => ctrInput({ ...inp, slow: inp.slowKey || inp.slowPad || inp.slowTest }),
   touch(x, y, down = true) {
     inp.px = Math.round(x * 0xfffe - 0x7fff);
     inp.py = Math.round(y * 0xfffe - 0x7fff);
@@ -587,20 +1070,41 @@ window.__emu = {
     sendInput();
   },
   title: () => st.title,
-  /** The screen layout (shared/ctrlayout.mjs CTR_LAYOUTS): applied to the next picture, no restart. */
+  /** The game's update in souldew's player (server/lib/ctrupdate.mjs prepareUpdate): null, or { versionText, gameVersion, installed, why, tracking … }. */
+  update: () => st.update || null,
+  /** The screen layout (shared/ctrlayout.mjs CTR_LAYOUTS) or the smooth filter: applied right away, no restart. */
   setOption(k, v) {
     if (k === 'ctr_layout' && CTR_LAYOUTS.includes(v)) {
       layoutId = v;
       if (inp.touch) lift();
       drawFrame();
+    } else if (k === 'ctr_smooth') {
+      smooth = !!v;
+      applyFilter();
+      layout();
+      drawFrame();
     }
   },
   layout: () => layoutId,
-  /** More memory to read (at most 16 regions of 64 KB together with the game's own) – diagnostics and research. */
-  watch(regions = []) {
-    extraRegions = regions.filter((r) => Number.isInteger(r.addr) && Number.isInteger(r.len) && r.len > 0 && r.len <= 65536);
+  /** Settings › "Whole pixels only" switched while playing. */
+  setWholePixels(on) {
+    wholePixels = !!on;
+    layout();
+  },
+  /**
+   * More memory to read (at most 16 regions of 64 KB together with the game's own) – the 3DS bag's search
+   * (shared/live/cheats.mjs locateCtrBag), diagnostics and research; replaces what was asked before. Resolves true
+   * once the host has sent all of them (read() has them then – unmapped ones read null), false when they didn't fit
+   * in or no memory came.
+   */
+  async watch(regions = []) {
+    const want = regions.filter((r) => Number.isInteger(r.addr) && Number.isInteger(r.len) && r.len > 0 && r.len <= 65536);
+    extraRegions = want;
     st.watching = '';
-    return watchFor(st.title && !/^0+$/.test(st.title) ? st.title : null);
+    if (!st.liveMemory || st.ended) return false;
+    const sent = await watchFor(st.title && !/^0+$/.test(st.title) ? st.title : null);
+    if (!sent || want.some((r) => !sent.includes(r))) return false;
+    return memFor(want);
   },
 };
 
@@ -610,26 +1114,31 @@ async function start() {
   await setLang(status?.config?.lang || guessLang()).catch(() => {});
   try {
     await controls.detectLayout(status?.config?.lang);
-    const m = controls.resolve(status?.config?.controls);
-    keyMap = Object.fromEntries(Object.entries(m).filter(([, v]) => v).map(([b, v]) => [v.keyCode, b]));
-    startPads(status?.config?.pads || null);
+    applyControls(status?.config);
+    startPads();
   } catch (e) {
     st.log.push(`controls: ${e.message}`);
   }
   const res = await fetch('/api/ctr/start', {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-soullink': '1' },
-    body: JSON.stringify({ rom: q.get('rom'), key: q.get('key'), scale: Number(q.get('scale')) || 1 }),
+    // (no ?scale=: the server takes Settings › Play › "3DS resolution")
+    body: JSON.stringify({ rom: q.get('rom'), key: q.get('key'), ...(q.get('scale') ? { scale: Number(q.get('scale')) } : {}) }),
   });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) return showError(serverErrorText(j, res.status), j.code || null);
   st.id = j.id;
   st.liveMemory = !!j.liveMemory;
+  st.renderer = j.renderer || null;
+  st.scale = [1, 2, 3].includes(j.scale) ? j.scale : 1;
+  st.update = j.update || null;
   const stop = () => fetch('/api/ctr/stop', { method: 'POST', keepalive: true, headers: { 'content-type': 'application/json', 'x-soullink': '1' }, body: JSON.stringify({ id: st.id }) }).catch(() => {});
   addEventListener('pagehide', stop);
   pump().catch((e) => {
     st.ended = true;
     waiters.state.splice(0).forEach((f) => f(null));
+    [...audio.quiet.values()].forEach((f) => f(false));
     waiters.loaded.splice(0).forEach((f) => f(false));
+    [...waiters.written.values()].forEach((f) => f(false));
     showError(t('ctr.failed', 'The 3DS game can’t run: {why}', { why: e.message }));
   });
 }

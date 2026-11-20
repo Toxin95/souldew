@@ -3,20 +3,30 @@ import { useApp, Sprite, Types, Modal, SpeciesPicker, Led, copy, download } from
 import { Icon } from '../lib/icons.mjs';
 import { t, ago } from '../lib/i18n.mjs';
 import { api } from '../lib/api.mjs';
-import { speciesName, gameById, hackById, gameTitle } from '../lib/data.mjs';
+import { speciesName, speciesFormName, gameById, hackById, gameTitle } from '../lib/data.mjs';
 import { play } from '../lib/sound.mjs';
 import {
   progression, pairState, setEncounter, markDead, revive, markExtraDead, party, live, counts, checks, feedList, feed, feedText, causeText, msg, areaName, joinNames,
-  players as getPlayers, rules as getRules, levelCap, dupeOf, resumeRun, slotsOf, encounter, openAreas, runStats, isNuzlocke, logCheatRule,
-  logTypeHelpRule, allowedRulesPatch, isHost, HOST_SLOT,
+  players as getPlayers, rules as getRules, levelCap, dupeOf, resumeRun, slotsOf, encounter, openAreas, runStats, isNuzlocke, logRulesChange,
+  stampLivesChange, allowedRulesPatch, hostSlotOf, canEditRules, lives as getLives, livesFor, lastWildAt, genOfRun, shinyNote, beforeBalls,
 } from '../lib/run.mjs';
-import { PartyPanel, PartyGrid, TeamColumns } from './party.mjs';
-import { HostCode } from './invitecode.mjs';
+import { writeHostRules } from '../lib/hostrules.mjs';
+import { PartyPanel, PartyGrid, TeamColumns, unhatched } from './party.mjs';
+import { MonDetail } from './mondetail.mjs';
+import { RunFriendInvites } from './friends.mjs';
+import { HostCode, PackVersionNote } from './invitecode.mjs';
 import { RestartModal } from './restart.mjs';
+import { KeepIntroItem } from './introsave.mjs';
+import { SaveImportDialog } from './saveimport.mjs';
 import { useStreamer } from '../lib/streamer.mjs';
-import { NuzlockeRules, Choice, TypeHelpRule } from './nuzrules.mjs';
-import { ShareButton } from './liveshare.mjs';
+import { NuzlockeRules, Choice, TypeHelpRule, LivesRule, SoulLinkRules, SoulLinkAuto, HostRulesNote, BallsRule, LinkRules, GiftRule, RaidRules } from './nuzrules.mjs';
+import { ShareButton, HallOfFame } from './liveshare.mjs';
 import { deathEvent } from '../lib/liveshare.mjs';
+import { LinkButtons, LinkGroupButton, HeadToHead, linkUnavailable } from './linkplay.mjs';
+import { RpsStart } from './rps.mjs';
+import { RaidStart } from './raid.mjs';
+import { RAID_SYSTEMS } from '/shared/live/raidhp.mjs';
+import { PartnerTogether } from './together.mjs';
 
 
 /** Is `slot` connected right now? Per player once the app tracks it (`onlineSlots`), before that "any partner". */
@@ -80,6 +90,8 @@ function PlayerTag({ slot, right }) {
   const fresh = l && Date.now() - (l.at || 0) < 15000;
   const online = slotOnline(app, slot);
   const cap = levelCap(doc, manifest, slot);
+  // the lives rule with a pool per player: each player's own count (a shared pool is a stat of the head)
+  const lv = getLives(doc, manifest)?.pool === 'player' ? livesFor(doc, manifest, slot) : null;
   return html`<div class=${`player-tag ${slot} ${right ? 'right' : ''}`} style=${`--acc:var(--${slot})`}>
     <${Led} on=${(online && fresh) || playingHere} color="green" blink=${online && !fresh && !playingHere} />
     <div class="stack-s" style="gap:2px;min-width:0">
@@ -88,11 +100,15 @@ function PlayerTag({ slot, right }) {
         // each fact stays in one piece when the line wraps in a narrow head card ("cap 17", not "cap ⏎ 17")
         ? [l.source === 'live' ? t('board.liveNow', 'live') : t('board.fromSave', 'from save'), ago(l.at),
           l.badges !== undefined ? t('board.badges', '{n} badge|{n} badges', { n: l.badges, count: l.badges }) : null,
-          cap.cap && getRules(doc, manifest).levelCaps ? t('board.cap', 'cap {n}', { n: cap.cap }) : null].filter(Boolean)
+          cap.cap && getRules(doc, manifest).levelCaps ? t('board.cap', 'cap {n}', { n: cap.cap }) : null,
+          lv ? html`<span class=${lv.low || lv.out ? 'lives-low' : ''}>${t('board.livesFact', '{n} life left|{n} lives left', { n: lv.left, count: lv.left })}</span>` : null].filter(Boolean)
           .map((x, i) => html`${i ? ' · ' : ''}<span class="fact">${x}</span>`)
         : playingHere ? t('board.playingNoTeam', 'playing – no team yet')
           : slot === me ? t('board.startPlaying', 'Start the game to go live')
             : online ? t('board.partnerOnline', 'online – no team yet') : linkStatus ? t('board.notPlaying', 'not playing yet') : t('rail.offline', 'Not connected')}</span>
+      ${slot !== me && html`<${HeadToHead} slot=${slot} />`}
+      ${slot !== me ? html`<${LinkButtons} slot=${slot} />` : html`<${LinkGroupButton} />`}
+      ${slot !== me && html`<${PartnerTogether} slot=${slot} />`}
     </div>
   </div>`;
 }
@@ -182,22 +198,26 @@ function BoardHead({ counts: c }) {
   const invite = !solo && !manifest.imported && missing.length > 0;
   const stat = (cls, n, label) => html`<div class=${`stat center ${cls} ${n === 0 ? 'zero' : ''}`}><b>${n}</b><span>${label}</span></div>`;
   const sc = solo ? soloCounts(doc, manifest) : null;
+  // the lives rule with one pool (solo, or shared by everyone): how many are left, next to the dead
+  const shared = getLives(doc, manifest)?.pools.all;
+  const livesStat = shared ? stat(`lives ${shared.low || shared.out ? 'low' : ''}`, shared.left, t('board.livesLeft', 'life left|lives left', { count: shared.left })) : null;
   const stats = solo
     ? html`<div class="stat-strip">
         ${stat('', sc.caught, t('board.caught', 'caught'))}${stat('', sc.missed, t('board.missed', 'missed'))}${stat('open', sc.open, t('board.openAreas', 'open areas'))}
-        ${stat('alive', sc.alive, t('board.alive', 'alive'))}${stat('dead', sc.dead, t('board.dead', 'dead'))}</div>`
+        ${stat('alive', sc.alive, t('board.alive', 'alive'))}${stat('dead', sc.dead, t('board.dead', 'dead'))}${livesStat}</div>`
     : html`<div class="stat-strip" style="justify-content:center">
-        ${stat('alive', c.linked, t('board.alive', 'alive'))}${stat('dead', c.dead, t('board.dead', 'dead'))}${stat('', c.waiting, t('board.waiting', 'waiting'))}</div>`;
+        ${stat('alive', c.linked, t('board.alive', 'alive'))}${stat('dead', c.dead, t('board.dead', 'dead'))}${stat('', c.waiting, t('board.waiting', 'waiting'))}${livesStat}</div>`;
   return html`<div class="stack" style="margin-bottom:6px">
     <div class="row"><h1 style="margin-right:auto">${manifest.name}</h1>
-      <span class="small muted">${solo ? `${t('board.nuzlocke', 'Nuzlocke')} · ` : ''}${h ? h.name : g ? gameTitle(g) : manifest.game?.title || ''}${manifest.randomizer?.enabled ? ` · ${t('board.randomized', 'randomized')}` : ''}</span>
+      <span class="small muted">${solo ? `${t('board.nuzlocke', 'Nuzlocke')} · ` : ''}${h ? h.name : g ? gameTitle(g) : manifest.game?.title || ''}${manifest.randomizer?.enabled ? ` · ${t('board.randomized', 'randomized')}` : ''}${shinyNote(manifest) ? ` · ${shinyNote(manifest)}` : ''}</span>
       ${invite && html`<button class="btn primary small" onClick=${() => setModal('invite')}><${Icon} name="user" size=${14} />${t('board.invitePlayer', 'Invite player')}</button>`}
       <${FilesMenu} />
       ${!st && html`<button class="btn small ghost" onClick=${() => setModal('end')}><${Icon} name="grave" size=${14} />${t('board.endRun', 'End run')}</button>`}</div>
     ${st && html`<div class=${`run-banner ${st.state}`} role="status">
       <${Icon} name=${st.state === 'won' ? 'heart' : st.state === 'failed' ? 'grave' : 'pause'} size=${28} />
       <div class="grow"><b>${{ failed: t('end.bannerFailed', 'This run has failed'), won: t('end.bannerWon', 'You made it – run won!'), ended: t('end.bannerEnded', 'This run has ended') }[st.state] || st.state}</b>
-        <div class="small muted">${[endReason(st), names[st.by]?.name, ago(st.at), st.note].filter(Boolean).join(' · ')}</div></div>
+        <div class="small muted">${[endReason(st), names[st.by]?.name, ago(st.at), st.note].filter(Boolean).join(' · ')}</div>
+        ${st.state === 'won' && html`<${HallOfFame} status=${st} compact />`}</div>
       ${st.state !== 'won' && html`<button class="btn primary small" onClick=${() => setModal('restart')}
         title=${solo ? t('end.restartHintSolo', 'A new attempt with the same settings and rules – with a new randomizer seed.') : t('end.restartHint', 'A new run with the same settings and a new randomizer seed – the others are invited.')}><${Icon} name="reset" size=${14} />${t('end.restart', 'New attempt …')}</button>`}
       <button class="btn small ghost" onClick=${() => resumeRun(doc, me)} title=${t('over.resumeHint', 'Undo: the run goes on as before, tracking resumes.')}>${t('end.resume', 'Play on after all')}</button>
@@ -220,19 +240,25 @@ function BoardHead({ counts: c }) {
 /** Why the run ended, when the app ended it (blackout / deathless rule). */
 function endReason(st) {
   if (!st?.auto) return '';
-  return { blackout: t('end.reasonBlackout', 'blackout'), deathless: t('end.reasonDeathless', 'deathless rule'), wipe: t('end.reasonWipe', 'team wiped') }[st.reason] || '';
+  return { blackout: t('end.reasonBlackout', 'blackout'), deathless: t('end.reasonDeathless', 'deathless rule'), wipe: t('end.reasonWipe', 'team wiped'), lives: t('end.reasonLives', 'out of lives') }[st.reason] || '';
 }
 
-/** Export: my ROM, my save (only once one exists), the invite – plain downloads from the server. */
+/**
+ * Export: my ROM, my save (only once one exists), the invite – plain downloads from the server. Import: a save file from
+ * elsewhere into my game (web/views/saveimport.mjs – once the game is built).
+ */
 function FilesMenu() {
   const { manifest, me } = useApp();
   const [open, setOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [hasSave, setHasSave] = useState(false);
+  const [intro, setIntro] = useState(null); // can this save become the intro save of the game (KeepIntroItem)
   const base = `/api/runs/${manifest.id}/download`;
   useEffect(() => {
     if (!open) return;
     let off = false;
     fetch(`${base}?what=save&slot=${me}`, { method: 'HEAD' }).then((r) => !off && setHasSave(r.ok)).catch(() => !off && setHasSave(false));
+    api.get(`/api/runs/${manifest.id}/intro/${me}`).then((r) => !off && setIntro(r), () => !off && setIntro(null));
     return () => { off = true; };
   }, [open, manifest.id, me]);
   const nothing = !manifest.outputs?.[me] && !hasSave && isNuzlocke(manifest);
@@ -244,9 +270,14 @@ function FilesMenu() {
     ${open && html`<div class="run-menu" role="menu">
       ${manifest.outputs?.[me] && html`<a role="menuitem" href=${`${base}?what=rom&slot=${me}`} download>${t('board.fileRom', 'Save my game (ROM)')}</a>`}
       ${hasSave && html`<a role="menuitem" href=${`${base}?what=save&slot=${me}`} download>${t('board.fileSave', 'Save my save file')}</a>`}
+      <${KeepIntroItem} manifest=${manifest} me=${me} state=${intro} onDone=${() => setOpen(false)} />
+      ${manifest.outputs?.[me] && html`<button role="menuitem" onClick=${() => { setOpen(false); setImporting(true); }}
+        title=${t('simp.openHint', 'Replace this game’s save with one from another emulator, a flash cart or an older backup – the current one is backed up first.')}>${t('simp.open', 'Import a save file …')}</button>`}
       ${!isNuzlocke(manifest) && html`<a role="menuitem" href=${`${base}?what=pack`} download>${t('board.filePack', 'Save invite')}</a>`}
       ${nothing && html`<span class="small faint" style="padding:7px 10px;white-space:nowrap">${t('board.filesNone', 'Nothing to save yet.')}</span>`}
     </div>`}
+    ${importing && html`<${SaveImportDialog} target=${{ runId: manifest.id, slot: me, system: manifest.game?.system, label: manifest.name }}
+      onClose=${() => setImporting(false)} />`}
   </div>`;
 }
 
@@ -277,7 +308,7 @@ function EndRunModal({ onClose }) {
 }
 
 /** Invite: a 6-digit code first (HostCode – it picks the next free player slot), the file / clipboard as the fallback. */
-export function InviteBody({ manifest, heading = true }) {
+export function InviteBody({ manifest, heading = true, autoFriends = [] }) {
   const { toast } = useApp();
   const json = JSON.stringify(manifest.pack, null, 2);
   const others = slotsOf(manifest).slice(1).map((s) => manifest.players?.[s]?.name).filter(Boolean);
@@ -288,6 +319,8 @@ export function InviteBody({ manifest, heading = true }) {
     <p class="muted">${many
       ? t('invite.codeWhatGroup', 'Easiest: create a code for each player and tell it to them. Their app fetches the settings and the key to your room – no game data – once you allow it.')
       : t('invite.codeWhat', 'Easiest: create a code and tell it to {name}. Their app fetches the settings and the key to your room – no game data – once you allow it.', { name: partner })}</p>
+    <${RunFriendInvites} manifest=${manifest} autoFriends=${autoFriends} />
+    <${PackVersionNote} manifest=${manifest} />
     <${HostCode} manifest=${manifest} />
     <details class="group"><summary>${t('invite.fileInstead', 'Or use an invite file')}</summary><div class="stack" style="padding:4px 14px 12px">
     <p class="muted">${t('invite.what', 'The invite is one small file (.soullink.json). It holds the settings and the key to your room – no game data.')}</p>
@@ -309,7 +342,7 @@ export function InviteBody({ manifest, heading = true }) {
 
 // One SoulLink pair as two party-menu panels (your mon | partner's mon) joined by a strand. Three or four players:
 // the area with its strand on top, everybody's panel below it in the same columns as the head.
-function GroupRow({ area, mons, leads }) {
+function GroupRow({ area, mons, leads, onPick }) {
   const { doc, manifest, runData } = useApp();
   const slots = slotsOf(manifest);
   const st = area ? pairState(doc, area, slots).state : 'empty';
@@ -317,7 +350,7 @@ function GroupRow({ area, mons, leads }) {
   const side = (slot) => {
     const mon = mons[slot];
     return html`<${PartyPanel} mon=${mon} gen=${runData.gen} accent=${`var(--${slot})`} lead=${!!mon && leads[slot] === mon} dead=${dead}
-      types=${mon && !mon.maxHp ? runData.types(mon.species, slot) : null} placeholder=${t('board.noMon', 'not in the team')} />`;
+      types=${mon && !mon.maxHp ? runData.types(mon.species, slot) : null} placeholder=${t('board.noMon', 'not in the team')} onPick=${onPick ? (m) => onPick(m, slot) : null} />`;
   };
   const label = area ? areaName(doc, manifest, area) : t('board.unlinked', 'unassigned');
   const strand = html`<svg viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true"><path class="strand" vector-effect="non-scaling-stroke" d="M1 13 C 30 2, 50 24, 60 13 S 92 2, 119 13" /></svg>`;
@@ -364,9 +397,13 @@ function LiveTab({ warnings }) {
   const names = getPlayers(doc, manifest);
   const slots = slotsOf(manifest);
   const solo = isNuzlocke(manifest);
+  // the Pokémon whose details are open (its key: the live data of the next snapshot shows, not the one clicked)
+  const [detail, setDetail] = useState(null);
+  const pick = (mon, slot) => setDetail({ slot, key: mon.key || null, mon });
   const fromLive = (slot) => {
     const l = live(doc, slot);
-    if (l?.party?.length) return l.party;
+    // (an egg stays out until it hatches – then it is a Pokémon of the team like any other)
+    if (l?.party?.length) return l.party.filter((m) => !unhatched(m));
     return party(doc, slot).map((area) => {
       const e = doc.get(`enc:${area}:${slot}`);
       return e ? { area, species: e.species, nick: e.nickname, level: e.level, shiny: e.shiny } : null;
@@ -385,12 +422,13 @@ function LiveTab({ warnings }) {
     ${slots.length === 2
       ? html`<div class="pair-row pair-head">${who(slots[0])}<span class="pair-gap"></span>${who(slots[1])}</div>`
       : html`<div class=${`group-mons group-head n${slots.length}`}>${slots.map((s) => who(s))}</div>`}
-    ${rows.map((r) => html`<${GroupRow} key=${r.area} ...${r} leads=${leads} />`)}
-    ${unassigned.map((r, i) => html`<${GroupRow} key=${`u${i}`} ...${r} leads=${leads} />`)}
+    ${rows.map((r) => html`<${GroupRow} key=${r.area} ...${r} leads=${leads} onPick=${pick} />`)}
+    ${unassigned.map((r, i) => html`<${GroupRow} key=${`u${i}`} ...${r} leads=${leads} onPick=${pick} />`)}
   </div>`;
   const teamsView = html`<${TeamColumns} slots=${slots} teams=${teams} names=${Object.fromEntries(slots.map((s) => [s, names[s].name]))} gen=${runData.gen} me=${me}
-    typesOf=${(id, s) => runData.types(id, s)} caption=${areaOf} isDead=${deadPair} />`;
+    typesOf=${(id, s) => runData.types(id, s)} caption=${areaOf} isDead=${deadPair} onPick=${pick} />`;
   const empty = rows.length + unassigned.length === 0;
+  const shown = detail && ((detail.key && teams[detail.slot]?.find((m) => m.key === detail.key)) || (!detail.key && detail.mon));
   return html`<div class="stack-l">
     <${Inbox} />
     <${Warnings} list=${warnings} />
@@ -399,7 +437,7 @@ function LiveTab({ warnings }) {
           <p class="muted prose">${solo ? t('board.emptyTextSolo', 'Start the game – as soon as you have Pokémon, your team appears here live.')
             : slots.length > 2 ? t('board.emptyTextGroup', 'Start the game – as soon as you have Pokémon, every team appears here live, group by group.')
               : t('board.emptyText', 'Start the game – as soon as you have Pokémon, both teams appear here live, pair by pair.')}</p></div>`
-      : solo ? html`<${SoloTeam} team=${teams.p1} areaOf=${areaOf} isDead=${deadPair} />`
+      : solo ? html`<${SoloTeam} team=${teams.p1} areaOf=${areaOf} isDead=${deadPair} onPick=${(m) => pick(m, 'p1')} />`
         : html`<section class="stack">
           <div class="row live-view-bar"><span class="small faint">${view === 'teams'
             ? slots.length > 2 ? t('board.viewTeamsHintGroup', 'Every team as in the game menu') : t('board.viewTeamsHint', 'Both teams as in the game menu')
@@ -410,11 +448,13 @@ function LiveTab({ warnings }) {
             </div></div>
           ${view === 'teams' ? teamsView : pairs}
         </section>`}
+    ${shown && html`<${MonDetail} mon=${shown} gen=${runData.gen} slot=${detail.slot} owner=${solo ? '' : names[detail.slot]?.name || ''}
+      caption=${areaOf(shown)} onClose=${() => setDetail(null)} />`}
   </div>`;
 }
 
 /** Solo live view: the team as in the game menu, with the level cap, the next boss and the box next to it. */
-function SoloTeam({ team, areaOf, isDead }) {
+function SoloTeam({ team, areaOf, isDead, onPick }) {
   const { doc, manifest, runData } = useApp();
   const r = getRules(doc, manifest);
   const { cap, boss } = levelCap(doc, manifest, 'p1');
@@ -422,7 +462,7 @@ function SoloTeam({ team, areaOf, isDead }) {
   const over = cap && r.levelCaps ? team.filter((m) => m.level > cap).length : 0;
   return html`<section class="solo-team">
     <${PartyGrid} party=${team} gen=${runData.gen} accent="var(--p1)" label=${t('play.yourTeam', 'Your team')}
-      typesOf=${(id) => runData.types(id, 'p1')} isDead=${isDead}
+      typesOf=${(id) => runData.types(id, 'p1')} isDead=${isDead} onPick=${onPick}
       caption=${(m) => `${areaOf(m)}${cap && r.levelCaps && m.level > cap ? ` · ${t('solo.overCap', 'over the cap')}` : ''}`} />
     <aside class="solo-side panel">
       ${cap && r.levelCaps ? html`<div class=${`solo-cap ${over ? 'over' : ''}`}><span class="small muted">${t('cap.title', 'Level cap')}</span>
@@ -468,13 +508,13 @@ function Inbox() {
       return html`<div class="inbox-item">
         <${Sprite} id=${it.mon.species} shiny=${it.mon.shiny} gen=${runData.gen} />
         <div><b>${it.mon.nickname || speciesName(it.mon.species)}</b> <span class="small muted">${t('common.lv', 'Lv')} ${it.mon.level || it.mon.metLevel || '?'}${it.mon.shiny ? ` · ${t('common.shiny', 'shiny')}` : ''}</span>
-          <div class="small muted">${it.where ? t('inbox.caughtAt', 'Caught at {where}', { where: it.where }) : t('inbox.noLocation', 'This game doesn’t record where it was caught')}${it.reason === 'occupied' ? ` – ${t('inbox.occupied', 'you already have an encounter there')}` : ''}${it.reason === 'egg' ? ` – ${t('inbox.egg', 'hatched from an egg: pick the area it counts for')}` : ''}${it.reason === 'special' ? ` – ${t('inbox.special', 'a trade or gift, not a route encounter: pick the area it counts for')}` : ''}${it.reason === 'dupe' ? ` – ${t('inbox.dupe', 'dupes clause: this evolution line is already caught ({area})', { area: areaName(doc, manifest, it.dupeArea) })}` : ''}</div></div>
+          <div class="small muted">${it.where ? t('inbox.caughtAt', 'Caught at {where}', { where: it.where }) : t('inbox.noLocation', 'This game doesn’t record where it was caught')}${it.reason === 'occupied' ? ` – ${t('inbox.occupied', 'you already have an encounter there')}` : ''}${it.reason === 'egg' ? ` – ${t('inbox.egg', 'hatched from an egg: pick the area it counts for')}` : ''}${it.reason === 'special' ? ` – ${t('inbox.special', 'a trade or gift, not a route encounter: pick the area it counts for')}` : ''}${it.reason === 'dupe' ? ` – ${it.dupeMissed ? t('inbox.dupeMissed', 'dupes clause: this evolution line already got away once ({area})', { area: areaName(doc, manifest, it.dupeArea) }) : t('inbox.dupe', 'dupes clause: this evolution line is already caught ({area})', { area: areaName(doc, manifest, it.dupeArea) })}` : ''}</div></div>
         <div class="row" style="gap:6px">
           <select value=${sel} onChange=${(e) => setAssign({ ...assign, [it.mon.key]: e.target.value })} aria-label=${t('inbox.chooseArea', 'Choose area')}>
             <option value="">${t('inbox.chooseArea', 'Choose area')} …</option>
             ${areas.map((a) => html`<option value=${a.key} disabled=${!!doc.get(`enc:${a.key}:${me}`)}>${a.name}</option>`)}
           </select>
-          <button class="btn small" disabled=${!sel} onClick=${() => { setEncounter(doc, manifest, sel, me, { outcome: 'caught', species: it.mon.species, nickname: it.mon.nickname, level: it.mon.level || it.mon.metLevel, metLevel: it.mon.metLevel ?? null, shiny: it.mon.shiny, key: it.mon.key }); dropItem(it.mon.key); }}>${t('inbox.assign', 'Assign')}</button>
+          <button class="btn small" disabled=${!sel} onClick=${() => { setEncounter(doc, manifest, sel, me, { outcome: 'caught', species: it.mon.species, nickname: it.mon.nickname, level: it.mon.level || it.mon.metLevel, metLevel: it.mon.metLevel ?? null, shiny: it.mon.shiny, key: it.mon.key, ...(it.mon.form ? { form: it.mon.form } : {}) }); dropItem(it.mon.key); }}>${t('inbox.assign', 'Assign')}</button>
           <button class="btn small ghost" onClick=${() => { doc.set(`${keep ? 'extra' : 'ign'}:${me}:${it.mon.key}`, { species: it.mon.species, nickname: it.mon.nickname || null, level: it.mon.level || null, shiny: !!it.mon.shiny, ...(keep ? { reason: keep } : {}), at: Date.now() }); dropItem(it.mon.key); }}>
             ${bonusShiny ? t('inbox.keepShiny', 'Keep as bonus shiny') : freeGift ? t('inbox.keepGift', 'Keep as free gift') : t('inbox.ignore', 'Ignore')}</button>
         </div>
@@ -495,10 +535,10 @@ function MonButton({ enc, slot, right, onClick, label }) {
   if (!enc) return html`<button class=${cls} style=${style} onClick=${onClick} ...${aria}><span class="faint small">${t('routes.add', '+ add encounter')}</span></button>`;
   if (enc.outcome === 'missed') return html`<button class=${cls} style=${style} onClick=${onClick} ...${aria}><span class="muted small">${t('routes.missed', 'missed')}${enc.species ? ` · ${speciesName(enc.species)}` : ''}</span></button>`;
   return html`<button class=${cls} style=${style} onClick=${onClick} ...${aria}>
-    <${Sprite} id=${enc.species} shiny=${enc.shiny} size=${40} gen=${runData.gen} />
+    <${Sprite} id=${enc.species} form=${enc.form} shiny=${enc.shiny} size=${40} gen=${runData.gen} />
     <span style="min-width:0"><b style="font-weight:500">${enc.nickname || speciesName(enc.species)}</b>
-      <span class="tiny faint" style="display:block">${speciesName(enc.species)}${enc.level ? ` · ${t('common.lv', 'Lv')}\u00a0${enc.level}` : ''}</span>
-      <${Types} types=${runData.types(enc.species, slot)} /></span>
+      <span class="tiny faint" style="display:block">${speciesFormName(enc.species, enc.form, runData.gen)}${enc.level ? ` · ${t('common.lv', 'Lv')}\u00a0${enc.level}` : ''}</span>
+      <${Types} types=${runData.types(enc.species, slot, enc.form || 0)} /></span>
   </button>`;
 }
 
@@ -548,7 +588,7 @@ function RoutesTab() {
           const beaten = !!bosses[item.key];
           return html`<div class=${`boss ${beaten ? 'beaten' : ''} ${cap.boss?.key === item.key ? 'next' : ''}`}>
             <strong>${item.name}</strong><span>${t('routes.cap', 'Level cap {n}', { n: item.cap })}</span><span class="spacer"></span>
-            <button class="btn small ghost" onClick=${() => { doc.set(`boss:${item.key}`, beaten ? null : { at: Date.now(), by: me }); if (!beaten) feed(doc, { type: 'boss', slot: me, msg: msg('feed.boss', '{boss} defeated!', { boss: item.name }), text: t('feed.boss', '{boss} defeated!', { boss: item.name }) }); }}>
+            <button class="btn small ghost" onClick=${() => { doc.set(`boss:${item.key}`, beaten ? null : { at: Date.now(), by: me }); if (!beaten) feed(doc, { type: 'boss', slot: me, msg: msg('feed.boss', '{boss} defeated!', { boss: { area: item.key } }), text: t('feed.boss', '{boss} defeated!', { boss: item.name }) }); }}>
               ${beaten ? t('routes.beaten', 'defeated') : t('routes.markBeaten', 'mark as defeated')}</button>
           </div>`;
         }
@@ -568,7 +608,7 @@ function RoutesTab() {
         }[st.state];
         const actions = html`<div class="row route-act" style="justify-content:flex-end">
           ${st.state === 'dead'
-            ? html`<button class="btn small ghost" onClick=${() => revive(doc, item.key)}>${t('routes.undo', 'undo')}</button>`
+            ? html`<button class="btn small ghost" onClick=${() => revive(doc, item.key, manifest)}>${t('routes.undo', 'undo')}</button>`
             : encs.some((e) => e?.outcome === 'caught') && html`<button class="btn small ghost" onClick=${() => setDying(item.key)}>${t('routes.died', 'died')}</button>`}
         </div>`;
         const edit = (s) => () => setEditing({ area: item.key, slot: s });
@@ -586,7 +626,7 @@ function RoutesTab() {
           <div class="area-name"><strong>${item.name}</strong><span>${stateText}${cause}</span></div>
           ${n === 2
             ? html`<${MonButton} enc=${st.encs.p1} slot="p1" onClick=${edit('p1')} /><${RouteThread} /><${MonButton} enc=${st.encs.p2} slot="p2" right onClick=${edit('p2')} />`
-            : slots.map((s) => html`<${MonButton} key=${s} enc=${st.encs[s]} slot=${s} onClick=${edit(s)} label=${`${names[s].name}: ${st.encs[s]?.species ? speciesName(st.encs[s].species) : t('routes.add', '+ add encounter')}`} />`)}
+            : slots.map((s) => html`<${MonButton} key=${s} enc=${st.encs[s]} slot=${s} onClick=${edit(s)} label=${`${names[s].name}: ${st.encs[s]?.outcome === 'missed' ? t('routes.missed', 'missed') : st.encs[s]?.species ? speciesName(st.encs[s].species) : t('routes.add', '+ add encounter')}`} />`)}
           ${actions}
         </div>`;
       })}
@@ -616,11 +656,25 @@ function EncounterModal({ area, slot, onClose }) {
   const [shiny, setShiny] = useState(!!existing?.shiny);
   const names = getPlayers(doc, manifest);
   const solo = isNuzlocke(manifest);
-  const dupe = outcome === 'caught' && species ? dupeOf(doc, manifest, runData, species, slot, area) : null;
+  const r = getRules(doc, manifest);
+  // "Missed": the wild Pokémon this player last fought here, as the battle reader saw it – filled in, never required
+  const seen = existing ? null : lastWildAt(doc, manifest, genOfRun(manifest, runData), area, slot);
+  const pick = (o) => {
+    setOutcome(o);
+    if (o === 'missed' && !species && seen) setSpecies(seen.species);
+  };
+  const dupe = species ? dupeOf(doc, manifest, runData, species, slot, area) : null;
   const save = () => {
-    setEncounter(doc, manifest, area, slot, { outcome, species: outcome === 'caught' ? species : null, nickname: nickname.trim(), level: Number(level) || null, shiny, key: existing?.key || null }, { by: me });
+    setEncounter(doc, manifest, area, slot, { outcome, species, nickname: outcome === 'caught' ? nickname.trim() : '', level: outcome === 'caught' ? Number(level) || null : null, shiny: outcome === 'caught' && shiny, key: (outcome === 'caught' && existing?.key) || null }, { by: me });
     onClose();
   };
+  const dupeText = dupe && (dupe.missed
+    ? solo ? t('enc.dupeMissedSolo', 'Dupes clause: this one already got away from you ({area}) – keep looking.', { area: areaName(doc, manifest, dupe.area) })
+      : t('enc.dupeMissed', 'Dupes clause: this evolution line already got away from {name} ({area}).', { name: names[dupe.slot].name, area: areaName(doc, manifest, dupe.area) })
+    : solo ? t('enc.dupeSolo', 'Dupes clause: you already caught this one ({area}) – keep looking.', { area: areaName(doc, manifest, dupe.area) })
+      : t('enc.dupe', 'Dupes clause: {name} already owns this evolution line ({area}).', { name: names[dupe.slot].name, area: areaName(doc, manifest, dupe.area) }));
+  const shown = species && html`<div class="row"><${Sprite} id=${species} shiny=${outcome === 'caught' && shiny} size=${64} gen=${runData.gen} /><div><h3>${speciesName(species)}</h3><${Types} types=${runData.types(species, slot)} />
+    ${outcome === 'missed' && seen && species === seen.species && html`<p class="tiny faint">${t('enc.missedSeen', 'From the last battle here – souldew saw it live.')}</p>`}</div></div>`;
   return html`<${Modal} open=${true} onClose=${onClose} title=${solo ? areaName(doc, manifest, area) : `${areaName(doc, manifest, area)} · ${names[slot].name}`}
     footer=${html`${existing && html`<button class="btn danger" onClick=${() => { setEncounter(doc, manifest, area, slot, null, { by: me }); onClose(); }}>${t('common.delete', 'Delete')}</button>`}<span class="spacer"></span>
       <button class="btn ghost" onClick=${onClose}>${t('common.cancel', 'Cancel')}</button>
@@ -629,15 +683,21 @@ function EncounterModal({ area, slot, onClose }) {
       ? t('enc.otherHint', 'This is {name}’s slot – usually their game fills it in automatically.', { name: names[slot].name })
       : t('enc.partnerHint', 'This is your partner’s slot – usually their game fills it in automatically.')}</p>`}
     <div class="seg">
-      <button class=${outcome === 'caught' ? 'on' : ''} aria-pressed=${outcome === 'caught'} onClick=${() => setOutcome('caught')}>${t('enc.caught', 'Caught')}</button>
-      <button class=${outcome === 'missed' ? 'on' : ''} aria-pressed=${outcome === 'missed'} onClick=${() => setOutcome('missed')}>${t('enc.missed', 'Missed (fled / fainted)')}</button>
+      <button class=${outcome === 'caught' ? 'on' : ''} aria-pressed=${outcome === 'caught'} onClick=${() => pick('caught')}>${t('enc.caught', 'Caught')}</button>
+      <button class=${outcome === 'missed' ? 'on' : ''} aria-pressed=${outcome === 'missed'} onClick=${() => pick('missed')}>${t('enc.missed', 'Missed (fled / fainted)')}</button>
     </div>
+    ${outcome === 'missed' && html`<div class="stack">
+      <p class="small muted">${r.missedDupes && r.dupes !== 'off'
+        ? t('enc.missedWhichDupes', 'Which Pokémon got away? Optional – with it, its evolution line counts as a dupe.')
+        : t('enc.missedWhich', 'Which Pokémon got away? Optional.')}</p>
+      <${SpeciesPicker} value=${species} onChange=${setSpecies} clearable maxId=${runData.maxSpecies()} extra=${runData.ownSpecies()} typesOf=${(id) => runData.types(id, slot)} />
+      ${shown}
+      ${dupeText && html`<div class="warning">${dupeText}</div>`}
+    </div>`}
     ${outcome === 'caught' && html`<div class="stack">
       <${SpeciesPicker} value=${species} onChange=${setSpecies} autoFocus=${!existing} maxId=${runData.maxSpecies()} extra=${runData.ownSpecies()} typesOf=${(id) => runData.types(id, slot)} />
-      ${species && html`<div class="row"><${Sprite} id=${species} shiny=${shiny} size=${64} gen=${runData.gen} /><div><h3>${speciesName(species)}</h3><${Types} types=${runData.types(species, slot)} /></div></div>`}
-      ${dupe && html`<div class="warning">${solo
-        ? t('enc.dupeSolo', 'Dupes clause: you already caught this one ({area}) – keep looking.', { area: areaName(doc, manifest, dupe.area) })
-        : t('enc.dupe', 'Dupes clause: {name} already owns this evolution line ({area}).', { name: names[dupe.slot].name, area: areaName(doc, manifest, dupe.area) })}</div>`}
+      ${shown}
+      ${dupeText && html`<div class="warning">${dupeText}</div>`}
       <div class="grid-3">
         <label class="field"><span>${t('enc.nickname', 'Nickname')}</span><input type="text" maxLength="12" value=${nickname} onInput=${(e) => setNickname(e.target.value)} /></label>
         <label class="field"><span>${t('enc.level', 'Level')}</span><input type="number" min="1" max="100" value=${level} onInput=${(e) => setLevel(e.target.value)} /></label>
@@ -653,17 +713,28 @@ function DeathModal({ area, onClose }) {
   const slots = slotsOf(manifest);
   const st = pairState(doc, area, slots);
   const n = slots.length;
-  const mons = slots.map((s) => st.encs[s]).filter((e) => e?.species);
+  const mons = slots.map((s) => st.encs[s]).filter((e) => e?.outcome === 'caught' && e.species);
   const an = areaName(doc, manifest, area);
+  // lives per player: the life comes off the player whose Pokémon fell – ask whose it was (it may not be yours).
+  // Only caught Pokémon can fall: a missed encounter keeps its species for the log, but it was never in a team.
+  // One holder: that's who fell (shared/lives.mjs deathsIn decides a death without `by` the same way).
+  const holders = slots.filter((s) => st.encs[s]?.outcome === 'caught' && st.encs[s].species);
+  const askWho = getLives(doc, manifest)?.pool === 'player' && holders.length > 1;
+  const [fell, setFell] = useState(holders.includes(me) ? me : holders[0] || me);
+  const by = askWho ? fell : holders.length === 1 ? holders[0] : me;
+  const names = getPlayers(doc, manifest);
   return html`<${Modal} open=${true} onClose=${onClose}
     title=${n === 1 ? t('death.titleSolo', '{area}: the Pokémon dies', { area: an }) : n > 2 ? t('death.titleGroup', '{area}: the group dies', { area: an }) : t('death.title', '{area}: the pair dies', { area: an })}
     footer=${html`<button class="btn ghost" onClick=${onClose}>${t('common.cancel', 'Cancel')}</button>
-      <button class="btn danger" onClick=${() => { markDead(doc, manifest, area, { slot: me, cause: cause.trim(), level: st.encs[me]?.level ?? null }); play('death', status?.config?.sounds !== false); onClose(); }}>
+      <button class="btn danger" onClick=${() => { markDead(doc, manifest, area, { slot: by, cause: cause.trim(), level: st.encs[by]?.level ?? null }); play('death', status?.config?.sounds !== false); onClose(); }}>
         ${n === 1 ? t('death.confirmSolo', 'Send it to the graveyard') : n > 2 ? t('death.confirmGroup', 'Send all of them to the graveyard') : t('death.confirm', 'Send both to the graveyard')}</button>`}>
     <div class="row" style="justify-content:center;gap:28px">${mons.map((e) => html`<div class="stack-s center"><${Sprite} id=${e.species} size=${72} gen=${runData.gen} /><span class="small">${e.nickname || speciesName(e.species)}</span></div>`)}</div>
     <p class="muted">${n === 1 ? t('death.textSolo', 'This Pokémon is dead from now on – it may not be used again.')
       : n > 2 ? t('death.textGroup', 'Every Pokémon of this group is dead from now on. The others are notified right away.')
         : t('death.text', 'Both Pokémon of this pair are dead from now on. Your partner is notified right away.')}</p>
+    ${askWho && html`<div class="stack-s"><b class="small">${t('death.whoFell', 'Whose Pokémon fell?')}</b>
+      <${Choice} label=${t('death.whoFell', 'Whose Pokémon fell?')} value=${fell} onChange=${setFell} options=${holders.map((s) => [s, names[s].name])} />
+      <span class="tiny faint">${t('death.whoFellHint', 'It costs that player a life – the others’ Pokémon only go with it.')}</span></div>`}
     <label class="field"><span>${t('death.cause', 'What happened? (optional)')}</span><input type="text" value=${cause} onInput=${(e) => setCause(e.target.value)} placeholder=${t('death.causePh', 'e.g. critical hit from Whitney’s Miltank')} /></label>
   <//>`;
 }
@@ -699,7 +770,7 @@ function GravesTab() {
   const l = live(doc, me);
   const deadInTeam = (l?.party || []).filter((m) => m.area && pairState(doc, m.area, slots).state === 'dead');
   return html`<div class="stack-l">
-    ${deadInTeam.length > 0 && manifest.watch?.watching && html`<section class="panel stack">
+    ${deadInTeam.length > 0 && manifest.watch?.watching && manifest.watch.graveyard !== false && html`<section class="panel stack">
       <h3>${t('graves.cleanTitle', 'Dead Pokémon are still in your team')}</h3>
       <p class="small muted">${t('graves.cleanText', 'Close the game first (save in-game). Then the app moves them into PC box 18 in your save file – with a backup.')}</p>
       <div><button class="btn danger" disabled=${busy} onClick=${async () => {
@@ -717,7 +788,7 @@ function GravesTab() {
       ? html`<div class="panel empty-state"><${Icon} name="grave" size=${56} /><h2>${t('graves.empty', 'Nobody here yet')}</h2><p class="muted">${t('graves.emptyText', 'May it stay that way.')}</p></div>`
       : html`<div class=${`graves ${slots.length > 2 ? 'wide' : ''}`}>${dead.map((a) => {
         const st = pairState(doc, a.key, slots);
-        const mons = slots.map((s) => [s, st.encs[s]]).filter(([, e]) => e?.species);
+        const mons = slots.map((s) => [s, st.encs[s]]).filter(([, e]) => e?.outcome === 'caught' && e.species);
         const p = st.pair || {};
         const cause = causeText(doc, manifest, p.cause);
         const lv = p.level ?? (solo ? mons[0]?.[1]?.level : null);
@@ -736,7 +807,7 @@ function GravesTab() {
 }
 
 function LogTab() {
-  const { doc, manifest, me, link } = useApp();
+  const { doc, manifest, me, link, onlineSlots } = useApp();
   const [text, setText] = useState('');
   const names = getPlayers(doc, manifest);
   const solo = isNuzlocke(manifest);
@@ -746,6 +817,8 @@ function LogTab() {
       <input type="text" class="grow" placeholder=${solo ? t('log.placeholderSolo', 'Note for the log …') : t('log.placeholder', 'Message to the log …')} value=${text} onInput=${(e) => setText(e.target.value)} />
       <button class="btn">${solo ? t('log.add', 'Add') : t('log.send', 'Send')}</button>
       ${!solo && html`<button type="button" class="btn ghost" disabled=${!link} onClick=${() => link?.sendMessage({ type: 'ping', text: t('log.pingText', 'Hey, take a look!') })}>${t('log.ping', 'Ping')}</button>`}
+      ${!solo && link && html`<${RpsStart} online=${onlineSlots} />`}
+      ${!solo && html`<${RaidStart} online=${onlineSlots} />`}
     </form>
     <div class="feed" style="max-height:none">
       ${items.length === 0 && html`<p class="small faint">${solo ? t('log.emptySolo', 'Catches, deaths, badges and your notes show up here.')
@@ -820,6 +893,10 @@ export function RulesTab() {
   const r = getRules(doc, manifest);
   const n = slotsOf(manifest).length;
   const solo = isNuzlocke(manifest);
+  // a SoulLink's rules are the host's (shared/hostrules.mjs): set on the computer that created the run, read-only elsewhere
+  const mine = canEditRules(manifest);
+  const locked = !mine;
+  const hostName = getPlayers(doc, manifest)[hostSlotOf(manifest)]?.name;
   // The webhook is a secret of this computer: kept in the local config, never in the shared rules.
   const [hook, setHook] = useState('');
   useEffect(() => {
@@ -837,21 +914,31 @@ export function RulesTab() {
       toast({ kind: 'death', title: 'Discord', text: e.message });
     }
   };
-  // Only what was set is stored – the mode's defaults (rules(doc, manifest)) fill in the rest.
-  const set = (asked) => {
-    const patch = allowedRulesPatch(asked, me); // the type matchup help is the host's call
-    const next = { ...(doc.get('rules') || {}), ...patch };
+  // Only what was set is stored – the mode's defaults (rules(doc, manifest)) fill in the rest. Every change goes to the
+  // log for everyone (cheats, lives, … – lib/run.mjs logRulesChange).
+  const set = async (asked) => {
+    const patch = allowedRulesPatch(asked, manifest); // the host's call (null on another player's computer)
+    if (!patch) return;
+    const next = stampLivesChange(doc, doc.get('rules'), { ...(doc.get('rules') || {}), ...patch });
     delete next.discordWebhook;
     if (next.preset === null) delete next.preset;
-    // switching cheats on or off is everyone's business: it goes to the log like the cheats themselves
-    const cheatsWere = !!r.cheats;
-    doc.set('rules', next);
-    api.post(`/api/runs/${manifest.id}/meta`, { rules: next }).catch(() => {});
-    if ('cheats' in patch && !!patch.cheats !== cheatsWere) logCheatRule(doc, manifest, me, !!patch.cheats);
-    if ('typeHelp' in patch && (patch.typeHelp !== false) !== (r.typeHelp !== false)) logTypeHelpRule(doc, manifest, me, patch.typeHelp !== false);
+    if (solo) {
+      doc.set('rules', next);
+      api.post(`/api/runs/${manifest.id}/meta`, { rules: next }).catch(() => {});
+    } else {
+      // signed by this computer's server, then written – every other app takes it only with that signature
+      try {
+        await writeHostRules(doc, manifest, next, me);
+      } catch (e) {
+        toast({ kind: 'death', title: t('rules.notSaved', 'Rules not changed'), text: e.code === 'notHost' ? t('rules.notHostHere', 'Only the computer that created this run can change its rules.') : e.message });
+        return;
+      }
+    }
+    logRulesChange(doc, manifest, me, r, getRules(doc, manifest));
   };
   const blackoutText = { party: t('rules.b4Solo', 'If your whole team faints (blackout), the run is over.'), box: t('rules.b4SoloBox', 'The run is over once no living Pokémon is left – in the team or in the box.'), off: t('rules.b4SoloOff', 'A blackout doesn’t end the run – you decide when it’s over.') }[r.blackout];
   return html`<div class="stack-l">
+    ${!solo && html`<${HostRulesNote} host=${hostName} mine=${mine} players=${n} />`}
     <section class="panel stack">
       <h2>${t('rules.basics', 'The basics')}</h2>
       <ul class="small muted">${solo
@@ -873,32 +960,50 @@ export function RulesTab() {
       ? html`<${NuzlockeRules} value=${r} onChange=${set} />`
       : html`<section class="panel stack">
       <h2>${t('rules.options', 'Options')}</h2>
-      <div class="stack-s"><h3>${t('rules.type', 'Type rule')}</h3><p class="small muted">${t('rules.typeHint', 'Primary types may not repeat in the team.')}</p>
-        <${Choice} label=${t('rules.type', 'Type rule')} value=${r.typeClause} onChange=${(v) => set({ typeClause: v })} options=${[['off', t('rules.off', 'Off')], ['party', t('rules.perPlayer', 'Per player')], ['global', n > 2 ? t('rules.acrossAll', 'Across all teams') : t('rules.acrossBoth', 'Across both teams')]]} /></div>
-      <div class="stack-s"><h3>${t('rules.dupes', 'Dupes clause')}</h3><p class="small muted">${t('rules.dupesHint', 'Already own the evolution line? Keep looking.')}</p>
-        <${Choice} label=${t('rules.dupes', 'Dupes clause')} value=${r.dupes} onChange=${(v) => set({ dupes: v })} options=${[['off', t('rules.off', 'Off')], ['player', t('rules.perPlayer', 'Per player')], ['both', n > 2 ? t('rules.forAll', 'For everyone') : t('rules.forBoth', 'For both')]]} /></div>
-      <label class="check"><input type="checkbox" checked=${r.failKillsPair} onChange=${(e) => set({ failKillsPair: e.target.checked })} /><span>${n > 2 ? t('rules.failGroup', 'A missed encounter costs the whole group') : t('rules.fail', 'A missed encounter costs the whole pair')}</span></label>
-      <label class="check"><input type="checkbox" checked=${r.shinyClause} onChange=${(e) => set({ shinyClause: e.target.checked })} /><span>${t('rules.shiny', 'Shiny clause: shinies may always be caught and stay unlinked')}</span></label>
-      <label class="check"><input type="checkbox" checked=${!!r.levelCaps} onChange=${(e) => set({ levelCaps: e.target.checked })} /><span>${t('rules.caps', 'Check level caps')}</span></label>
-      <label class="check"><input type="checkbox" checked=${!!r.cheats} onChange=${(e) => set({ cheats: e.target.checked })} /><span>${t('rules.cheats', 'Allow cheats (Rare Candies)')}<span class="hint">${n > 2
-        ? t('rules.cheatsHintGroup', 'From the play screen. Every use shows up in the log for all of you.')
-        : t('rules.cheatsHint', 'From the play screen. Every use shows up in the log for both of you.')}</span></span></label>
+      <${SoulLinkRules} value=${r} onChange=${set} players=${n} disabled=${locked} />
+      ${!linkUnavailable(manifest.game) && html`<${LinkRules} value=${r} onChange=${set} disabled=${locked} />`}
+      ${RAID_SYSTEMS.includes(manifest.game?.system) && html`<${RaidRules} value=${r} onChange=${set} disabled=${locked} />`}
+      <${GiftRule} value=${r} onChange=${set} disabled=${locked} />
     </section>`}
     <section class="panel stack">
+      <h2>${t('rules.ballsTitle', 'When the rules start')}</h2>
+      <${BallsRule} value=${r.startAtBalls} players=${n} onChange=${(v) => set({ startAtBalls: v })} disabled=${locked} />
+      ${r.startAtBalls && html`<${BallsStatus} />`}
+    </section>
+    <section class="panel stack">
+      <h2>${t('lives.title', 'Lives')}</h2>
+      <${LivesRule} value=${r.lives} pool=${r.livesPool} players=${n} onChange=${set} left=${getLives(doc, manifest)} ended=${!!doc.get('run:status')} disabled=${locked}
+        names=${Object.fromEntries(Object.entries(getPlayers(doc, manifest)).map(([s, p]) => [s, p.name]))} />
+    </section>
+    <section class="panel stack">
       <h2>${t('rules.battleHelp', 'Battle help')}</h2>
-      <${TypeHelpRule} value=${r.typeHelp} solo=${solo} locked=${!isHost(me)} hostName=${getPlayers(doc, manifest)[HOST_SLOT]?.name}
-        onChange=${(v) => set({ typeHelp: v })} />
+      <${TypeHelpRule} value=${r.typeHelp} solo=${solo} locked=${locked} hostName=${hostName} note=${false} onChange=${(v) => set({ typeHelp: v })} />
     </section>
     <section class="panel stack">
       <h2>${t('rules.auto', 'Automatic')}</h2>
-      <label class="check"><input type="checkbox" checked=${r.autoAssign} onChange=${(e) => set({ autoAssign: e.target.checked })} /><span>${t('rules.autoAssign', 'Enter new catches automatically')}<span class="hint">${t('rules.autoAssignHint', 'Based on where they were caught. Unclear cases land in the inbox.')}</span></span></label>
-      ${!solo && html`<label class="check"><input type="checkbox" checked=${r.autoDeath} onChange=${(e) => set({ autoDeath: e.target.checked })} /><span>${n > 2 ? t('rules.autoDeathGroup', 'A linked Pokémon that faints (live) kills its whole group automatically') : t('rules.autoDeath', 'A linked Pokémon that faints (live) kills the pair automatically')}</span></label>`}
+      <${SoulLinkAuto} value=${r} onChange=${set} players=${n} solo=${solo} disabled=${locked} />
       <div class="stack-s"><h3>Discord</h3><p class="small muted">${t('rules.discordHint', 'Optional: post catches and deaths to your Discord channel (Channel › Integrations › Webhook).')}</p>
         <div class="row"><input type="url" class="grow sm-secret" value=${hook} placeholder="https://discord.com/api/webhooks/…" onInput=${(e) => setHook(e.target.value)} />
           <button class="btn" onClick=${saveHook}>${t('common.save', 'Save')}</button></div>
         <p class="tiny faint">${solo ? t('rules.discordLocalSolo', 'Stays on this computer.') : n > 2 ? t('rules.discordLocalGroup', 'Stays on this computer – the others can add their own.') : t('rules.discordLocal', 'Stays on this computer – your partner can add their own.')}</p></div>
     </section>
   </div>`;
+}
+
+/** Whose rules have started ("nothing counts before your first Poké Balls"): each player by their own bag. */
+function BallsStatus() {
+  const { doc, manifest, me } = useApp();
+  const names = getPlayers(doc, manifest);
+  const slots = slotsOf(manifest);
+  const line = (s) => {
+    const waiting = beforeBalls(doc, manifest, s);
+    const name = names[s]?.name || s.toUpperCase();
+    if (slots.length === 1) return waiting ? t('rules.ballsWaitingSolo', 'Waiting for your first Poké Balls – nothing counts yet.') : t('rules.ballsStartedSolo', 'Your rules have started.');
+    return waiting
+      ? s === me ? t('rules.ballsWaitingMine', 'You: waiting for your first Poké Balls – your own Pokémon don’t die yet.') : t('rules.ballsWaitingOther', '{name}: waiting for the first Poké Balls.', { name })
+      : s === me ? t('rules.ballsStartedMine', 'You: your rules have started.') : t('rules.ballsStartedOther', '{name}: rules have started.', { name });
+  };
+  return html`<ul class="small muted">${slots.map((s) => html`<li key=${s}>${line(s)}</li>`)}</ul>`;
 }
 
 function SpoilerTab() {
@@ -916,7 +1021,9 @@ function SpoilerTab() {
   if (!shown) return html`<div class="panel empty-state"><${Icon} name="help" size=${56} /><h2>${t('spoiler.title', 'What the randomizer rolled')}</h2>
     <p class="muted prose">${t('spoiler.text', 'Wild Pokémon per route and the starters. Once you look, you no longer play blind.')}</p>
     <button class="btn danger" onClick=${() => setShown(true)}>${t('spoiler.show', 'Show spoilers')}</button></div>`;
-  const tables = runData.encounterTables(slot).filter((tb) => !q || tb.area.toLowerCase().includes(q.toLowerCase()) || tb.sets.some((s) => s.slots.some(([id]) => speciesName(id).toLowerCase().includes(q.toLowerCase()))));
+  // (the randomizer numbers alternate forms its own way: runData.uprMon)
+  const up = (id) => runData.uprMon(id, slot);
+  const tables = runData.encounterTables(slot).filter((tb) => !q || tb.area.toLowerCase().includes(q.toLowerCase()) || tb.sets.some((s) => s.slots.some(([id]) => up(id).name.toLowerCase().includes(q.toLowerCase()))));
   return html`<div class="stack">
     <div class="row">${slots.length > 1 && html`<div class="seg">${slots.map((s) => html`<button class=${slot === s ? 'on' : ''} aria-pressed=${slot === s} onClick=${() => setSlot(s)}>${names[s].name}</button>`)}</div>`}
       <span class="spacer"></span><input type="search" value=${q} placeholder=${t('routes.search', 'Search route or Pokémon')} aria-label=${t('routes.search', 'Search route or Pokémon')} onInput=${(e) => setQ(e.target.value)} /></div>
@@ -924,12 +1031,12 @@ function SpoilerTab() {
       ? t('spoiler.otherDeviceName', 'This game was built on {name}’s computer – no spoiler data here.', { name: names[slot]?.name || '' })
       : t('spoiler.otherDevice', 'This game was built on the other computer – no spoiler data here.')}</p>`}
     ${runData.romData[slot] && html`<section class="panel"><div class="panel-head"><h3>${t('spoiler.starters', 'Starters')}</h3></div>
-      <div class="row">${runData.starters(slot).map((id) => html`<div class="row" style="gap:6px"><${Sprite} id=${id} size=${56} gen=${runData.gen} /><div><b>${speciesName(id)}</b><br /><${Types} types=${runData.types(id, slot)} /></div></div>`)}</div></section>`}
+      <div class="row">${runData.starters(slot).map(up).map((m) => html`<div class="row" style="gap:6px"><${Sprite} id=${m.species} form=${m.form} size=${56} gen=${runData.gen} /><div><b>${m.name}</b><br /><${Types} types=${runData.types(m.species, slot, m.form)} /></div></div>`)}</div></section>`}
     <section class="panel"><table class="data"><tbody>
       ${tables.map((tb) => html`<tr><td class="spoiler-area"><b>${tb.area}</b></td><td>${tb.sets.map((s) => {
         const uniq = [...new Map(s.slots.map((x) => [x[0], x])).values()];
         return html`<div class="row spoiler-set"><span class="faint small spoiler-method">${s.method || '–'}</span>
-          ${uniq.map(([id]) => html`<span class="row" style="gap:2px"><${Sprite} id=${id} size=${30} gen=${runData.gen} /><span class="small">${speciesName(id)}</span></span>`)}</div>`;
+          ${uniq.map(([id]) => up(id)).map((m) => html`<span class="row" style="gap:2px"><${Sprite} id=${m.species} form=${m.form} size=${30} gen=${runData.gen} /><span class="small">${m.name}</span></span>`)}</div>`;
       })}</td></tr>`)}
     </tbody></table></section>
   </div>`;

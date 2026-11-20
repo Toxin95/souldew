@@ -8,12 +8,15 @@ export const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
 export { html };
 
-export function Sprite({ id, shiny, size = 48, gen = 4, alt = '' }) {
+/** `form`: a DS Pokémon's alternate form (shared/forms.mjs) – its own sprite, else the species'. */
+export function Sprite({ id, shiny, size = 48, gen = 4, alt = '', form = 0 }) {
   const [src, setSrc] = useState(null);
-  useEffect(() => setSrc(spriteUrl(id, { gen, shiny })), [id, gen, shiny]);
+  useEffect(() => setSrc(spriteUrl(id, { gen, shiny, form })), [id, gen, shiny, form]);
   if (!id || !spriteUrl(id, { gen, shiny })) return html`<span class="sprite"><span style=${`display:inline-block;width:${size}px;height:${size}px`}></span></span>`;
+  // (one missing: the artwork-style one, then the species' – the form's first)
+  const chain = [...new Set([spriteUrl(id, { gen, shiny, form }), spriteUrl(id, { gen: 9, shiny, form }), spriteUrl(id, { gen, shiny }), spriteUrl(id, { gen: 9, shiny })])];
   return html`<span class="sprite"><img class="pixel" src=${src} width=${size} height=${size} alt=${alt} loading="lazy"
-    onError=${() => { const fb = spriteUrl(id, { gen: 9, shiny }); if (src !== fb) setSrc(fb); }} /></span>`;
+    onError=${() => { const i = chain.indexOf(src); if (i >= 0 && i + 1 < chain.length) setSrc(chain[i + 1]); }} /></span>`;
 }
 
 export function Types({ types }) {
@@ -113,9 +116,10 @@ export function Modal({ open, onClose, title, children, footer, wide }) {
 
 /**
  * Species autocomplete over all species the run's game holds (names in the UI language): National Dex 1…maxId plus
- * `extra` – a ROM hack's own Pokémon (FAKEMON ids, named as the game names them).
+ * `extra` – a ROM hack's own Pokémon (FAKEMON ids, named as the game names them). `clearable`: emptying the box
+ * clears the choice (onChange(null)) – for a species that is optional.
  */
-export function SpeciesPicker({ value, onChange, autoFocus, maxId = 649, extra = [], typesOf }) {
+export function SpeciesPicker({ value, onChange, autoFocus, maxId = 649, extra = [], typesOf, clearable = false }) {
   const [q, setQ] = useState(value ? speciesName(value) : '');
   const [open, setOpen] = useState(false);
   const [hl, setHl] = useState(0);
@@ -140,7 +144,10 @@ export function SpeciesPicker({ value, onChange, autoFocus, maxId = 649, extra =
   };
   return html`<div class="suggest">
     <input type="search" placeholder=${t('picker.placeholder', 'Search Pokémon (name or number)')} value=${q} autoFocus=${autoFocus} style="width:100%"
-      onInput=${(e) => { setQ(e.target.value); setOpen(true); setHl(0); }}
+      onInput=${(e) => {
+        setQ(e.target.value); setOpen(true); setHl(0);
+        if (clearable && !e.target.value.trim() && value) onChange(null);
+      }}
       onFocus=${() => setOpen(true)} onBlur=${() => setTimeout(() => setOpen(false), 150)}
       onKeyDown=${(e) => {
         if (e.key === 'ArrowDown') { setHl((h) => Math.min(h + 1, results.length - 1)); e.preventDefault(); }
@@ -188,7 +195,14 @@ export async function saveDiagnostics(extra = {}) {
   // the native players (3DS, fast player): the Vulkan card and driver, how the last game that failed ended, the host's
   // last words – a crash on someone else's PC is otherwise invisible
   const players = await fetch('/api/diagnostics/players').then((r) => (r.ok ? r.json() : null)).catch(() => null);
-  const dump = diagDump({ app: info ? { version: info.version, packaged: info.packaged, platform: info.platform } : null, gpu, players, userAgent: navigator.userAgent, lang: document.documentElement.lang, ...extra });
+  // the souldew account: signed in or not and the membership tier – no name, handle, id or anything else
+  const account = await fetch('/api/account/diagnostics', { headers: { 'x-soullink': '1' } }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  // controllers: the saved settings and every device the browser lists (a USB headset can be one – lib/controls.mjs pickPad)
+  const pads = await fetch('/api/status').then((r) => (r.ok ? r.json() : null)).then((s) => s?.config?.pads ?? null).catch(() => null);
+  const gamepads = [...(navigator.getGamepads?.() || [])].filter(Boolean)
+    .map((g) => ({ index: g.index, id: String(g.id).slice(0, 120), mapping: g.mapping || '', connected: g.connected, buttons: g.buttons.length, axes: g.axes.length }));
+  const dump = diagDump({ app: info ? { version: info.version, packaged: info.packaged, platform: info.platform } : null, gpu, players, account: account ? { signedIn: account.signedIn === true, tier: account.tier || null } : null,
+    userAgent: navigator.userAgent, lang: document.documentElement.lang, controllers: { pads, gamepads }, ...extra });
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
   download(`souldew-diagnostics-${stamp}.json`, JSON.stringify(dump));
 }

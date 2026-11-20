@@ -44,9 +44,13 @@ import java.util.ResourceBundle;
  * export of the randomized game data (types, evolutions, encounters) for the tracker.
  *
  * Usage:
- *   java -cp PokeRandoZX.jar:bridge SoulLinkBridge info <rom>
+ *   java -cp PokeRandoZX.jar:bridge SoulLinkBridge info <rom> [<settings.properties> <seed>]
  *   java -cp PokeRandoZX.jar:bridge SoulLinkBridge fields
  *   java -cp PokeRandoZX.jar:bridge SoulLinkBridge randomize <rom> <out.nds> <settings.properties> <seed> <log.txt> <data.json>
+ *   java -cp PokeRandoZX.jar:bridge SoulLinkBridge tmcompat <case.json>   (tests: TmFollow on plain data or a stand-in game)
+ *
+ * Settings keys starting with @ are souldew's own: @base (a UPR settings string), @miscTweaks and @tmsFollowMoves
+ * ("TM compatibility follows the TM moves", see TmFollow – an older bridge ignores it with an "Unknown setting" warning).
  *
  * 3DS games (Gen 6: X/Y, Omega Ruby/Alpha Sapphire; Gen 7: Sun/Moon, Ultra Sun/Ultra Moon) go through UPR ZX's own
  * Gen6/Gen7RomHandler: a decrypted .3ds/.cci/.cxi in, one rebuilt, self-contained .cxi out (the same file every
@@ -61,15 +65,15 @@ public class SoulLinkBridge {
 
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
-            System.err.println("usage: info <rom> | fields | randomize <rom> <out> <settings> <seed> <log> <json>");
+            System.err.println("usage: info <rom> [<settings> <seed>] | fields | randomize <rom> <out> <settings> <seed> <log> <json>");
             System.exit(2);
         }
         try {
             if ("info".equals(args[0])) {
-                info(args[1]);
+                info(args[1], args.length > 3 ? args[2] : null, args.length > 3 ? Long.parseLong(args[3]) : 0L);
             } else if ("arm9".equals(args[0])) {
                 // debug: dump UPR's decompressed arm9 so code tweaks can be checked against hacks
-                RomHandler h = load(args[1]);
+                RomHandler h = load(args[1], false);
                 Field f = h.getClass().getSuperclass().getDeclaredField("arm9");
                 f.setAccessible(true);
                 FileOutputStream o = new FileOutputStream(args[2]);
@@ -79,6 +83,9 @@ public class SoulLinkBridge {
                 fields();
             } else if ("randomize".equals(args[0])) {
                 randomize(args[1], args[2], args[3], Long.parseLong(args[4]), args[5], args[6]);
+            } else if ("tmcompat".equals(args[0])) {
+                String json = new String(java.nio.file.Files.readAllBytes(new File(args[1]).toPath()), StandardCharsets.UTF_8);
+                System.out.println("@@JSON " + (json.contains("\"tmMoves\"") ? TmFollow.runHandlerCase(json) : TmFollow.runCase(json)));
             } else {
                 System.err.println("unknown command " + args[0]);
                 System.exit(2);
@@ -117,7 +124,12 @@ public class SoulLinkBridge {
         }
     }
 
-    private static RomHandler load(String rom) throws Exception {
+    /**
+     * `followTms`: the game gets a handler that rewrites TM compatibility after UPR picked the TM moves (TmFollow) –
+     * Gen 1–3 and 6–7 then load through souldew's subclass instead of UPR's factory (only then: a run without the
+     * option loads exactly as before). The original data is read here, before anything is randomized.
+     */
+    private static RomHandler load(String rom, boolean followTms) throws Exception {
         String path = new File(rom).getAbsolutePath();
         java.util.Random random = com.dabomstew.pkrandom.RandomSource.instance();
         RomHandler handler = null;
@@ -126,7 +138,7 @@ public class SoulLinkBridge {
             RomHandler.Factory[] ctr = { new Gen6RomHandler.Factory(), new Gen7RomHandler.Factory() };
             for (RomHandler.Factory f : ctr) {
                 if (f.isLoadable(path)) {
-                    handler = f.create(random);
+                    handler = followTms ? followHandler(f, random) : f.create(random);
                     break;
                 }
             }
@@ -135,6 +147,7 @@ public class SoulLinkBridge {
             }
             if (!handler.loadRom(path)) throw new IllegalStateException("UPR could not load the 3DS game");
             System.out.println("@@FILES " + romfsFileCount(handler));
+            if (followTms) ((TmFollow.Host) handler).setTmFollow(TmFollow.snapshot(handler));
             return handler;
         }
         if (new Gen4RomHandler.Factory().isLoadable(path)) {
@@ -150,7 +163,7 @@ public class SoulLinkBridge {
             };
             for (RomHandler.Factory f : factories) {
                 if (f.isLoadable(path)) {
-                    handler = f.create(random);
+                    handler = followTms ? followHandler(f, random) : f.create(random);
                     break;
                 }
             }
@@ -163,11 +176,79 @@ public class SoulLinkBridge {
         }
         if (handler instanceof SafeGen4RomHandler) ((SafeGen4RomHandler) handler).probeStatics();
         if (handler instanceof SafeGen5RomHandler) ((SafeGen5RomHandler) handler).probe();
+        if (followTms) ((TmFollow.Host) handler).setTmFollow(TmFollow.snapshot(handler));
         return handler;
     }
 
-    private static void info(String rom) throws Exception {
-        RomHandler h = load(rom);
+    /** The handler UPR's factory `f` would create, as souldew's subclass that hooks TmFollow in. */
+    private static RomHandler followHandler(RomHandler.Factory f, java.util.Random random) {
+        if (f instanceof com.dabomstew.pkrandom.romhandlers.Gen1RomHandler.Factory) return new FollowGen1(random);
+        if (f instanceof com.dabomstew.pkrandom.romhandlers.Gen2RomHandler.Factory) return new FollowGen2(random);
+        if (f instanceof com.dabomstew.pkrandom.romhandlers.Gen3RomHandler.Factory) return new FollowGen3(random);
+        if (f instanceof Gen6RomHandler.Factory) return new FollowGen6(random);
+        if (f instanceof Gen7RomHandler.Factory) return new FollowGen7(random);
+        throw new IllegalStateException("no TM hook for " + f.getClass().getName());
+    }
+
+    /** The TmFollow a handler was given (null: the option is off, or the handler isn't souldew's). */
+    static TmFollow tmFollowOf(RomHandler h) {
+        return h instanceof FollowHolder ? ((FollowHolder) h).follow() : null;
+    }
+
+    interface FollowHolder extends TmFollow.Host {
+        TmFollow follow();
+    }
+
+    // Gen 1–3 and 6–7: UPR's handler plus the hook (Gen 4/5 have it in SafeGen4/5RomHandler below)
+    static class FollowGen1 extends com.dabomstew.pkrandom.romhandlers.Gen1RomHandler implements FollowHolder {
+        private TmFollow follow;
+        FollowGen1(java.util.Random r) { super(r); }
+        public void setTmFollow(TmFollow f) { follow = f; }
+        public TmFollow follow() { return follow; }
+        @Override public void randomizeTMMoves(Settings s) { super.randomizeTMMoves(s); if (follow != null) follow.apply(this, s); }
+    }
+
+    static class FollowGen2 extends com.dabomstew.pkrandom.romhandlers.Gen2RomHandler implements FollowHolder {
+        private TmFollow follow;
+        FollowGen2(java.util.Random r) { super(r); }
+        public void setTmFollow(TmFollow f) { follow = f; }
+        public TmFollow follow() { return follow; }
+        @Override public void randomizeTMMoves(Settings s) { super.randomizeTMMoves(s); if (follow != null) follow.apply(this, s); }
+    }
+
+    static class FollowGen3 extends com.dabomstew.pkrandom.romhandlers.Gen3RomHandler implements FollowHolder {
+        private TmFollow follow;
+        FollowGen3(java.util.Random r) { super(r); }
+        public void setTmFollow(TmFollow f) { follow = f; }
+        public TmFollow follow() { return follow; }
+        @Override public void randomizeTMMoves(Settings s) { super.randomizeTMMoves(s); if (follow != null) follow.apply(this, s); }
+    }
+
+    static class FollowGen6 extends Gen6RomHandler implements FollowHolder {
+        private TmFollow follow;
+        FollowGen6(java.util.Random r) { super(r); }
+        public void setTmFollow(TmFollow f) { follow = f; }
+        public TmFollow follow() { return follow; }
+        @Override public void randomizeTMMoves(Settings s) { super.randomizeTMMoves(s); if (follow != null) follow.apply(this, s); }
+    }
+
+    static class FollowGen7 extends Gen7RomHandler implements FollowHolder {
+        private TmFollow follow;
+        FollowGen7(java.util.Random r) { super(r); }
+        public void setTmFollow(TmFollow f) { follow = f; }
+        public TmFollow follow() { return follow; }
+        @Override public void randomizeTMMoves(Settings s) { super.randomizeTMMoves(s); if (follow != null) follow.apply(this, s); }
+    }
+
+    /**
+     * What the new-run wizard needs to know about a game. With settings and a seed it also does a trial run: the whole
+     * randomization in memory, nothing written ("trial": null when UPR got through, else the exception's class name) –
+     * a Gen 1–5 game UPR can load but not randomize (a ROM hack or release whose data isn't where UPR expects it:
+     * "Index 1286 out of bounds for length 1268" on every build) is then known before the player builds a run.
+     */
+    private static void info(String rom, String settingsFile, long seed) throws Exception {
+        Map<String, String> props = settingsFile == null ? null : readProps(settingsFile);
+        RomHandler h = load(rom, props != null && takeFollowTms(props));
         StringBuilder sb = new StringBuilder("{");
         sb.append("\"romName\":").append(json(h.getROMName())).append(',');
         sb.append("\"romCode\":").append(json(h.getROMCode())).append(',');
@@ -200,8 +281,38 @@ public class SoulLinkBridge {
             first = false;
             sb.append(json(p.fullName()));
         }
-        sb.append("]}");
+        sb.append(']');
+        // (last: the trial changes the loaded game's data)
+        if (props != null && !(h instanceof Abstract3DSRomHandler)) sb.append(",\"trial\":").append(json(trial(h, props, seed)));
+        sb.append('}');
         System.out.println("@@JSON " + sb);
+    }
+
+    /** A randomization that writes nothing (see info): null when it went through, else the exception's class name. */
+    private static String trial(RomHandler h, Map<String, String> props, long seed) {
+        try {
+            Settings settings = forRom(h, readSettings(props));
+            PrintStream log = new PrintStream(new ByteArrayOutputStream(), true, "UTF-8");
+            // saveAsDirectory: Gen 1–5 handlers then save nothing – the write-back into the game's data that saving
+            // does first (stats, moves …) is called by hand, in memory
+            new Randomizer(settings, h, ResourceBundle.getBundle("com/dabomstew/pkrandom/newgui/Bundle"), true).randomize("", log, seed);
+            for (Class<?> c = h.getClass(); c != null; c = c.getSuperclass()) {
+                for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+                    if ((m.getName().equals("savingROM") || m.getName().equals("savingRom")) && m.getParameterTypes().length == 0 && !Modifier.isAbstract(m.getModifiers())) {
+                        m.setAccessible(true);
+                        m.invoke(h);
+                        return null;
+                    }
+                }
+            }
+            return null;
+        } catch (Throwable t) {
+            Throwable cause = t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null ? t.getCause() : t;
+            // where it stopped, for the app's diagnostics (server/lib/toolchain.mjs randomizerTrace) – stderr only
+            System.err.println("@@TRIAL " + cause);
+            cause.printStackTrace();
+            return cause.getClass().getSimpleName();
+        }
     }
 
     private static void fields() {
@@ -245,7 +356,14 @@ public class SoulLinkBridge {
         return String.valueOf(mt.getValue());
     }
 
-    private static Settings readSettings(String file) throws Exception {
+    static final String FOLLOW_TMS = "@tmsFollowMoves";
+
+    /** @tmsFollowMoves=true – taken out of `props` (it's no UPR field). */
+    static boolean takeFollowTms(Map<String, String> props) {
+        return Boolean.parseBoolean(props.remove(FOLLOW_TMS));
+    }
+
+    private static Map<String, String> readProps(String file) throws Exception {
         Map<String, String> props = new LinkedHashMap<String, String>();
         BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8));
         String line;
@@ -257,7 +375,11 @@ public class SoulLinkBridge {
             props.put(line.substring(0, eq).trim(), line.substring(eq + 1).trim());
         }
         r.close();
+        return props;
+    }
 
+    private static Settings readSettings(Map<String, String> input) throws Exception {
+        Map<String, String> props = new LinkedHashMap<String, String>(input);
         Settings s;
         String base = props.remove("@base");
         if (base != null && !base.isEmpty()) {
@@ -306,6 +428,7 @@ public class SoulLinkBridge {
                 System.out.println("@@WARN " + json("Unsupported setting type for " + e.getKey()));
             }
         }
+        s.setCustomNames(FileFunctions.getCustomNames());
         return s;
     }
 
@@ -336,10 +459,8 @@ public class SoulLinkBridge {
         return Enum.valueOf((Class) t, v);
     }
 
-    private static void randomize(String rom, String out, String settingsFile, long seed, String logFile, String jsonFile) throws Exception {
-        Settings settings = readSettings(settingsFile);
-        settings.setCustomNames(FileFunctions.getCustomNames());
-        RomHandler h = load(rom);
+    /** Settings made ready for the loaded game – the same for a build and a trial run. */
+    private static Settings forRom(RomHandler h, Settings settings) throws Exception {
         settings.setRomName(h.getROMName());
         boolean staticsBroken = (h instanceof SafeGen4RomHandler && ((SafeGen4RomHandler) h).staticsBroken)
                 || (h instanceof SafeGen5RomHandler && ((SafeGen5RomHandler) h).staticsBroken);
@@ -352,6 +473,15 @@ public class SoulLinkBridge {
         Settings.TweakForROMFeedback fb = settings.tweakForRom(h);
         if (fb.isChangedStarter()) System.out.println("@@WARN " + json("Custom starters were adjusted for this ROM"));
         if (fb.isRemovedCodeTweaks()) System.out.println("@@WARN " + json("Some code tweaks are not supported by this ROM and were removed"));
+        return settings;
+    }
+
+    private static void randomize(String rom, String out, String settingsFile, long seed, String logFile, String jsonFile) throws Exception {
+        Map<String, String> props = readProps(settingsFile);
+        boolean followTms = takeFollowTms(props);
+        Settings settings = readSettings(props);
+        RomHandler h = load(rom, followTms);
+        forRom(h, settings);
         System.out.println("@@SETTINGS " + json(settings.toString()));
 
         if (h instanceof Abstract3DSRomHandler) System.out.println("@@STEP " + json("randomize"));
@@ -360,6 +490,17 @@ public class SoulLinkBridge {
         PrintStream log = new PrintStream(logBytes, true, "UTF-8");
         // (false: one file – a .nds/.gba/… or, for a 3DS game, a rebuilt .cxi – never a LayeredFS folder)
         int check = new Randomizer(settings, h, bundle, false).randomize(new File(out).getAbsolutePath(), log, seed);
+        TmFollow follow = tmFollowOf(h);
+        if (follow != null) {
+            if (!follow.applied) {
+                // UPR only picks new TM moves with "TM moves: random" (and not with "Metronome only")
+                System.out.println("@@WARN " + json("TM compatibility can only follow the TM moves when the TM moves are random - left unchanged"));
+            } else {
+                log.println("--TM Compatibility Follows The TM Moves--");
+                for (String line : follow.report) log.println(line);
+                log.println();
+            }
+        }
         log.close();
         FileOutputStream lf = new FileOutputStream(logFile);
         lf.write(logBytes.toByteArray());
@@ -475,7 +616,12 @@ public class SoulLinkBridge {
      * past the end of a file (Definitive HeartGold does this). Reading them then throws, and
      * Randomizer.randomize() always reads them. We detect that once and treat statics as unavailable.
      */
-    static class SafeGen4RomHandler extends Gen4RomHandler {
+    static class SafeGen4RomHandler extends Gen4RomHandler implements FollowHolder {
+
+        private TmFollow follow;
+        public void setTmFollow(TmFollow f) { follow = f; }
+        public TmFollow follow() { return follow; }
+        @Override public void randomizeTMMoves(Settings s) { super.randomizeTMMoves(s); if (follow != null) follow.apply(this, s); }
         boolean staticsBroken;
 
         SafeGen4RomHandler(java.util.Random random) {
@@ -558,7 +704,12 @@ public class SoulLinkBridge {
      * used for such a ROM, and on saving Fairy goes back out as 17 (UPR's own writer would turn it into Normal).
      * Static encounters whose scripts the hack rewrote are treated like in Gen 4: unavailable instead of a crash.
      */
-    static class SafeGen5RomHandler extends Gen5RomHandler {
+    static class SafeGen5RomHandler extends Gen5RomHandler implements FollowHolder {
+
+        private TmFollow follow;
+        public void setTmFollow(TmFollow f) { follow = f; }
+        public TmFollow follow() { return follow; }
+        @Override public void randomizeTMMoves(Settings s) { super.randomizeTMMoves(s); if (follow != null) follow.apply(this, s); }
         static final int FAIRY_BYTE = 17;
         boolean staticsBroken;
         boolean fairy;

@@ -65,3 +65,17 @@ export function ctrTouchAt(lay, fx, fy, { clamp = false } = {}) {
   const src = lay.source || { w: lay.width, h: lay.height };
   return { x: (q.src.x + u * q.src.w) / src.w, y: (q.src.y + v * q.src.h) / src.h };
 }
+
+/**
+ * Is a picture of the 3DS player black (lib/ctrplayer.mjs: a game that never draws anything)? `px` RGBA / BGRA rows of
+ * w×h; up to ~400 pixels spread over it are looked at.
+ */
+export function blackPicture(px, w, h) {
+  const n = w * h;
+  const step = Math.max(1, Math.floor(n / 397));
+  for (let i = 0; i < n; i += step) {
+    const o = i * 4;
+    if (px[o] > 12 || px[o + 1] > 12 || px[o + 2] > 12) return false;
+  }
+  return true;
+}

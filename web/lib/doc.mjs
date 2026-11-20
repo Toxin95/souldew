@@ -27,7 +27,8 @@ const newer = (a, b) => !b || a.t > b.t || (a.t === b.t && a.by > b.by);
 /** Keys that would reach Object.prototype through plain-object access. */
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 /** Remote timestamps are clamped to now + 1 day (the server's merge of uploads, mergeDocEntries in
- *  server/lib/build.mjs, uses the same bounds). */
+ *  server/lib/build.mjs, uses the same bounds) – except the host's signed rules, which keep the timestamp they are
+ *  signed for. */
 const MAX_SKEW = 86400000;
 /** Changes are written (browser copy and server) this long after the last one – live HP changes several times a
  *  second in a battle, and each write turns the whole doc into JSON. */
@@ -49,6 +50,24 @@ export class RunDoc {
     this.listeners = new Set();
     this.localListeners = new Set(); // called with entries changed locally (to broadcast)
     this.saveTimer = null;
+    // guard(key, entry) for entries from the link: true (take it), 'signed' (take it at its exact timestamp, even one
+    // more than a day ahead – the host's signature is for it), false (drop it) or a Promise of either – merged again
+    // once it settles. For keys only one player may write (lib/hostrules.mjs: the host's rules).
+    this.guard = null;
+    // outranks(key, a, b): true when entry `a` beats entry `b` whatever their timestamps (lib/hostrules.mjs: once the
+    // host's key is known, the host's signed rules beat any unsigned ones – a partner's clock running ahead, or an
+    // unsigned entry the host's doc never took, must not keep them out)
+    this.outranks = null;
+  }
+
+  /** Does entry `a` replace `b` for `key`? The newer one – unless one of them outranks the other (see outranks). */
+  _wins(key, a, b) {
+    if (!b) return true;
+    if (this.outranks) {
+      if (this.outranks(key, a, b)) return true;
+      if (this.outranks(key, b, a)) return false;
+    }
+    return newer(a, b);
   }
 
   tick() {
@@ -72,6 +91,7 @@ export class RunDoc {
 
   set(key, value) {
     const entry = { v: value === undefined ? null : value, t: this.tick(), by: this.by };
+    if (!this._wins(key, entry, this.entries[key])) return; // (it can't replace what outranks it – not even here)
     this.entries[key] = entry;
     this._changed([key], { [key]: entry });
   }
@@ -81,11 +101,26 @@ export class RunDoc {
     const changed = {};
     for (const [key, value] of Object.entries(writes)) {
       const entry = { v: value === undefined ? null : value, t: this.tick(), by: this.by };
+      if (!this._wins(key, entry, this.entries[key])) continue;
       this.entries[key] = entry;
       changed[key] = entry;
     }
     const keys = Object.keys(changed);
     if (keys.length) this._changed(keys, changed);
+  }
+
+  /**
+   * Write `value` at the timestamp `t` it was made for (the host's signed rules carry theirs – lib/hostrules.mjs), if
+   * that is newer than what the key holds. true when it was written.
+   */
+  setAt(key, value, t) {
+    if (!Number.isFinite(t)) return false;
+    const entry = { v: value === undefined ? null : value, t, by: this.by };
+    if (!this._wins(key, entry, Object.hasOwn(this.entries, key) ? this.entries[key] : undefined)) return false;
+    this.entries[key] = entry;
+    if (t > this.clock) this.clock = t;
+    this._changed([key], { [key]: entry });
+    return true;
   }
 
   del(key) {
@@ -94,19 +129,40 @@ export class RunDoc {
 
   /** info (optional, from the link): { live: sent right after the change, offset: our clock minus the sender's }
    *  – handed to subscribers as their third argument. */
-  merge(remote, info = null) {
+  merge(remote, info = null, { own = false } = {}) {
     const changed = [];
     const maxT = Date.now() + MAX_SKEW;
     for (const [k, raw] of Object.entries(remote || {})) {
       // Entries come from the partner (untrusted): no prototype keys, sane shape, no timestamps far in the
       // future (one would win every later edit of that key forever).
       if (UNSAFE_KEYS.has(k) || !raw || typeof raw !== 'object' || typeof raw.t !== 'number' || !Number.isFinite(raw.t)) continue;
-      const e = { v: raw.v === undefined ? null : raw.v, t: Math.min(raw.t, maxT), by: typeof raw.by === 'string' ? raw.by.slice(0, 64) : '' };
-      if (newer(e, Object.hasOwn(this.entries, k) ? this.entries[k] : undefined)) {
+      const v = raw.v === undefined ? null : raw.v;
+      const by = typeof raw.by === 'string' ? raw.by.slice(0, 64) : '';
+      let e = { v, t: Math.min(raw.t, maxT), by };
+      // This computer's own copy (load): the host's signed rules keep the timestamp they were signed for – they were
+      // checked when they came in, and a clamped one no longer matches its signature.
+      if (own && raw.t > maxT && k === 'rules' && v && typeof v === 'object' && typeof v.sig === 'string' && v.rev === raw.t) e = { v, t: raw.t, by };
+      const known = Object.hasOwn(this.entries, k) ? this.entries[k] : undefined;
+      if (this.guard) {
+        // The guard sees the timestamp as sent: the host's signature is for exactly that one (a host whose clock is
+        // more than a day ahead of ours, or that followed a partner's clock that far).
+        const exact = raw.t > maxT ? { v, t: raw.t, by } : e;
+        if (this._wins(k, exact, known)) {
+          const ok = this.guard(k, exact);
+          if (ok === 'signed') e = exact; // the host's signature vouches for it: kept as signed
+          else if (ok !== true) {
+            if (ok && typeof ok.then === 'function') ok.then((yes) => yes && this.merge({ [k]: exact }, info), () => {});
+            continue;
+          }
+        }
+      }
+      if (this._wins(k, e, known)) {
         this.entries[k] = e;
         changed.push(k);
       }
-      if (e.t > this.clock) this.clock = e.t;
+      // (a far-future signed entry is kept, but doesn't drag this doc's clock along further than any other entry)
+      const tc = Math.min(e.t, maxT);
+      if (tc > this.clock) this.clock = tc;
     }
     if (changed.length) this._changed(changed, null, true, info);
     return changed;
@@ -168,8 +224,8 @@ export class RunDoc {
     }
     const server = await api.get(`/api/runs/${this.runId}/doc`).catch(() => null);
     // Merge both: whichever copy is newer per key wins.
-    this.merge(server || {});
-    this.merge(local || {});
+    this.merge(server || {}, null, { own: true });
+    this.merge(local || {}, null, { own: true });
     return this;
   }
 }

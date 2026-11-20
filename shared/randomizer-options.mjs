@@ -1,13 +1,14 @@
 // Curated Universal Pokemon Randomizer ZX options (Gen 1–7: the GB/GBC/GBA/DS games and the 3DS games).
 // Keys are UPR Settings field names — the Java bridge applies them by reflection.
 // Every key and enum value here exists in the bundled UPR ZX 4.6.1 (test/data/upr-settings-fields.json,
-// checked by test/randomizer.test.mjs).
+// checked by test/randomizer.test.mjs) – except keys starting with @: souldew's own, done by the bridge itself
+// (@tmsFollowMoves: tools/upr-bridge/TmFollow.java; an older bridge ignores them with an "Unknown setting" warning).
 // User-visible strings are English source text; the UI translates them via localizeRandomizer(t)
 // with stable keys (see rndKey below). The server only uses toProperties(), never the labels.
 
 // Optional field props (last argument `more`):
-//   dependsOn  key | [keys] (any of them on) | { key, in: [values] } – the field only matters while that is on;
-//              a select counts as "on" unless it is UNCHANGED / NONE (see fieldActive).
+//   dependsOn  key | [keys] (any of them on) | { key, in: [values] } | { all: [any of these] } – the field only
+//              matters while that is on; a select counts as "on" unless it is UNCHANGED / NONE (see fieldActive).
 //   gens       [min, max] – only shown for games of these generations (UPR ignores the rest anyway).
 //   numeric    select whose values are numbers.
 // Select options are [value, label] or [value, label, { gens, fallback }] (fallback: used instead in other generations).
@@ -17,6 +18,8 @@ const num = (key, label, min, max, help, dependsOn, more) => ({ key, label, type
 /** A small sub-heading inside a group (no value). */
 const head = (key, label) => ({ key, label, type: 'head' });
 
+/** souldew's "TM compatibility follows the TM moves" (the bridge's TmFollow, #81). */
+export const TMS_FOLLOW_MOVES = '@tmsFollowMoves';
 const TRAINER_ITEMS = ['randomizeHeldItemsForBossTrainerPokemon', 'randomizeHeldItemsForImportantTrainerPokemon', 'randomizeHeldItemsForRegularTrainerPokemon'];
 const GEN_TO = (from) => [9, 8, 7, 6, 5, 4, 3, 2].filter((g) => g >= from).reverse().map((g) => [g, `Gen ${g}`, { gens: [1, g - 1] }]);
 
@@ -236,6 +239,11 @@ export const OPTION_GROUPS = [
       ]),
       bool('tmLevelUpMoveSanity', 'Pokémon can learn TMs of their level-up moves', null, { key: 'tmsHmsCompatibilityMod', in: ['RANDOM_PREFER_TYPE', 'COMPLETELY_RANDOM'] }),
       bool('tmsFollowEvolutions', 'Compatibility follows evolutions', null, { key: 'tmsHmsCompatibilityMod', in: ['RANDOM_PREFER_TYPE', 'COMPLETELY_RANDOM'] }),
+      // souldew's own (#81): UPR keeps a random TM's compatibility tied to its slot – the bridge gives it to the Pokémon
+      // that could learn the new move instead. Only with random TM moves and compatibility left unchanged.
+      bool(TMS_FOLLOW_MOVES, 'TM compatibility follows the new TM moves',
+        'A TM with a new move works for the Pokémon that could learn that move in the original game – by TM, tutor or level-up, also as an earlier evolution. A move no Pokémon could learn goes to the Pokémon of its type. HMs stay as they are.',
+        { all: [{ key: 'tmsMod', in: ['RANDOM'] }, { key: 'tmsHmsCompatibilityMod', in: ['UNCHANGED'] }] }),
       bool('fullHMCompat', 'Every Pokémon can learn every HM', 'Handy when the randomizer leaves you without HM users.'),
     ],
   },
@@ -263,7 +271,11 @@ export const OPTION_GROUPS = [
     fields: [
       sel('fieldItemsMod', 'Items on the map', [['UNCHANGED', 'Unchanged'], ['SHUFFLE', 'Shuffle'], ['RANDOM', 'Random'], ['RANDOM_EVEN', 'Random (even)']]),
       bool('banBadRandomFieldItems', 'Exclude useless items', null, { key: 'fieldItemsMod', in: ['RANDOM', 'RANDOM_EVEN'] }),
-      sel('shopItemsMod', 'Shop items', [['UNCHANGED', 'Unchanged'], ['SHUFFLE', 'Shuffle'], ['RANDOM', 'Random']]),
+      // UPR ZX changes only the shops its ROM tables don't skip (SkipShops / MainGameShops in its gen*_offsets.ini):
+      // FireRed/LeafGreen Celadon 4F + 5F, Ruby/Sapphire/Emerald Slateport, Lavaridge and Lilycove 3F, the DS games their
+      // second counters and department stores – never the regular Poké Mart list, and no shops in Gen 1/2 (#62)
+      sel('shopItemsMod', 'Shop items', [['UNCHANGED', 'Unchanged'], ['SHUFFLE', 'Shuffle'], ['RANDOM', 'Random']],
+        'Only the special shops change: department store floors, herb and vitamin sellers and the second counter of a Poké Mart. The regular Poké Mart items stay – in FireRed/LeafGreen just Celadon Department Store 4F and 5F change. No shops in Gen 1/2.'),
       bool('banBadRandomShopItems', 'Exclude useless items', null, { key: 'shopItemsMod', in: ['RANDOM'] }),
       bool('banRegularShopItems', 'No regular shop items (Potions, Poké Balls …)', null, { key: 'shopItemsMod', in: ['RANDOM'] }),
       bool('banOPShopItems', 'Ban overpowered shop items', null, 'shopItemsMod'),
@@ -348,6 +360,8 @@ const BASE = {
   abilitiesFollowMegaEvolutions: false, baseStatsFollowMegaEvolutions: false,
   totemPokemonMod: 'UNCHANGED', allyPokemonMod: 'UNCHANGED', auraMod: 'UNCHANGED', randomizeTotemHeldItems: false,
   allowTotemAltFormes: false, totemLevelsModified: false, totemLevelModifier: 0,
+  // added in 2.8.3 – souldew's own, off (a run keeps it only when it's on: buildValues)
+  [TMS_FOLLOW_MOVES]: false,
   '@miscTweaks': [],
 };
 /** Defaults for every exposed option (a fresh "everything unchanged" setup). */
@@ -454,11 +468,13 @@ export const PRESETS = [
  * Stable i18n keys for every user-visible string above. The UI translates with
  * localizeRandomizer(t) – the English text in this file is the fallback/source text.
  */
+// (souldew's own @keys without the @)
+const keyName = (fieldKey) => String(fieldKey).replace(/^@/, '');
 export const rndKey = {
   group: (groupId) => `rnd.group.${groupId}`,
-  label: (fieldKey) => `rnd.${fieldKey}`,
-  help: (fieldKey) => `rnd.${fieldKey}.help`,
-  option: (fieldKey, value) => `rnd.${fieldKey}.${value}`,
+  label: (fieldKey) => `rnd.${keyName(fieldKey)}`,
+  help: (fieldKey) => `rnd.${keyName(fieldKey)}.help`,
+  option: (fieldKey, value) => `rnd.${keyName(fieldKey)}.${value}`,
   preset: (presetId, part) => `rnd.preset.${presetId}.${part}`, // part: name | badge | description
   tweak: (tweakId) => `rnd.tweak.${tweakId}`,
 };
@@ -509,6 +525,7 @@ export function fieldActive(f, values) {
     return test(values[key] ?? BASE[key]) && (!parent || fieldActive(parent, values));
   };
   if (Array.isArray(dep)) return dep.some((k) => holds(k, isOn));
+  if (Array.isArray(dep.all)) return dep.all.every((d) => fieldActive({ dependsOn: d }, values));
   if (typeof dep === 'object') return holds(dep.key, (v) => dep.in.includes(v));
   return holds(dep, isOn);
 }
@@ -564,6 +581,9 @@ export function buildValues(values, gen) {
     if (v.typesMod === 'RANDOM_FOLLOW_EVOLUTIONS') v.typesMod = 'COMPLETELY_RANDOM';
     if (v.startersMod === 'RANDOM_WITH_TWO_EVOLUTIONS') v.startersMod = 'COMPLETELY_RANDOM';
   }
+  // "TM compatibility follows the TM moves" is stored only while it's on and does something: a run without it has the
+  // same values as one from 2.8.2, so older versions can still join it (one with it needs 2.8.3 – shared/runpack.mjs)
+  if (v[TMS_FOLLOW_MOVES] !== true || !fieldActive(FIELDS.get(TMS_FOLLOW_MOVES), v)) delete v[TMS_FOLLOW_MOVES];
   return v;
 }
 /** Can the user change this field right now? (dependsOn chain on, not overridden by "new every level") */

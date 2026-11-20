@@ -7,13 +7,15 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   OPTION_GROUPS, PRESETS, DEFAULT_VALUES, MISC_TWEAK_LABELS, toProperties, buildValues, sameSettings, sanitizeValues,
-  fieldActive, fieldEnabled, forGen, withDefaults, randomizerStrings,
+  fieldActive, fieldEnabled, forGen, withDefaults, randomizerStrings, TMS_FOLLOW_MOVES,
 } from '../shared/randomizer-options.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 // `java -cp PokeRandoZX.jar:tools/upr-bridge SoulLinkBridge fields` of UPR ZX 4.6.1 (re-checked live below)
 const UPR = JSON.parse(readFileSync(join(root, 'test', 'data', 'upr-settings-fields.json'), 'utf8'));
 const FIELDS = OPTION_GROUPS.flatMap((g) => g.fields).filter((f) => f.type !== 'head');
+/** souldew's own options, done by the bridge itself (no UPR field): key → type */
+const OWN = { [TMS_FOLLOW_MOVES]: 'bool' };
 const byKey = Object.fromEntries(FIELDS.map((f) => [f.key, f]));
 
 /** properties text → { key: value } (what SoulLinkBridge.readSettings parses) */
@@ -22,6 +24,7 @@ const parseProps = (text) => Object.fromEntries(text.split('\n').filter((l) => l
 /** Would the bridge accept `key=value`? Mirrors its reflection rules (boolean / int / enum). */
 function uprAccepts(key, value) {
   if (key === '@miscTweaks') return value === '' || value.split(',').every((x) => UPR['@miscTweaks'].values.includes(x));
+  if (OWN[key] === 'bool') return value === 'true' || value === 'false';
   const f = UPR[key];
   if (!f) return false;
   if (f.type === 'boolean') return value === 'true' || value === 'false';
@@ -32,6 +35,10 @@ function uprAccepts(key, value) {
 
 test('every exposed option is a real UPR 4.6.1 setting with a matching type', () => {
   for (const f of FIELDS) {
+    if (f.key.startsWith('@')) {
+      assert.equal(OWN[f.key], f.type, `${f.key}: souldew's own options are handled by the bridge (SoulLinkBridge.readSettings)`);
+      continue;
+    }
     const u = UPR[f.key];
     assert.ok(u, `${f.key} is not a UPR Settings field`);
     if (f.type === 'bool') assert.equal(u.type, 'boolean', f.key);
@@ -122,7 +129,10 @@ test('buildValues applies the generation and "new every level" rules without tou
   assert.equal(g2.additionalImportantTrainerPokemon, 0);
   assert.equal(g2.randomizeHeldItemsForBossTrainerPokemon, false);
   assert.equal(buildValues(hard, 4).additionalBossTrainerPokemon, 1);
-  assert.deepEqual(buildValues(hard, null), hard, 'unknown generation: unchanged');
+  // (the TM option is stored only while it's on – see the #81 test below)
+  const { [TMS_FOLLOW_MOVES]: off, ...hardStored } = hard;
+  assert.equal(off, false);
+  assert.deepEqual(buildValues(hard, null), hardStored, 'unknown generation: unchanged');
 
   assert.equal(buildValues({ trainersMod: 'MAINPLAYTHROUGH' }, 4).trainersMod, 'RANDOM');
   assert.equal(buildValues({ trainersMod: 'MAINPLAYTHROUGH' }, 5).trainersMod, 'MAINPLAYTHROUGH');
@@ -153,6 +163,33 @@ test('sameSettings: missing keys = defaults, ignored when the parent is off, twe
   assert.ok(!sameSettings(classic, { ...classic, wildPokemonMod: 'AREA_MAPPING' }));
   assert.ok(!sameSettings(classic, { ...classic, someFutureKey: true }), 'unknown keys must match exactly');
   for (const p of PRESETS) assert.equal(PRESETS.filter((q) => sameSettings(p.values, q.values)).length, 1, `${p.id} is distinct`);
+});
+
+test('"TM compatibility follows the new TM moves" (#81): only with random TMs and unchanged compatibility, stored only while on', () => {
+  const f = byKey[TMS_FOLLOW_MOVES];
+  assert.ok(OPTION_GROUPS.find((g) => g.id === 'tms').fields.includes(f));
+  const v = withDefaults({});
+  assert.equal(v[TMS_FOLLOW_MOVES], false, 'off by default');
+  assert.equal(fieldActive(f, v), false, 'TM moves unchanged: nothing to follow');
+  assert.equal(fieldActive(f, { ...v, tmsMod: 'RANDOM' }), true);
+  for (const mod of ['RANDOM_PREFER_TYPE', 'COMPLETELY_RANDOM', 'FULL']) assert.equal(fieldActive(f, { ...v, tmsMod: 'RANDOM', tmsHmsCompatibilityMod: mod }), false, mod);
+  // a run keeps the key only while it's on and active – one without it has the same values as before 2.8.3
+  assert.ok(!(TMS_FOLLOW_MOVES in buildValues(v, 3)));
+  assert.ok(!(TMS_FOLLOW_MOVES in buildValues({ ...v, [TMS_FOLLOW_MOVES]: true }, 3)), 'TM moves unchanged');
+  assert.ok(!(TMS_FOLLOW_MOVES in buildValues({ ...v, tmsMod: 'RANDOM', tmsHmsCompatibilityMod: 'FULL', [TMS_FOLLOW_MOVES]: true }, 4)));
+  const on = buildValues({ ...v, tmsMod: 'RANDOM', [TMS_FOLLOW_MOVES]: true }, 3);
+  assert.equal(on[TMS_FOLLOW_MOVES], true);
+  assert.equal(parseProps(toProperties(on))[TMS_FOLLOW_MOVES], 'true', 'the bridge reads @tmsFollowMoves=true');
+  for (const p of PRESETS) {
+    assert.ok(!(TMS_FOLLOW_MOVES in buildValues(p.values, 4)), `${p.id}: unchanged runs`);
+    assert.ok(sameSettings(p.values, buildValues(p.values, 4), 4));
+  }
+  assert.ok(!sameSettings({ ...v, tmsMod: 'RANDOM' }, on), 'a different game');
+  assert.ok(sameSettings({ ...v, tmsMod: 'RANDOM' }, { ...v, tmsMod: 'RANDOM', [TMS_FOLLOW_MOVES]: false }));
+  assert.deepEqual(sanitizeValues({ [TMS_FOLLOW_MOVES]: true }), { [TMS_FOLLOW_MOVES]: true }, 'saved presets keep it');
+  const s = randomizerStrings();
+  assert.equal(s['rnd.tmsFollowMoves'], 'TM compatibility follows the new TM moves', 'i18n key without the @');
+  assert.ok(s['rnd.tmsFollowMoves.help']);
 });
 
 test('sanitizeValues keeps only known options with valid values', () => {

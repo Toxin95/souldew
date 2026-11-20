@@ -78,7 +78,27 @@ Checked 2026-11-11 with the real US images of Omega Ruby, Y, Sun and Ultra Sun (
   pipeline cache control when the GPU *offers* them (HAVE_LIBRETRO skips creating the device, not the detection) –
   undefined behaviour on a device that never enabled them. ctrhost hides those extensions from the core's
   vkEnumerateDeviceExtensionProperties (`core_gipa`, CTRHOST_ALL_EXTENSIONS=1 to compare); the renderer takes its
-  fallbacks. Same picture and speed on MoltenVK.
+  fallbacks. Same picture and speed on MoltenVK. (2.7.0; since then that is the renderer mode "compat".)
+- **Renderer modes** (after 2.7.0, ctrhost `--renderer`, server/lib/ctrrenderer.mjs): "vulkan" gives the core the
+  device the standalone Azahar creates – ctrhost answers the core's `vkGetInstanceProcAddr("vkCreateDevice")` with
+  `wrap_create_device`, which adds the optional extensions vk_instance.cpp would use (same blacklists by driver ID) with
+  their feature structs, and robustBufferAccess. Both apps stay at Vulkan 1.1 (vk_platform.h `TargetVulkanApiVersion`,
+  the core's `GetVulkanApplicationInfo`) – a newer API version is not what standalone does. "compat" is the 2.7.0
+  hide-path, "software" the core's software renderer (`citra_graphics_api` "Software": no SET_HW_RENDER, XRGB8888
+  frames through video_refresh with a pitch; ~25–30 fps on an M1). "auto" steps down within the session when the host
+  ends badly in its first 30 s and remembers the step per GPU + driver string (config `ctrRendererMemo`).
+- **AMD RX 9070 XT crash** (amdvlk64.dll+0x2e52fc4, driver 2.0.416 / 26.11.1, "running the first frames", also with
+  the extensions hidden): azahar-emu/azahar#2742 – the official libretro core crashes the same way in RetroArch on
+  that card since 2126.1 (2126.0 fine, standalone fine, OpenGL fine). A ProcDump there put it in `vkCreateImage`;
+  PR #2745's workaround hands the driver a copy of the VkImageCreateInfo with the queue-family fields cleared for
+  exclusive images (VMA's vkCreateImage callback) and fixed it on that card. ctrhost does the same at the dispatch
+  level (`wrap_create_image`: the core's dispatcher and VMA look vkCreateImage up through `core_gipa` / `core_gdpa` –
+  `core_gdpa` must also answer "vkGetDeviceProcAddr" with itself, vulkan-hpp re-fetches it through the device). On
+  MoltenVK the fields are always 0 (all Azahar create sites zero-initialise them), so why the copy helps on AMD is
+  not understood yet; ctrhost logs when it really clears something and names the image in flight on a crash. Azahar's
+  2126.1 also made the texture cache recycle/destroy surfaces by GPU tick (rasterizer_cache.h, `GetResourceFreeTick`;
+  the libretro core's own MasterSemaphoreLibRetro) – ~3500 images are created in Sun's first 4000 frames – a second
+  suspect if the image workaround doesn't hold. Windows crash lines carry an unwind stack (`compat_stack`).
 - **Layouts**: the core keeps `citra_layout_option` "default" (400×480, bottom screen at x 40); the page cuts the two
   screens out of that picture and arranges them (shared/ctrlayout.mjs) – no core option change, no restart, touch mapped
   back through the same rectangles.

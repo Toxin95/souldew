@@ -4,6 +4,7 @@ import { html, useState, useEffect, useRef } from '/vendor/htm-preact.mjs';
 import { Sprite, useFocusTrap } from '../lib/ui.mjs';
 import { Icon } from '../lib/icons.mjs';
 import { t, ago } from '../lib/i18n.mjs';
+import { unhatched } from './party.mjs';
 
 // Slot numbers match server/app.mjs: 1–8 are the player's, 99 is "where you left off", 96–98 are older copies of 99.
 export const MANUAL_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -27,7 +28,7 @@ function base64(u8) {
 
 /** What the card shows next to a state: the live team (species, level) and badges at the time it was taken. */
 export function stateInfo({ party, badges, core }) {
-  const team = (party || []).filter((m) => m?.species).slice(0, 6).map((m) => ({ species: m.species, level: m.level, ...(m.shiny ? { shiny: true } : {}) }));
+  const team = (party || []).filter((m) => m?.species && !unhatched(m)).slice(0, 6).map((m) => ({ species: m.species, level: m.level, ...(m.shiny ? { shiny: true } : {}) }));
   return { core: core || '', party: team, ...(badges !== undefined && badges !== null ? { badges } : {}) };
 }
 
@@ -48,6 +49,18 @@ export async function describeState(id, slot, shot, info) {
   } catch {
     // the card falls back to the slot number
   }
+}
+
+/**
+ * Why a save state can't be loaded with the running core (null: it can). A state only loads into the emulator – and, for
+ * the Game Boy, the console model – that made it. States of the older Game Boy player (Gambatte) stay where they are.
+ */
+export function otherCoreText(stateCore, core) {
+  if ((stateCore || '') === (core || '')) return null;
+  if (stateCore === 'gambatte-native') return t('states.oldGb', 'This savestate was made with the previous Game Boy emulator – your in-game saves are unaffected');
+  const sameboy = /^sameboy-(dmg-)?native$/;
+  if (sameboy.test(stateCore || '') && sameboy.test(core || '')) return t('states.otherGbLook', 'Made with the other Game Boy look – switch Settings › Play › Game Boy look to load it');
+  return t('states.otherCore', 'Made with another emulator core – can’t be loaded here');
 }
 
 export const firstFreeSlot = (list) => MANUAL_SLOTS.find((n) => !list?.some((s) => s.slot === n)) || null;
@@ -109,7 +122,7 @@ export function StatePanel({ id, core, gen, version, selected, onLoad, onSave, o
   const autos = [AUTO_SLOT, ...BACKUP_SLOTS].map(byslot).filter(Boolean);
 
   const card = (slot, s, manual) => {
-    const otherCore = s?.info && (s.info.core || '') !== (core || '');
+    const otherCore = s?.info ? otherCoreText(s.info.core, core) : null;
     const team = s?.info?.party || [];
     const top = team.reduce((m, p) => Math.max(m, p.level || 0), 0);
     return html`<li class=${`state-card ${s ? '' : 'empty'} ${manual && selected === slot ? 'sel' : ''}`} key=${slot}>
@@ -124,8 +137,9 @@ export function StatePanel({ id, core, gen, version, selected, onLoad, onSave, o
         ${team.map((m) => html`<${Sprite} id=${m.species} shiny=${m.shiny} size=${22} gen=${gen} />`)}
         <span class="px tiny">${s.info.badges !== undefined ? html`${t('states.badges', '{n} badge|{n} badges', { n: s.info.badges, count: s.info.badges })} · ` : ''}${t('common.lv', 'Lv')} ${top}</span>
       </div>`}
+      ${otherCore && html`<p class="tiny muted state-note">${otherCore}</p>`}
       <div class="state-actions">
-        ${s && html`<button class="btn small primary" disabled=${otherCore} title=${otherCore ? t('states.otherCore', 'Made with another emulator core – can’t be loaded here') : undefined}
+        ${s && html`<button class="btn small primary" disabled=${!!otherCore} title=${otherCore || undefined}
           onClick=${() => onLoad(slot)}>${t('states.load', 'Load')}</button>`}
         ${manual && html`<button class="btn small" onClick=${() => (s && !isArmed(slot, 'save') ? arm({ slot, what: 'save' }) : (arm(null), onSave(slot)))}>
           ${!s ? t('states.saveHere', 'Save here') : isArmed(slot, 'save') ? t('states.sureOverwrite', 'Overwrite?') : t('states.overwrite', 'Overwrite')}</button>`}

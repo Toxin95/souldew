@@ -101,7 +101,7 @@ test('Gen 2: wild opponent, live HP of the active mon and the shiny DVs', () => 
   put16be(m, 0xcb1e, 20);
   const b = readLiveBattle(e, ram(m), new LiveTables({}));
   assert.equal(b.kind, 'wild');
-  assert.deepEqual(b.enemy, { species: 172, level: 4, hp: 9, maxHp: 16, shiny: true });
+  assert.deepEqual(b.enemy, { species: 172, level: 4, hp: 9, maxHp: 16, shiny: true, status: 0 }); // (wEnemyMonStatus: none)
   assert.deepEqual(b.active, { index: 0, hp: 3, maxHp: 20, status: 0 });
   // outside battle → null
   m[0xd116] = 0;

@@ -67,6 +67,18 @@ const time = (x) => {
 };
 
 /**
+ * Has this computer really started the run? A run created here exists only once it's built. An invite (imported)
+ * counts once this computer built its game for it, i.e. the player joined and has a seat. Opening an invite (or
+ * leaving it unbuilt, declined) starts nothing: no "Press Start", "Linked Souls" or any other trophy from a preview.
+ */
+export function runStarted(manifest) {
+  if (!manifest || typeof manifest !== 'object') return false;
+  if (!manifest.imported) return true;
+  const out = manifest.outputs;
+  return !!out && typeof out === 'object' && Object.keys(out).length > 0;
+}
+
+/**
  * Reduce one run to what the trophies need. `entries`: the run doc ({ key: { v, t, by } }), `slot`: the player on
  * this computer, `opts.areaName(key, doc)`: optional name lookup for areas without one in the doc (curated routes).
  */
@@ -85,7 +97,9 @@ export function digestRun(manifest, entries, slot, opts = {}) {
   const firstOf = {}; // slot → area → { species, at }
   const evolved = [];
   const badgeTimes = [];
-  let cheats = 0;
+  let cheats = 0; // Rare Candies used (Candy Crush)
+  let cheatUses = 0; // any cheat at all – Rare Candies, Max Repels, Poké Balls, money … (Honest Work)
+  let masterBallAt = null; // the first Master Ball from the cheats (Route 1 Legend: no catch from then on counts)
   for (const [k, f] of Object.entries(doc)) {
     if (!k.startsWith('feed:') || !f || typeof f !== 'object') continue;
     const at = num(f.at);
@@ -102,7 +116,12 @@ export function digestRun(manifest, entries, slot, opts = {}) {
     } else if (f.type === 'badge') {
       const n = Number(f.msg?.vars?.n);
       if (Number.isInteger(n) && n >= 1 && n <= 16) badgeTimes.push({ n, at });
-    } else if (f.type === 'cheat' && f.cheat === 'rareCandy') cheats += Math.max(0, Number(f.count) || 0);
+    } else if (f.type === 'cheat' && f.cheat) {
+      // (a rule change is logged as type 'cheat' too, without `cheat`)
+      cheatUses++;
+      if (f.cheat === 'rareCandy') cheats += Math.max(0, Number(f.count) || 0);
+      if (f.cheat === 'masterBall') masterBallAt = Math.min(masterBallAt ?? Infinity, at ?? 0);
+    }
   }
   const firstSpecies = firstOf[me] || {};
   // one evolution per step of a Pokémon: a reloaded savestate turns it back (Charmeleon → Charmander) and evolves it
@@ -175,18 +194,26 @@ export function digestRun(manifest, entries, slot, opts = {}) {
   const rules = doc.rules && typeof doc.rules === 'object' ? doc.rules : {};
   const bosses = Object.entries(doc).filter(([k, v]) => k.startsWith('boss:') && v).map(([k, v]) => ({ key: k.slice(5), at: num(v.at) }));
   const game = manifest?.game || {};
-  const badges = Math.max(lives[me]?.badges || 0, ...Object.keys(badgeAt).map(Number), 0);
+  // a battery save imported into this player's game (server/app.mjs afterSaveChange – run.json `saveImports`): what that
+  // save brought along isn't the run's. Its badges count only as earned while tracked (the play view takes the save's
+  // badge count as where the player stands – web/lib/run.mjs importBaseline), and the run's win earns nothing.
+  const imports = Array.isArray(manifest?.saveImports?.[me]) ? manifest.saveImports[me].filter((x) => x && Number.isFinite(x.at)) : [];
+  const imported = imports.length > 0;
+  const badges = imported ? Object.keys(badgeAt).length : Math.max(lives[me]?.badges || 0, ...Object.keys(badgeAt).map(Number), 0);
   return {
     id: str(manifest?.id, 16), name: str(manifest?.name, 80), mode, players: slots.length, me, names,
     gameId: str(game.id || manifest?.base?.gameId, 60) || null, gen: opts.gen || num(game.generation) || { gb: 1, gbc: 2, gba: 3, nds: 4, '3ds': 6 }[game.system] || null,
     randomized: manifest?.randomizer ? manifest.randomizer.enabled !== false : false, hack: !!(manifest?.patch || game.hackId || game.hackName),
+    // a game with a higher shiny rate (shared/shiny.mjs): its shinies fill the Pokédex but earn no shiny trophies
+    shinyBoost: !!manifest?.shiny?.rate && manifest.shiny.rate !== 8192,
     createdAt: time(manifest?.createdAt), attempt: Number(manifest?.attempt) || Number(/#(\d+)\s*$/.exec(manifest?.name || '')?.[1]) || 1,
     status: st?.state ? { state: st.state, reason: str(st.reason, 20) || null, at: num(st.at), by: str(st.by, 4) || null } : null,
     rules: { hardcore: rules.levelCaps === 'strict' && rules.noBattleItems === true && rules.setMode === true, levelCaps: !!rules.levelCaps, deathless: !!rules.deathless,
       // SoulLink's default type clause is 'global', a solo Nuzlocke's 'off' (shared/rules.mjs)
       typeClause: str(rules.typeClause, 10) || (mode === 'soullink' ? 'global' : 'off') },
     capBreaks: Object.keys(doc).filter((k) => k.startsWith(`capbreak:${me}:`)).length,
-    badges, badgeAt, bosses, catches, missed, partners, deaths, evolutions, cheats, lives,
+    badges, badgeAt, bosses, catches, missed, partners, deaths, evolutions, cheats, cheatUses, masterBallAt, lives,
+    ...(imported ? { imported: true, importedAt: Math.min(...imports.map((x) => x.at)) } : {}),
   };
 }
 
@@ -211,7 +238,9 @@ export function buildDex(digests, seen = {}) {
     const run = { runId: d.id, runName: d.name, mode: d.mode };
     for (const c of d.catches) {
       // the species it was caught as, and every species it evolved into
-      const line = [...new Set([c.first, ...d.evolutions.filter((x) => x.area && x.area === c.area).map((x) => x.to), c.species].filter(species))];
+      // (a run with an imported save: only what was seen caught and evolving – the species it has now may be one it
+      // became elsewhere, in the save that was brought in)
+      const line = [...new Set([c.first, ...d.evolutions.filter((x) => x.area && x.area === c.area).map((x) => x.to), ...(d.imported ? [] : [c.species])].filter(species))];
       for (const id of line) {
         const e = entry(id);
         const own = id === c.first;
@@ -258,11 +287,16 @@ const nth = (times, k) => {
 };
 const count = (n, times, target) => ({ n, at: n >= target ? nth(times, target) : null });
 const flag = (hit) => (hit ? { n: 1, at: hit.at ?? null } : { n: 0 });
+/** A shiny caught at the game's own odds – not in a run that raised them. */
+const fairShiny = (x) => x.shiny && !x.run?.shinyBoost;
 const firstBy = (list, fn) => {
   const hits = list.filter(fn).sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity));
   return hits[0] || null;
 };
-const won = (d) => d.status?.state === 'won';
+// (a run whose save was imported can't be won for the trophies: the save may have come finished – digestRun)
+const won = (d) => d.status?.state === 'won' && !d.imported;
+/** A catch's level as the trophies take it: none from a run with an imported save (it may have been raised elsewhere). */
+const fairLevel = (x) => (x.run?.imported ? 0 : x.level || 0);
 const failed = (d) => d.status?.state === 'failed';
 const myDeaths = (d) => d.catches.filter((c) => c.dead);
 const topLevel = (party) => Math.max(0, ...(party || []).map((m) => m.level || 0));
@@ -334,7 +368,7 @@ export const ACHIEVEMENTS = [
     const gens = PLAYABLE_GENS.map((g) => nth(c.digests.filter((d) => d.gen === g).map((d) => d.createdAt), 1) ?? (c.digests.some((d) => d.gen === g) ? 0 : null));
     return count(gens.filter((x) => x !== null).length, gens.map((x) => x || null), PLAYABLE_GENS.length);
   } },
-  { id: 'level100', cat: 'journey', rarity: 'epic', check: (c) => flag(firstBy(c.catches, (x) => (x.level || 0) >= 100) && { at: null }) },
+  { id: 'level100', cat: 'journey', rarity: 'epic', check: (c) => flag(firstBy(c.catches, (x) => fairLevel(x) >= 100) && { at: null }) },
   { id: 'firstEvolution', cat: 'journey', rarity: 'common', check: (c) => { const ev = c.digests.flatMap((d) => d.evolutions); return count(ev.length, ev.map((x) => x.at), 1); } },
   { id: 'evolutions25', cat: 'journey', rarity: 'uncommon', target: 25, check: (c) => { const ev = c.digests.flatMap((d) => d.evolutions); return count(ev.length, ev.map((x) => x.at), 25); } },
   { id: 'hardcoreWin', cat: 'journey', rarity: 'legendary', check: (c) => flag(firstBy(c.digests.filter((d) => won(d) && d.mode === 'nuzlocke' && d.rules.hardcore).map((d) => d.status), () => true)) },
@@ -357,8 +391,8 @@ export const ACHIEVEMENTS = [
     const s = Object.values(c.dex).filter((e) => e.seenAt !== null || e.caught > 0);
     return count(s.length, s.map((e) => e.seenAt || e.first?.at || null), 100);
   } },
-  { id: 'firstShiny', cat: 'collection', rarity: 'rare', check: (c) => { const s = c.catches.filter((x) => x.shiny); return count(s.length, s.map((x) => x.at), 1); } },
-  { id: 'shiny5', cat: 'collection', rarity: 'legendary', target: 5, check: (c) => { const s = c.catches.filter((x) => x.shiny); return count(s.length, s.map((x) => x.at), 5); } },
+  { id: 'firstShiny', cat: 'collection', rarity: 'rare', check: (c) => { const s = c.catches.filter(fairShiny); return count(s.length, s.map((x) => x.at), 1); } },
+  { id: 'shiny5', cat: 'collection', rarity: 'legendary', target: 5, check: (c) => { const s = c.catches.filter(fairShiny); return count(s.length, s.map((x) => x.at), 5); } },
   { id: 'legendary', cat: 'collection', rarity: 'rare', check: (c) => { const l = Object.keys(c.caughtAt).map(Number).filter(isLegendary); return count(l.length, l.map((id) => c.caughtAt[id]), 1); } },
   { id: 'legendary5', cat: 'collection', rarity: 'epic', target: 5, check: (c) => { const l = Object.keys(c.caughtAt).map(Number).filter(isLegendary); return count(l.length, l.map((id) => c.caughtAt[id]), 5); } },
   { id: 'starterTrio', cat: 'collection', rarity: 'uncommon', check: (c) => {
@@ -391,7 +425,7 @@ export const ACHIEVEMENTS = [
   { id: 'underdog', cat: 'skill', rarity: 'rare', check: (c) => { const u = c.momentsOf('badge').filter((m) => m.cap && m.top && m.top < m.cap); return count(u.length, u.map((m) => m.at), 1); } },
   { id: 'underdog3', cat: 'skill', rarity: 'epic', target: 3, check: (c) => { const u = c.momentsOf('badge').filter((m) => m.cap && m.top && m.top < m.cap); return count(u.length, u.map((m) => m.at), 3); } },
   { id: 'oneHp', cat: 'skill', rarity: 'rare', check: (c) => { const h = c.momentsOf('hp1'); return count(h.length, h.map((m) => m.at), 1); } },
-  { id: 'veteran', cat: 'skill', rarity: 'rare', check: (c) => flag(firstBy(c.catches, (x) => x.metLevel !== null && ((x.dead ? x.deathLevel ?? x.level : x.level) || 0) - x.metLevel >= 40) && { at: null }) },
+  { id: 'veteran', cat: 'skill', rarity: 'rare', check: (c) => flag(firstBy(c.catches, (x) => !x.run?.imported && x.metLevel !== null && ((x.dead ? x.deathLevel ?? x.level : x.level) || 0) - x.metLevel >= 40) && { at: null }) },
   { id: 'starterSurvives', cat: 'skill', rarity: 'rare', check: (c) => flag(firstBy(c.digests.filter((d) => won(d) && d.catches.some((x) => x.area === 'starter' && !x.dead)).map((d) => d.status), () => true)) },
   { id: 'monotype', cat: 'skill', rarity: 'epic', check: (c) => {
     // a type clause forbids two of a type in the team – a monotype team there would break the rules
@@ -401,7 +435,7 @@ export const ACHIEVEMENTS = [
   { id: 'byTheBook', cat: 'skill', rarity: 'epic', check: (c) => flag(firstBy(c.digests.filter((d) => won(d) && d.mode === 'nuzlocke' && d.rules.levelCaps && d.capBreaks === 0).map((d) => d.status), () => true)) },
   { id: 'fullTeamWin', cat: 'skill', rarity: 'uncommon', check: (c) => flag(firstBy(c.digests.filter((d) => won(d) && (d.lives[d.me]?.party || []).length >= 6).map((d) => d.status), () => true)) },
   { id: 'phoenix', cat: 'skill', rarity: 'epic', check: (c) => flag(firstBy(c.digests.filter((d) => won(d) && d.deaths.length >= 10).map((d) => d.status), () => true)) },
-  { id: 'noCheatWin', cat: 'skill', rarity: 'uncommon', check: (c) => flag(firstBy(c.digests.filter((d) => won(d) && d.cheats === 0).map((d) => d.status), () => true)) },
+  { id: 'noCheatWin', cat: 'skill', rarity: 'uncommon', check: (c) => flag(firstBy(c.digests.filter((d) => won(d) && !d.cheats && !d.cheatUses).map((d) => d.status), () => true)) },
 
   // ---- SoulLink ------------------------------------------------------------
   { id: 'firstLink', cat: 'soullink', rarity: 'common', check: (c) => { const r = c.digests.filter((d) => d.mode === 'soullink'); return count(r.length, r.map((d) => d.createdAt), 1); } },
@@ -413,7 +447,7 @@ export const ACHIEVEMENTS = [
   { id: 'atlas', cat: 'soullink', rarity: 'rare', check: (c) => flag(firstBy(c.digests.filter((d) => won(d) && d.mode === 'soullink' && levelGap(d) >= 10).map((d) => d.status), () => true)) },
   { id: 'groupLink', cat: 'soullink', rarity: 'uncommon', check: (c) => { const r = c.digests.filter((d) => d.mode === 'soullink' && d.players >= 3); return count(r.length, r.map((d) => d.createdAt), 1); } },
   { id: 'fellowship', cat: 'soullink', rarity: 'epic', check: (c) => flag(firstBy(c.digests.filter((d) => won(d) && d.mode === 'soullink' && d.players >= 3).map((d) => d.status), () => true)) },
-  { id: 'jealous', cat: 'soullink', rarity: 'rare', check: (c) => { const s = c.digests.flatMap((d) => d.partners.filter((p) => p.shiny)); return count(s.length, s.map((p) => p.at), 1); } },
+  { id: 'jealous', cat: 'soullink', rarity: 'rare', check: (c) => { const s = c.digests.filter((d) => !d.shinyBoost).flatMap((d) => d.partners.filter((p) => p.shiny)); return count(s.length, s.map((p) => p.at), 1); } },
   { id: 'unbreakable', cat: 'soullink', rarity: 'epic', check: (c) => flag(firstBy(c.digests.filter((d) => d.mode === 'soullink' && d.badges >= 8 && d.badgeAt[1])
     .flatMap((d) => d.catches.filter((x) => !x.dead && x.at && x.at < d.badgeAt[1] && d.partners.some((p) => p.area === x.area && !p.dead)).map(() => ({ at: d.badgeAt[8] ?? null }))), () => true)) },
   { id: 'notMe', cat: 'soullink', rarity: 'uncommon', check: (c) => flag(firstBy(c.digests.filter((d) => d.mode === 'soullink' && d.deaths[0]?.by && d.deaths[0].by !== d.me).map((d) => d.deaths[0]), () => true)) },
@@ -426,7 +460,9 @@ export const ACHIEVEMENTS = [
   { id: 'randoStart', cat: 'randomizer', rarity: 'common', check: (c) => { const r = c.digests.filter((d) => d.randomized); return count(r.length, r.map((d) => d.createdAt), 1); } },
   { id: 'rando10', cat: 'randomizer', rarity: 'rare', target: 10, check: (c) => { const r = c.digests.filter((d) => d.randomized); return count(r.length, r.map((d) => d.createdAt), 10); } },
   { id: 'randoWin', cat: 'randomizer', rarity: 'epic', check: (c) => flag(firstBy(c.digests.filter((d) => won(d) && d.randomized).map((d) => d.status), () => true)) },
-  { id: 'randoLegend', cat: 'randomizer', rarity: 'epic', check: (c) => flag(firstBy(c.catches.filter((x) => x.run.randomized && isLegendary(x.first) && (x.metLevel ?? x.level ?? 99) <= 15), () => true)) },
+  // (a Master Ball from the cheats catches anything: no catch from the first one on counts – one without a time neither)
+  { id: 'randoLegend', cat: 'randomizer', rarity: 'epic', check: (c) => flag(firstBy(c.catches.filter((x) => x.run.randomized && isLegendary(x.first) && (x.metLevel ?? x.level ?? 99) <= 15
+    && (x.run.masterBallAt == null || (x.at != null && x.at < x.run.masterBallAt))), () => true)) },
   { id: 'randoDex', cat: 'randomizer', rarity: 'rare', target: 100, check: (c) => {
     const first = {};
     for (const x of c.catches) if (x.run.randomized && (!(x.first in first) || (x.at && x.at < first[x.first]))) first[x.first] = x.at;
@@ -476,7 +512,7 @@ export const ACHIEVEMENTS = [
   { id: 'kaboom', cat: 'fun', rarity: 'uncommon', check: (c) => flag(firstBy(killedBy(c, (k) => k.kind === 'wild' && EXPLODERS.has(k.species)), () => true)) },
   { id: 'teleport', cat: 'fun', rarity: 'common', check: (c) => flag(firstBy(c.digests.flatMap((d) => d.missed.filter((x) => x.species === 63)), () => true)) },
   { id: 'roamer', cat: 'fun', rarity: 'uncommon', check: (c) => flag(firstBy(c.digests.flatMap((d) => d.missed.filter((x) => roams(x.species, d.gen))), () => true)) },
-  { id: 'shinyDown', cat: 'fun', rarity: 'rare', hidden: true, check: (c) => flag(firstBy(c.catches.filter((x) => x.dead && x.shiny).map((x) => ({ at: x.diedAt })), () => true)) },
+  { id: 'shinyDown', cat: 'fun', rarity: 'rare', hidden: true, check: (c) => flag(firstBy(c.catches.filter((x) => x.dead && fairShiny(x)).map((x) => ({ at: x.diedAt })), () => true)) },
   { id: 'gyarados', cat: 'collection', rarity: 'uncommon', check: (c) => flag(firstBy(c.digests.flatMap((d) => d.evolutions.filter((e) => e.from === 129 && e.to === 130)), () => true)) },
   { id: 'feebas', cat: 'collection', rarity: 'rare', check: (c) => flag(firstBy(c.catches.filter((x) => x.first === 349), () => true)) },
   { id: 'helix', cat: 'collection', rarity: 'uncommon', hidden: true, check: (c) => { const h = [138, 139].filter((id) => id in c.caughtAt); return count(h.length, h.map((id) => c.caughtAt[id]), 1); } },

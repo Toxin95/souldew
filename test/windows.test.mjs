@@ -398,13 +398,13 @@ test('platform: the app says which one, the browser is the fallback; shortcuts r
 test('Mac wording only where the page picks texts by platform', () => {
   // Every text that speaks of ⌘, the Finder, Applications or "Mac" is either shown behind a platform switch
   // (IS_MAC / isWin) or only reachable on macOS (states only the macOS updater produces). New ones must be added here.
-  const SWITCHED = ['disc.button', 'disc.title', 'disc.privacy', 'ext.revealMac', 'menu.revealLibrary', 'upd.dataSafe', 'upd.gatekeeper', 'upd.manual1', 'upd.manual2'];
-  const MAC_STATES = ['upd.reasonBlocked', 'upd.reasonDmg', 'upd.reasonTranslocated', 'upd.stepMount'];
+  const SWITCHED = ['disc.button', 'disc.title', 'disc.privacy', 'ext.revealMac', 'menu.revealLibrary', 'upd.dataSafe', 'upd.gatekeeper', 'upd.manual1', 'upd.manual2', 'err.randoNoAccessMac'];
+  const MAC_STATES = ['upd.reasonBlocked', 'upd.reasonDmg', 'upd.reasonTranslocated', 'upd.stepMount', 'upd.errDmg'];
   const en = JSON.parse(readFileSync(new URL('../web/i18n/en.json', import.meta.url), 'utf8'));
   const macish = Object.keys(en).filter((k) => /⌘|⇧|⌥|\bMacs?\b|Finder|macOS|Applications|Apple|disk image|Library folder/.test(en[k]));
   assert.deepEqual(macish.sort(), [...SWITCHED, ...MAC_STATES].sort());
   const root = fileURLToPath(new URL('../web/', import.meta.url));
-  const files = ['app.mjs', ...readdirSync(join(root, 'views')).map((f) => `views/${f}`), ...readdirSync(join(root, 'lib')).map((f) => `lib/${f}`)];
+  const files = ['app.mjs', ...readdirSync(join(root, 'views'), { recursive: true }).filter((f) => f.endsWith('.mjs')).map((f) => `views/${f}`), ...readdirSync(join(root, 'lib'), { recursive: true }).filter((f) => f.endsWith('.mjs')).map((f) => `lib/${f}`)];
   for (const f of files) {
     const src = readFileSync(join(root, f), 'utf8');
     for (const key of SWITCHED) {

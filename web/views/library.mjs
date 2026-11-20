@@ -4,13 +4,17 @@ import { Icon } from '../lib/icons.mjs';
 import { t, currentLang } from '../lib/i18n.mjs';
 import { api, events } from '../lib/api.mjs';
 import { serverErrorText } from '../lib/errors.mjs';
-import { catalog, gameTitle } from '../lib/data.mjs';
+import { catalog, gameTitle, patchFits } from '../lib/data.mjs';
 import { romFeatures, FEATURES } from '/shared/live/features.mjs';
 import { gymCapsFamily } from '/shared/routes.mjs';
 import { FirstSteps } from './firststeps.mjs';
+import { HandheldTile } from './handheldtile.mjs';
 import { IS_MAC, IS_WIN, shortPath } from '../lib/platform.mjs';
 import { addedToLibrary, addedMessage, unpackToast } from '../lib/libadded.mjs';
 import { patchTitle } from '/shared/patchname.mjs';
+import { updateVersionLabel } from '../lib/ctrupdate.mjs';
+import { ImportSaveButton } from './saveimport.mjs';
+import { togetherRomBlock } from '/shared/playtogether.mjs';
 
 const SYS = { gb: 'GB', gbc: 'GBC', gba: 'GBA', nds: 'DS', '3ds': '3DS' };
 
@@ -142,13 +146,15 @@ export async function addGamesFlow({ reloadLibrary, folder = false, toast } = {}
         await api.post('/api/library/folders', { add: paths[0] });
         added = null;
       } else {
-        added = (await api.post('/api/library/import', { paths }))?.added || [];
+        const r = await api.post('/api/library/import', { paths });
+        added = r?.added || [];
+        failures = skippedFailures(r?.skipped);
       }
     } else {
       const input = document.createElement('input');
       input.type = 'file';
       input.multiple = true;
-      input.accept = '.gb,.gbc,.gba,.nds,.3ds,.cci,.cxi,.cia,.3dsx,.zcci,.zcxi,.z3dsx,.zip,.xdelta,.vcdiff,.bps,.ups,.ips';
+      input.accept = '.gb,.gbc,.sgb,.gba,.nds,.3ds,.cci,.cxi,.cia,.3dsx,.zcci,.zcxi,.z3dsx,.zip,.xdelta,.vcdiff,.bps,.ups,.ips';
       const files = await new Promise((resolve) => {
         input.onchange = () => resolve([...input.files]);
         input.addEventListener('cancel', () => resolve([]));
@@ -256,7 +262,7 @@ async function uploadFile(file) {
     const body = await res.text().catch(() => '');
     let msg = body;
     try {
-      msg = JSON.parse(body).error || body;
+      msg = serverErrorText(JSON.parse(body), res.status);
     } catch {}
     throw new Error(msg || `HTTP ${res.status}`);
   }
@@ -278,6 +284,13 @@ async function uploadFiles(files) {
     }
   }
   return { failures, added };
+}
+
+/** Files the server didn't take (server/lib/library.mjs importFiles `skipped`) as failures to show: { name, error }. */
+export function skippedFailures(skipped) {
+  return (skipped || []).map((x) => ({ name: x.name,
+    error: x.why === 'archive' ? t('lib.skipArchive', 'souldew can’t open .7z or .rar archives – unpack the game first (with 7-Zip, for example), then add the .3ds, .cci or .cxi file.')
+      : t('lib.skipType', 'not a game or patch file souldew knows') }));
 }
 
 function toastFailures(toast, failures) {
@@ -430,7 +443,7 @@ function CoverActions({ coverId, own, offer }) {
 }
 
 /** "New SoulLink" and its solo sibling "New Nuzlocke" for a game or ROM hack. */
-function NewRunButtons({ gameId, hackId, patchId, romId, close }) {
+function NewRunButtons({ gameId, hackId, patchId, romId, close, togetherRom = null }) {
   const { navigate } = useApp();
   const go = (view) => {
     close?.();
@@ -441,6 +454,8 @@ function NewRunButtons({ gameId, hackId, patchId, romId, close }) {
   return html`<div class="row lib-new">
     <button class="btn go" onClick=${() => go('soullink')}><${Icon} name="link" size=${16} />${t('lib.newSoulLink', 'New SoulLink')}</button>
     <button class="btn nuz" onClick=${() => go('nuzlocke')}><${Icon} name="ball" size=${16} />${t('lib.newNuzlocke', 'New Nuzlocke')}</button>
+    ${togetherRom && !togetherRomBlock(togetherRom) && html`<button class="btn" title=${t('pt.libHint', 'This game, its save and your friends – trade, battle and see each other, no challenge rules')}
+      onClick=${() => { close?.(); navigate('soullink', { together: '', rom: togetherRom.id }); }}><${Icon} name="friends" size=${16} />${t('pt.start', 'Play together')}</button>`}
   </div>`;
 }
 
@@ -498,6 +513,7 @@ export function LibraryView() {
       <button class="btn go" onClick=${() => setDiscover(true)}><${Icon} name="search" size=${16} />${discoverLabel()}</button>
       <button class="btn" onClick=${() => addGamesFlow({ reloadLibrary, toast })}><${Icon} name="plus" size=${16} />${t('lib.addFiles', 'Add files')}</button>
       ${window.sls && html`<button class="btn ghost" onClick=${() => api.post('/api/library/reveal', {})}><${Icon} name="folder" size=${16} />${t('lib.reveal', 'Show folder')}</button>`}
+      <${HandheldTile} system=${featured?.system} />
     </div>
     ${discover && html`<${DiscoverModal} onClose=${() => setDiscover(false)} />`}
     <${FirstSteps} />
@@ -511,6 +527,8 @@ export function LibraryView() {
           <button class="btn primary big" onClick=${() => navigate('play', { rom: ownedBy.get(featured.id).id })}><${Icon} name="play" size=${16} />${t('lib.play', 'Play')}</button>
           <button class="btn big" onClick=${() => navigate('soullink', { new: featured.id })}><${Icon} name="link" size=${16} />${t('lib.newSoulLink', 'New SoulLink')}</button>
           <button class="btn big" onClick=${() => navigate('nuzlocke', { new: featured.id })}><${Icon} name="ball" size=${16} />${t('lib.newNuzlocke', 'New Nuzlocke')}</button>
+          ${!togetherRomBlock(ownedBy.get(featured.id)) && html`<button class="btn big" title=${t('pt.libHint', 'This game, its save and your friends – trade, battle and see each other, no challenge rules')}
+            onClick=${() => navigate('soullink', { together: '', rom: ownedBy.get(featured.id).id })}><${Icon} name="friends" size=${16} />${t('pt.start', 'Play together')}</button>`}
           <button class="btn ghost" onClick=${() => setOpen({ kind: 'game', id: featured.id })}>${t('lib.details', 'Details')}</button>
         </div>
       </div>
@@ -591,9 +609,10 @@ function PlayButtons({ romId, patchId, system, close }) {
 const libDownload = (params) => `/api/library/download?${new URLSearchParams(params)}`;
 const soloSaveUrl = (id) => `/api/saves/solo/download?id=${encodeURIComponent(id)}`;
 
-/** Does the integrated emulator have a save file for this solo game? Returns { modified } or null. */
+/** Does the integrated emulator have a save file for this solo game? Returns { modified, id, refresh } or null. */
 function useSoloSave(id) {
   const [info, setInfo] = useState(null);
+  const [ver, setVer] = useState(0); // (after a save was imported or the import undone)
   useEffect(() => {
     let alive = true;
     setInfo(null);
@@ -603,24 +622,31 @@ function useSoloSave(id) {
         .catch(() => {});
     }
     return () => { alive = false; };
-  }, [id]);
-  return info;
+  }, [id, ver]);
+  return { info, refresh: () => setVer((v) => v + 1) };
 }
 
-function ExportFiles({ links }) {
+/**
+ * "Save as file": copies of the player's own files – and, for a game with a save (`save`: useSoloSave of the game's
+ * library id, `system`, `label`), "Import a save file …" (web/views/saveimport.mjs) next to them.
+ */
+function ExportFiles({ links, save = null, saveId = null, system = null, label = '' }) {
   const shown = links.filter(Boolean);
-  if (!shown.length) return null;
+  const importTarget = saveId && system ? { id: saveId, system, label } : null;
+  if (!shown.length && !importTarget) return null;
   return html`<div class="export-box">
     <div class="export-head"><${Icon} name="download" size=${16} /><b>${t('lib.exportTitle', 'Save as file')}</b></div>
     <div class="row">
       ${shown.map((l) => html`<a class="btn small" href=${l.href} download="" title=${l.title || ''} onClick=${l.onClick}>
         <${Icon} name=${l.icon || 'download'} size=${16} />${l.label}</a>`)}
+      <${ImportSaveButton} target=${importTarget} onDone=${() => save?.refresh?.()} />
     </div>
     <p class="small faint">${t('lib.exportHint', 'Saves a copy of your own files – the originals stay in your library.')}</p>
   </div>`;
 }
 
-function saveLink(id, info) {
+function saveLink(id, save) {
+  const info = save?.info;
   if (!info) return null;
   const when = info.modified ? new Date(info.modified) : null;
   return {
@@ -658,14 +684,16 @@ function GameDetail({ id, onClose, openHack }) {
           ${rom && html`<${ReadsLine} src=${`/api/library/rom?id=${encodeURIComponent(rom.id)}`} gameId=${g.id} />`}
           <dt>${t('lib.yourRom', 'Your ROM')}</dt><dd>${rom ? html`<span class="mono small">${rom.name}</span> ${rom.exact ? html`<span class="chip ok">${t('lib.verified', 'verified dump')}</span>` : ''}
             <${RomHackAction} rom=${rom} onLinked=${openHack} />` : html`<span class="muted">${t('lib.notOwned', 'Not in your library')}</span>`}</dd>
+          ${g.system === '3ds' && html`<${CtrUpdateFacts} rom=${rom} randomizable=${!!g.uprSupported}
+            waiting=${rom ? null : (library?.ctrUpdates || []).filter((u) => !u.detached && u.gameId === id).sort((a, b) => Number(a.encrypted) - Number(b.encrypted) || (b.version || 0) - (a.version || 0))[0] || null} />`}
           ${copies.length > 1 && html`<dt>${t('lib.otherCopies', 'Other copies')}</dt><dd class="stack">${copies.slice(1).map((r) => html`<div key=${r.id}>
             <span class="mono small">${r.name}</span> ${r.exact ? html`<span class="chip ok">${t('lib.verified', 'verified dump')}</span>` : ''}
             <${RomHackAction} rom=${r} onLinked=${openHack} /></div>`)}</dd>`}
         </dl>
         ${rom
           ? html`<${PlayButtons} romId=${rom.id} system=${g.system} close=${onClose} />
-            <${NewRunButtons} gameId=${g.id} close=${onClose} />
-            <${ExportFiles} links=${[
+            <${NewRunButtons} gameId=${g.id} close=${onClose} togetherRom=${rom} />
+            <${ExportFiles} save=${save} saveId=${rom.id} system=${g.system} label=${gameTitle(g)} links=${[
               { href: libDownload({ id: rom.id }), label: t('lib.exportRom', 'Save ROM'), title: rom.name },
               saveLink(rom.id, save),
             ]} />`
@@ -684,6 +712,37 @@ function GameDetail({ id, onClose, openHack }) {
       })}
     </div>`}
   <//>`;
+}
+
+/**
+ * A 3DS game's update (server/lib/library.mjs: rom.update – or, while the game isn't in the library yet, the update
+ * file waiting for it): which one souldew's player starts the game with, and "Remove". `randomizable`: the game's runs
+ * can be randomized (those start without the update – server/lib/ctrupdate.mjs).
+ */
+function CtrUpdateFacts({ rom, waiting = null, randomizable = false }) {
+  const { reloadLibrary, toast } = useApp();
+  const [busy, setBusy] = useState(false);
+  const u = rom ? rom.update : waiting;
+  const remove = async () => {
+    setBusy(true);
+    try {
+      await api.post('/api/library/ctr-update/remove', { id: u.id });
+      await reloadLibrary();
+      toast({ kind: 'ok', title: t('ctrUpdate.removed', 'Update removed'), text: t('ctrUpdate.removedText', 'souldew’s player starts the game without it now.') });
+    } catch (e) {
+      toast({ kind: 'death', title: t('ctrUpdate.removeFailed', 'Couldn’t remove the update'), text: e.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const state = !u ? null : u.encrypted ? t('ctrUpdate.encrypted', 'encrypted – souldew can’t use it, it needs a decrypted copy')
+    : !rom ? t('ctrUpdate.waiting', 'used as soon as you add the game') : t('ctrUpdate.installed', 'installed – souldew’s player starts the game with it');
+  return html`<dt>${t('ctrUpdate.label', 'Update')}</dt><dd>${u
+    ? html`<div><span class="mono small">${updateVersionLabel(u)}</span> <span class=${`chip ${u.encrypted ? 'bad' : rom ? 'ok' : ''}`}>${state}</span>
+        <button class="btn small ghost" disabled=${busy} onClick=${remove}><${Icon} name="close" size=${14} />${t('ctrUpdate.remove', 'Remove')}</button></div>
+      <div class="tiny faint">${[u.name, !u.encrypted && u.tracking === 'older' && t('ctrUpdate.older', 'An older update – live tracking knows version 1.0 and the latest update of this game.'),
+        !u.encrypted && randomizable && t('ctrUpdate.notRandomized', 'Randomized runs start without it (the randomizer builds the game from version 1.0).')].filter(Boolean).join(' · ')}</div>`
+    : html`<span class="muted">${t('ctrUpdate.none', 'None. To play the updated game, add its update file (.cia) to your library, like a game.')}</span>`}</dd>`;
 }
 
 /**
@@ -737,9 +796,10 @@ const liveLabel = (v) => ({
   no: t('lib.liveNo', 'Not supported – enter catches by hand'),
 }[v] || '–');
 const liveNote = (k) => ({
-  cfru: t('lib.liveNote.cfru', 'Team, place, battles and catches are read live, held items by the names the game gives them, types and matchups from the ROM. No level cap is shown – the hack’s leaders can’t be told apart with confidence – and the Rare Candy cheat is off.'),
-  rnb: t('lib.liveNote.rnb', 'Team, place, battles and catches are read live. The Rare Candy cheat is off and held items aren’t named – the hack numbers its items its own way.'),
-  types: t('lib.liveNote.types', 'Team, place, battles and catches are read live, the hack’s own types and their matchups from the ROM. The Rare Candy cheat is off.'),
+  cfru: t('lib.liveNote.cfru', 'Team, place, battles and catches are read live, held items by the names the game gives them, types and matchups from the ROM. No level cap is shown – the hack’s leaders can’t be told apart with confidence – and the cheats are off.'),
+  rnb: t('lib.liveNote.rnb', 'Team, place, battles and catches are read live. The cheats are off and held items aren’t named – the hack numbers its items its own way.'),
+  types: t('lib.liveNote.types', 'Team, place, battles and catches are read live, the hack’s own types and their matchups from the ROM. The cheats are off.'),
+  quetzal: t('lib.liveNote.quetzal', 'Team, place, battles and catches are read live, held items by the names the game gives them, its own Pokémon by their names from the ROM. The PC boxes aren’t read and no level cap is shown (the hack has its own). Off for this hack: the cheats, souldew’s randomizer (use the hack’s own), link trades and battles, Shared World and raids.'),
 }[k] || '');
 
 function HackDetail({ id, onClose, openGame }) {
@@ -753,8 +813,9 @@ function HackDetail({ id, onClose, openGame }) {
   // a ROM that was patched before it was added (its CRC32 is a known version of the hack): played as it is
   const ready = !patch ? library?.roms?.find((r) => r.hackId === id) : null;
   const baseRom = patch?.baseRomId ? library.roms.find((r) => r.id === patch.baseRomId) : library?.roms?.find((r) => !r.hackId && r.gameId === h?.baseGameId);
-  // Only offer the patched game when the base ROM is the one the patch expects (otherwise patching fails).
-  const canPatch = !!(patch && baseRom && (!patch.expectedCrc || baseRom.crc === patch.expectedCrc));
+  // Only offer the patched game when the patch goes with the base ROM (otherwise patching fails) – the same rule as the
+  // new-run wizard's hack picker
+  const canPatch = !!(patch && baseRom && patchFits(patch, baseRom, cat));
   const save = useSoloSave(canPatch ? `${baseRom.id}|${patch.id}` : null);
   if (!h) return null;
   const base = cat.games.find((g) => g.id === h.baseGameId);
@@ -795,7 +856,7 @@ function HackDetail({ id, onClose, openGame }) {
           <${PlayButtons} romId=${baseRom.id} patchId=${patch.id} system=${h.system} close=${onClose} />
         </div>
         <${NewRunButtons} gameId=${h.baseGameId} hackId=${h.id} close=${onClose} />`}
-        ${patch && html`<${ExportFiles} links=${[
+        ${patch && html`<${ExportFiles} save=${save} saveId=${canPatch ? `${baseRom.id}|${patch.id}` : null} system=${h.system} label=${h.name} links=${[
           canPatch && {
             href: libDownload({ romId: baseRom.id, patchId: patch.id }), label: t('lib.exportPatched', 'Save patched game'),
             title: t('lib.exportPatchedHint', '{hack}, built from your {rom}', { hack: h.name, rom: baseRom.name }),
@@ -873,7 +934,7 @@ function PatchDetail({ family, onClose, openGame }) {
         ${!baseRom && patch.expectedCrc && html`<div class="row">
           <button class="btn ghost" onClick=${() => addGamesFlow({ reloadLibrary, toast })}><${Icon} name="plus" size=${16} />${t('lib.addFiles', 'Add files')}</button>
         </div>`}
-        <${ExportFiles} links=${[
+        <${ExportFiles} save=${save} saveId=${canPatch ? `${baseRom.id}|${patch.id}` : null} system=${baseRom?.system} label=${title} links=${[
           canPatch && {
             href: libDownload({ romId: baseRom.id, patchId: patch.id }), label: t('lib.exportPatched', 'Save patched game'),
             title: t('lib.exportPatchedHint', '{hack}, built from your {rom}', { hack: title, rom: baseRom.name }),
@@ -905,7 +966,8 @@ function RomDetail({ id, onClose, openHack }) {
           <dt>${t('lib.system', 'System')}</dt><dd>${SYS[r.system] || r.system}</dd>
           <dt>${t('lib.code', 'Game code')}</dt><dd class="mono">${r.code || '–'}</dd>
           ${r.system === '3ds'
-            ? html`<dt>${t('lib.titleId', 'Title ID')}</dt><dd class="mono">${r.titleId || '–'}</dd>`
+            ? html`<dt>${t('lib.titleId', 'Title ID')}</dt><dd class="mono">${r.titleId || '–'}</dd>
+              ${r.kind === 'game' && html`<${CtrUpdateFacts} rom=${r} />`}`
             : html`<dt>CRC32</dt><dd class="mono">${r.crc}</dd>`}
           <${ReadsLine} src=${`/api/library/rom?id=${encodeURIComponent(r.id)}`} />
         </dl>
@@ -915,8 +977,8 @@ function RomDetail({ id, onClose, openHack }) {
           : html`<p class="small muted">${t('lib.unknownRom', 'This ROM is not in the catalog (maybe a hack or another region). You can still play it.')}</p>
             <${RomHackAction} rom=${r} onLinked=${openHack} />`}
         <${PlayButtons} romId=${r.id} system=${r.system} close=${onClose} />
-        ${r.customHack && html`<${NewRunButtons} gameId=${r.gameId} romId=${r.id} close=${onClose} />`}
-        <${ExportFiles} links=${[
+        ${r.customHack && html`<${NewRunButtons} gameId=${r.gameId} romId=${r.id} close=${onClose} togetherRom=${r} />`}
+        <${ExportFiles} save=${save} saveId=${r.id} system=${r.system} label=${title} links=${[
           { href: libDownload({ id: r.id }), label: t('lib.exportRom', 'Save ROM'), title: r.name },
           saveLink(r.id, save),
         ]} />
@@ -929,9 +991,10 @@ export function liveSupportText(g) {
   const map = {
     1: t('lib.liveGen12', 'Party, levels and HP live'),
     2: t('lib.liveGen12', 'Party, levels and HP live'),
-    3: t('lib.liveGen3', 'Party live incl. catch location'),
+    // (the PC boxes: Gen 3 and 4 – shared/live/parse.mjs readBoxesGen3 / readBoxesGen4; Black/White don't read them)
+    3: t('lib.liveGen45', 'Party + PC boxes live incl. catch location'),
     4: t('lib.liveGen45', 'Party + PC boxes live incl. catch location'),
-    5: t('lib.liveGen45', 'Party + PC boxes live incl. catch location'),
+    5: t('lib.liveGen3', 'Party live incl. catch location'),
     // 3DS: in souldew's own player (or the Azahar app over its RPC server) – the party, no PC boxes
     6: t('lib.liveGen3', 'Party live incl. catch location'),
     7: t('lib.liveGen3', 'Party live incl. catch location'),

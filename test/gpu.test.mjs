@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gpuBackends, validBackend, backendSwitches, parseChromiumFlags, chromiumSwitches, startDecision, crashDecision,
-  fallbackNotice, gpuInfoSummary, MAX_FAILED_STARTS, MAX_GPU_CRASHES } from '../shared/gpu.mjs';
+  fallbackNotice, gpuInfoSummary, MAX_FAILED_STARTS, MAX_GPU_CRASHES, safeGraphicsRequested, withoutSafeGraphics, SAFE_SWITCHES } from '../shared/gpu.mjs';
 
 test('choices per platform: Windows has D3D11 / Vulkan / OpenGL, Linux OpenGL / Vulkan, macOS only Automatic', () => {
   assert.deepEqual(gpuBackends('win32'), ['auto', 'd3d11', 'vulkan', 'gl']);
@@ -116,6 +116,34 @@ test('electron/main.mjs reads the graphics backend from the config.json the serv
   // the switches go in before the app is ready (appendSwitch after ready has no effect on the GPU process)
   assert.ok(main.indexOf('app.commandLine.appendSwitch(name') < main.indexOf('app.whenReady()'));
   assert.ok(main.includes('process.env.SOULDEW_CHROMIUM_FLAGS'));
+});
+
+test('safe graphics: asked for with --safe-graphics or SOULDEW_SAFE_GRAPHICS=1, no GPU switches, a normal restart after', () => {
+  assert.equal(safeGraphicsRequested(['souldew.exe', '--safe-graphics'], {}), true);
+  assert.equal(safeGraphicsRequested(['souldew.exe'], { SOULDEW_SAFE_GRAPHICS: '1' }), true);
+  assert.equal(safeGraphicsRequested(['souldew.exe', '--safe-graphics=no', 'safe-graphics'], { SOULDEW_SAFE_GRAPHICS: '0' }), false);
+  assert.equal(safeGraphicsRequested(undefined, undefined), false);
+  // the chosen backend and the environment's GPU switches don't apply; other power-user flags stay
+  const safe = chromiumSwitches({ backend: 'vulkan', platform: 'win32', envFlags: '--use-angle=d3d11 --ignore-gpu-blocklist --force-device-scale-factor=1 --disable-gpu', safe: true });
+  assert.deepEqual(safe, [['force-device-scale-factor', '1'], ...SAFE_SWITCHES]);
+  assert.deepEqual(SAFE_SWITCHES.map(([n]) => n), ['disable-gpu', 'disable-gpu-compositing', 'enable-unsafe-swiftshader']);
+  assert.deepEqual(chromiumSwitches({ backend: 'gl', platform: 'linux', safe: true }), SAFE_SWITCHES);
+  // without it nothing changes
+  assert.deepEqual(chromiumSwitches({ backend: 'vulkan', platform: 'win32' }), [['use-angle', 'vulkan']]);
+  assert.deepEqual(withoutSafeGraphics(['souldew.exe', '--safe-graphics', '--user-data-dir=x']), ['souldew.exe', '--user-data-dir=x']);
+});
+
+test('safe graphics in the app: main.mjs skips the start count, tells the page, restarts without the flag; the Start menu entry', () => {
+  const main = readFileSync(new URL('../electron/main.mjs', import.meta.url), 'utf8');
+  assert.match(main, /safeGraphicsRequested\(process\.argv, process\.env\)/);
+  assert.match(main, /if \(gpu\.safe\) \{\s*app\.disableHardwareAcceleration\(\);\s*\} else \{\s*const \{ backend, patch \} = startDecision/);
+  assert.match(main, /safe: gpu\.safe, switches/);
+  assert.match(main, /withoutSafeGraphics\(process\.argv\)/);
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(pkg.build.nsis.include, 'build/installer.nsh');
+  const nsh = readFileSync(new URL('../build/installer.nsh', import.meta.url), 'utf8');
+  assert.match(nsh, /!macro customInstall[\s\S]*CreateShortCut "\$SMPROGRAMS\\\$\{SHORTCUT_NAME\} \(safe graphics\)\.lnk" "\$appExe" "--safe-graphics"/);
+  assert.match(nsh, /!macro customUnInstall[\s\S]*Delete "\$SMPROGRAMS\\\$\{SHORTCUT_NAME\} \(safe graphics\)\.lnk"/);
 });
 
 test('server: the backend is stored only when this platform offers it, the notice can only be dismissed', async () => {

@@ -8,6 +8,8 @@
    "curMapAddr": "0xD35E",
    "table": "pokered",
    "source": "pret/pokered symbols pokered.sym:19168 \"00:d35e wCurMap\" (= pokeblue.sym)",
+   "headerAddr": "0xD367",
+   "headerSource": "pret/pokered symbols pokered.sym:19176 \"00:d367 wCurMapHeader\": the 10 bytes LoadMapHeader copies from the ROM's map header (home/overworld.asm) – the place is read from this copy (shared/live/location.mjs readGen1)",
    "musicAddr": "0xD35B",
    "musicSize": 1,
    "musicSource": "pokered.sym \"00:d35b wMapMusicSoundID\" (the map's music, not a battle's)"
@@ -18,6 +20,8 @@
    "curMapAddr": "0xD35E",
    "table": "pokered",
    "source": "pret/pokered symbols pokeblue.sym \"00:d35e wCurMap\"",
+   "headerAddr": "0xD367",
+   "headerSource": "pret/pokered symbols pokeblue.sym:19176 \"00:d367 wCurMapHeader\"",
    "musicAddr": "0xD35B",
    "musicSize": 1,
    "musicSource": "pokeblue.sym \"00:d35b wMapMusicSoundID\""
@@ -28,6 +32,8 @@
    "curMapAddr": "0xD35D",
    "table": "pokeyellow",
    "source": "pret/pokeyellow symbols pokeyellow.sym:22394 \"00:d35d wCurMap\"",
+   "headerAddr": "0xD366",
+   "headerSource": "pret/pokeyellow symbols pokeyellow.sym:22393 \"00:d366 wCurMapHeader\"",
    "musicAddr": "0xD35A",
    "musicSize": 1,
    "musicSource": "pokeyellow.sym \"00:d35a wMapMusicSoundID\""
@@ -39,6 +45,8 @@
    "mapNumberAddr": "0xDA01",
    "table": "pokegold",
    "source": "pret/pokegold symbols pokegold.sym:42518-42519 \"01:da00 wMapGroup\", \"01:da01 wMapNumber\"",
+   "headerAddr": "0xD081",
+   "headerSource": "pret/pokegold symbols pokegold.sym:41357 \"01:d081 wMapPartial\", followed by wMapAttributes: the 5 + 12 bytes CopyMapPartial / CopyMapAttributes copy from the ROM (home/map.asm) – the place is read from this copy (shared/live/location.mjs readGen2)",
    "musicAddr": "0xC1C0",
    "musicSize": 1,
    "musicSource": "pokegold.sym \"00:c1c0 wMapMusic\" (the map's music; wMusicID did not hold the song id in Silver, live)"
@@ -50,6 +58,8 @@
    "mapNumberAddr": "0xDA01",
    "table": "pokegold",
    "source": "pret/pokegold symbols pokesilver.sym:42517-42518 \"01:da00 wMapGroup\", \"01:da01 wMapNumber\"",
+   "headerAddr": "0xD081",
+   "headerSource": "pret/pokegold symbols pokesilver.sym:41356 \"01:d081 wMapPartial\"",
    "verified": "live (Silver US/EU, Gambatte)",
    "musicAddr": "0xC1C0",
    "musicSize": 1,
@@ -62,6 +72,8 @@
    "mapNumberAddr": "0xDCB6",
    "table": "pokecrystal",
    "source": "pret/pokecrystal symbols pokecrystal.sym:57308-57309 \"01:dcb5 wMapGroup\", \"01:dcb6 wMapNumber\" (= pokecrystal11.sym, pokecrystal_au.sym)",
+   "headerAddr": "0xD198",
+   "headerSource": "pret/pokecrystal symbols pokecrystal.sym:55845 \"01:d198 wMapPartial\" (= pokecrystal11.sym), followed by wMapAttributes: the 5 + 12 bytes CopyMapPartial / CopyMapAttributes copy from the ROM (home/map.asm) – the place is read from this copy (shared/live/location.mjs readGen2)",
    "musicAddr": "0xC2C0",
    "musicSize": 1,
    "musicSource": "pokecrystal.sym \"00:c2c0 wMapMusic\""
@@ -128,6 +140,15 @@
    "musicAddr": "0x03000F48",
    "musicSize": 2,
    "musicSource": "pokeemerald.sym \"03000f48 sCurrentMapMusic\""
+  },
+  "emerald_de": {
+   "gen": 3,
+   "kind": "gen3",
+   "mapHeaderAddr": "0x02037318",
+   "source": "gMapHeader 0x02037318: the English Emerald’s – the German ROM’s 142 load sites of gMapHeader name it (literal-pool alignment with the English ROM, see addresses.json emerald_de); checked live in the German Emerald (Oldale Town, Route 101)",
+   "musicAddr": "0x03000F48",
+   "musicSize": 2,
+   "musicSource": "sCurrentMapMusic 0x03000F48: the English Emerald’s – 48 load sites in the German ROM name it (literal-pool alignment)"
   },
   "emerald_eu": {
    "gen": 3,

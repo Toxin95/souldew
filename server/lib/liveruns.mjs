@@ -212,10 +212,10 @@ export async function post({ meta: input, image }, opts = {}) {
   if (!token) return { ok: false, error: 'token' };
   const png = Buffer.isBuffer(image) ? image : typeof image === 'string' ? Buffer.from(image, 'base64') : null;
   const bad = pngProblem(png);
-  if (bad) throw httpError(400, 'Ungültiges Kartenbild', 'liveCard', { what: bad });
+  if (bad) throw httpError(400, 'Invalid card image', 'liveCard', { what: bad });
   const { meta } = buildMeta({ ...(input && typeof input === 'object' ? input : {}), app: souldewVersion() });
   const field = metaProblem(meta);
-  if (field) throw httpError(400, 'Ungültige Angaben', 'liveMeta', { field });
+  if (field) throw httpError(400, 'Invalid post details', 'liveMeta', { field });
   const form = new FormData();
   form.append('meta', JSON.stringify(meta));
   form.append('image', new Blob([png], { type: 'image/png' }), 'card.png');

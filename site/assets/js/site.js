@@ -8,17 +8,9 @@
   const REPO = 'souldewapp/souldew';
   const RELEASES = `https://github.com/${REPO}/releases/latest`;
   const T = DE ? {
-    dl: { mac: 'Für macOS laden', win: 'Für Windows laden', linux: 'Für Linux laden' },
-    soon: { win: 'Windows – kommt mit 2.1', linux: 'Linux – kommt mit dem nächsten Release' },
-    soonMeta: { win: 'Auf der Release-Seite erscheint der Installer', linux: 'Auf der Release-Seite erscheint die AppImage' },
-    arch: { mac: 'Apple silicon', win: 'Windows x64', linux: 'Linux x64 · AppImage' },
     free: 'Kostenlos · Open Source (GPL-3.0)',
     status: ['Verlinkt auf Route 29', 'Ein Geodude eines Trainers greift an!', 'Ember wurde besiegt.', 'Das Link-Kabel reißt.', 'Chomp ist auch weg. Route 29 ist verloren.'],
   } : {
-    dl: { mac: 'Download for macOS', win: 'Download for Windows', linux: 'Download for Linux' },
-    soon: { win: 'Windows – coming with 2.1', linux: 'Linux – coming with the next release' },
-    soonMeta: { win: 'The installer will appear on the releases page', linux: 'The AppImage will appear on the releases page' },
-    arch: { mac: 'Apple silicon', win: 'Windows x64', linux: 'Linux x64 · AppImage' },
     free: 'Free · open source (GPL-3.0)',
     status: ['Linked on Route 29', 'A trainer’s Geodude attacks!', 'Ember fainted.', 'The link cable snaps.', 'Chomp is gone too. Route 29 is lost.'],
   };
@@ -160,51 +152,27 @@
     for (let i = 0; i < 26; i++) { const x = Math.round(rnd() * 318); const y = 100 + Math.round(rnd() * 76); px(x, y, rnd() > 0.5 ? '#ffe36b' : '#ff9ccf'); px(x, y + 1, '#2f6e3a'); }
   }
 
-  // ---------- downloads: the visitor's system first, latest release from the GitHub API ----------
-  const detectOS = () => {
-    const ua = navigator.userAgent || '';
-    const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
-    if (/android|iphone|ipad|ipod/i.test(ua)) return 'other';
-    if (/win/i.test(platform) || /windows/i.test(ua)) return 'win';
-    if (/mac/i.test(platform) || /macintosh/i.test(ua)) return navigator.maxTouchPoints > 1 ? 'other' : 'mac';
-    if (/cros/i.test(ua)) return 'other'; // ChromeOS
-    if (/linux/i.test(platform) || /linux|x11/i.test(ua)) return 'linux'; // desktop Linux and the Steam Deck
-    return 'other';
-  };
-  const os = detectOS();
-  const primary = os === 'win' || os === 'linux' ? os : 'mac';
-  document.documentElement.dataset.os = os;
-  const yours = $(`[data-platform="${primary}"]`);
-  if (yours && os !== 'other') {
-    yours.classList.add('is-you');
-    yours.parentElement.prepend(yours);
-  }
-  const label = (a, text) => { const l = $('[data-dl-label]', a); if (l) l.textContent = text; };
-  for (const a of $$('[data-dl="primary"]')) if (!a.classList.contains('btn-sm')) label(a, T.dl[primary]);
-
+  // ---------- downloads: every system side by side in a fixed order – no guessing the visitor's OS ----------
+  // The links point at the releases page until the GitHub API names the files; a missing file keeps that link.
   const mb = (bytes) => `${Math.round(bytes / 1048576)} MB`;
   const apply = (rel) => {
-    const asset = { mac: rel.mac, win: rel.win, linux: rel.linux };
-    for (const key of ['mac', 'win', 'linux']) {
-      for (const a of $$(`[data-dl="${key}"]`)) {
-        if (asset[key]) a.href = asset[key].url;
-        else if (T.soon[key]) label(a, T.soon[key]);
-      }
-      for (const m of $$(`[data-dl-meta="${key}"]`)) {
-        if (asset[key]) m.textContent = `${asset[key].name} · v${rel.version} · ${mb(asset[key].size)}`;
-        else if (T.soonMeta[key]) m.textContent = T.soonMeta[key];
-      }
+    for (const key of ['mac', 'win', 'linux', 'deb']) {
+      const asset = rel[key];
+      for (const a of $$(`[data-dl="${key}"]`)) a.href = asset ? asset.url : RELEASES;
+      for (const m of $$(`[data-dl-size="${key}"]`)) m.textContent = asset ? mb(asset.size) : '';
+      for (const m of $$(`[data-dl-meta="${key}"]`)) if (asset) m.textContent = `${asset.name} · v${rel.version} · ${mb(asset.size)}`;
     }
-    // the .deb: a second link in the Linux panel (it can't update itself, so the AppImage stays the main download)
-    for (const a of $$('[data-dl="deb"]')) if (rel.deb) a.href = rel.deb.url;
-    const pick = asset[primary];
-    for (const a of $$('[data-dl="primary"]')) {
-      a.href = pick ? pick.url : RELEASES;
-      if (!pick && !a.classList.contains('btn-sm')) label(a, T.soon[primary] || T.dl.mac);
-    }
-    const meta = $('.hero-meta');
-    if (meta && pick) meta.textContent = `v${rel.version} · ${mb(pick.size)} · ${T.arch[primary]} · ${T.free}`;
+    for (const v of $$('[data-dl-version]')) v.textContent = `v${rel.version} · ${T.free}`;
   };
+
+  // the download menu in the nav: closes on Escape, on a click outside it and after a pick
+  const menu = $('[data-nav-dl]');
+  if (menu) {
+    const close = () => { menu.open = false; };
+    document.addEventListener('click', (e) => { if (menu.open && !menu.contains(e.target)) close(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && menu.open) { close(); $('summary', menu).focus(); } });
+    for (const a of $$('a', menu)) a.addEventListener('click', close);
+  }
   const CACHE_KEY = 'souldew-release-v3'; // v3: with the Linux assets
   const load = async () => {
     try {

@@ -53,10 +53,13 @@ test('type matchup help: only the host may switch it', () => {
   assert.equal(R.isHost('p1'), true);
   assert.equal(R.isHost('p2'), false);
   assert.equal(R.isHost(undefined), true, 'solo / no slot yet = the creator');
-  assert.deepEqual(R.allowedRulesPatch({ typeHelp: false, dupes: 'off' }, 'p2'), { dupes: 'off' });
-  assert.deepEqual(R.allowedRulesPatch({ typeHelp: false }, 'p3'), {});
-  assert.deepEqual(R.allowedRulesPatch({ typeHelp: false, dupes: 'off' }, 'p1'), { typeHelp: false, dupes: 'off' });
-  assert.deepEqual(R.allowedRulesPatch({ dupes: 'off' }, 'p2'), { dupes: 'off' });
+  assert.equal(R.isHost('p2', { ...PAIR, host: 'p2' }), true, 'a new attempt started by P2: P2 hosts it');
+  // since 2.8.2 every SoulLink rule is the host's (test/hostrules.test.mjs): the creator's computer may change them all,
+  // a joined player's computer none
+  assert.deepEqual(R.allowedRulesPatch({ typeHelp: false, dupes: 'off' }, PAIR), { typeHelp: false, dupes: 'off' });
+  assert.equal(R.allowedRulesPatch({ typeHelp: false, dupes: 'off' }, { ...PAIR, imported: true }), null);
+  assert.equal(R.allowedRulesPatch({ dupes: 'off' }, { ...PAIR, imported: true }), null);
+  assert.deepEqual(R.allowedRulesPatch({ typeHelp: false }, SOLO), { typeHelp: false });
 });
 
 test('type matchup help: switching it is logged like the cheats rule', () => {
@@ -85,8 +88,9 @@ test('type matchup help: the battle helper hides the matchups when it is off, th
   assert.equal(panel.split('<${OutHelp}').length - 1, 1);
   assert.equal(panel.split('<${TeamCheck}').length - 1, 1);
   const board = readFileSync(new URL('../web/views/board.mjs', import.meta.url), 'utf8');
-  assert.match(board, /allowedRulesPatch\(asked, me\)/);
-  assert.match(board, /locked=\$\{!isHost\(me\)\}/);
+  assert.match(board, /allowedRulesPatch\(asked, manifest\)/);
+  assert.match(board, /<\$\{TypeHelpRule\} value=\$\{r\.typeHelp\} solo=\$\{solo\} locked=\$\{locked\}/);
   const wizard = readFileSync(new URL('../web/views/soullink.mjs', import.meta.url), 'utf8');
-  assert.match(wizard, /typeHelp \},/);
+  assert.match(wizard, /rules: solo \? \{ \.\.\.nzRules, \.\.\.lives, typeHelp, startAtBalls \} : slRules,/);
+  assert.match(wizard, /<\$\{TypeHelpRule\} value=\$\{slRules\.typeHelp\}/);
 });

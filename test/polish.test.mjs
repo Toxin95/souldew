@@ -198,7 +198,15 @@ test('missed encounter question: only after a wild battle without a catch that t
   assert.equal(ask({ boxes: false, partySize: 6 }), false, 'full party and the PC is not read live: a catch would be invisible');
   assert.equal(ask({ boxes: false, partySize: 5 }), true, 'room in the party: a catch shows up there');
   assert.equal(ask({ foe: { ...foe, shiny: true } }), false, 'shiny clause');
-  assert.equal(ask({}, PAIR), false, 'SoulLinks never ask');
+  assert.equal(ask({}), true, 'solo: asked without a place sign too (it offers the open areas)');
+  assert.equal(ask({}, PAIR), false, 'a SoulLink asks only where the place is known (a "yes" fails the pair)');
+  assert.equal(ask({ here: { gen: 4, id: 178, name: 'Route 30' } }, PAIR), true, 'a SoulLink asks each player too (2.8.0)');
+  // where the place sign says the battle was: asked only while that area is still open for the player
+  const route29 = { gen: 4, id: 177, name: 'Route 29' };
+  assert.equal(ask({ here: route29 }), true);
+  snap(d, [mon(), pidgey()]);
+  assert.equal(ask({ here: route29 }), false, 'the encounter of Route 29 is entered already');
+  assert.equal(ask({ here: { gen: 4, id: 178, name: 'Route 30' } }), true);
   const dupe = mkDoc({ dupes: 'species' });
   snap(dupe, [mon(), pidgey()]);
   assert.equal(ask({}, SOLO, dupe), false, 'a dupe doesn’t count anyway');
@@ -237,7 +245,7 @@ test('run packs: players must be contiguous; old packs and a missing p2 still im
   assert.throws(() => checkPack({ ...pack, players: { p2: { name: 'B' } } }), /players/);
   assert.deepEqual(Object.keys(checkPack({ ...pack, players: { p1: { name: 'A' } } }).players), ['p1']);
   assert.deepEqual(Object.keys(checkPack({ ...pack, players: { p1: {}, p2: {}, p3: {}, p4: {}, p5: {} } }).players), ['p1', 'p2', 'p3', 'p4']);
-  assert.equal(checkPack({ ...pack, players: { p1: {}, p2: { name: '' } } }).players.p2.name, 'Spieler 2');
+  assert.equal(checkPack({ ...pack, players: { p1: {}, p2: { name: '' } } }).players.p2.name, 'Player 2');
   assert.deepEqual(checkPack({ ...pack, mode: 'nuzlocke', players: { p1: { name: 'A' }, p3: { name: 'C' } } }).players, { p1: { name: 'A' } }, 'solo: only p1 counts');
 });
 

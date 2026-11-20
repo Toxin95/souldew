@@ -346,7 +346,7 @@ export class LiveBridge {
     }
     if (!this.port) {
       this.error = 'noPort';
-      throw new Error('kein freier Port');
+      throw new Error('no free port');
     }
     mkdirSync(dirname(this.luaScriptPath()), { recursive: true });
     this.token = this.loadToken();

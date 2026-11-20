@@ -47,6 +47,19 @@ static void *dlopen(const char *path, int flags) {
   return (void *)m;
 }
 static void *dlsym(void *lib, const char *name) { return (void *)(uintptr_t)GetProcAddress((HMODULE)lib, name); }
+/**
+ * fopen for the UTF-8 paths compat_utf8_argv gives: msvcrt's fopen reads a path in the ANSI code page, so the game
+ * "Phitty - Blattgrüne Edition.gba" or a user folder like "Jürgen" read as "game not readable" (the fast player then
+ * fell back to the web one). _wfopen takes it as UTF-16.
+ */
+static FILE *compat_fopen(const char *path, const char *mode) {
+  wchar_t *w = compat_wide(path);
+  wchar_t *m = compat_wide(mode);
+  FILE *f = w && m ? _wfopen(w, m) : NULL;
+  free(w);
+  free(m);
+  return f;
+}
 /** The file a loaded function comes from (which vulkan-1.dll the system really gave us). */
 static void compat_lib_path(const void *fn, char *out, size_t cap) {
   HMODULE mod = NULL;
@@ -97,17 +110,57 @@ static const char *compat_exception_name(DWORD code) {
   default: return "exception";
   }
 }
-static LONG WINAPI compat_seh(EXCEPTION_POINTERS *e) {
-  char what[512], path[MAX_PATH] = "?";
-  void *addr = e->ExceptionRecord->ExceptionAddress;
-  DWORD code = e->ExceptionRecord->ExceptionCode;
+/** "module+0xoffset" for a code address (the DLL's file name only). */
+static void compat_where(const void *addr, char *out, size_t cap) {
+  char path[MAX_PATH] = "?";
   HMODULE mod = NULL;
   if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)addr, &mod) && mod)
     GetModuleFileNameA(mod, path, sizeof path);
   const char *base = strrchr(path, '\\');
   base = base ? base + 1 : path;
-  snprintf(what, sizeof what, "%s 0x%08lX in %s+0x%llx", compat_exception_name(code), (unsigned long)code, base,
-           (unsigned long long)((uintptr_t)addr - (uintptr_t)mod));
+  snprintf(out, cap, "%s+0x%llx", base, (unsigned long long)((uintptr_t)addr - (uintptr_t)mod));
+}
+#if defined(__x86_64__) || defined(_M_X64)
+/**
+ * The crashing thread's callers (x64 unwind data – every DLL has it, no symbols needed): which function of the core
+ * called into the driver. A few frames, "a < b < c", innermost first.
+ */
+static void compat_stack(const CONTEXT *start, char *out, size_t cap) {
+  CONTEXT ctx = *start;
+  size_t o = 0;
+  out[0] = 0;
+  for (int i = 0; i < 8 && ctx.Rip && o + 80 < cap; i++) {
+    char w[MAX_PATH + 24];
+    compat_where((const void *)(uintptr_t)ctx.Rip, w, sizeof w);
+    o += (size_t)snprintf(out + o, cap - o, "%s%s", i ? " < " : "", w);
+    DWORD64 image = 0;
+    PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(ctx.Rip, &image, NULL);
+    if (fn) {
+      PVOID handler_data = NULL;
+      DWORD64 frame = 0;
+      RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, ctx.Rip, fn, &ctx, &handler_data, &frame, NULL);
+    } else { // a leaf function: the return address is on top of the stack
+      if (!ctx.Rsp || IsBadReadPtr((const void *)(uintptr_t)ctx.Rsp, 8)) break;
+      ctx.Rip = *(const DWORD64 *)(uintptr_t)ctx.Rsp;
+      ctx.Rsp += 8;
+    }
+  }
+}
+#endif
+static LONG WINAPI compat_seh(EXCEPTION_POINTERS *e) {
+  char what[900], where[MAX_PATH + 24], stack[600] = "";
+  void *addr = e->ExceptionRecord->ExceptionAddress;
+  DWORD code = e->ExceptionRecord->ExceptionCode;
+  compat_where(addr, where, sizeof where);
+#if defined(__x86_64__) || defined(_M_X64)
+  if (e->ContextRecord) compat_stack(e->ContextRecord, stack, sizeof stack);
+#endif
+  if (code == EXCEPTION_ACCESS_VIOLATION && e->ExceptionRecord->NumberParameters >= 2)
+    snprintf(what, sizeof what, "%s 0x%08lX in %s (%s address 0x%llx)%s%s", compat_exception_name(code), (unsigned long)code, where,
+             e->ExceptionRecord->ExceptionInformation[0] == 1 ? "writing" : e->ExceptionRecord->ExceptionInformation[0] == 8 ? "executing" : "reading",
+             (unsigned long long)e->ExceptionRecord->ExceptionInformation[1], *stack ? ", stack " : "", stack);
+  else
+    snprintf(what, sizeof what, "%s 0x%08lX in %s%s%s", compat_exception_name(code), (unsigned long)code, where, *stack ? ", stack " : "", stack);
   if (compat_crash_cb) compat_crash_cb(what);
   return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -157,6 +210,28 @@ static char **compat_utf8_argv(int *argc, char **argv) {
   return out;
 }
 
+// The committed read-write memory at `p` (one region of the address space: same state and protection), or 0.
+static inline int compat_rw_region(uintptr_t p, uintptr_t *start, uintptr_t *end) {
+  MEMORY_BASIC_INFORMATION m;
+  if (!VirtualQuery((const void *)p, &m, sizeof m) || m.State != MEM_COMMIT || (m.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return 0;
+  if (!(m.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE))) return 0;
+  // VirtualQuery's region begins at p's own page, not where the pages with these attributes begin (as on macOS and
+  // Linux): that start is found by walking the allocation's regions from its base (2.7.2 searched only upwards here)
+  uintptr_t s = (uintptr_t)m.BaseAddress;
+  for (uintptr_t a = (uintptr_t)m.AllocationBase; a && a < s;) {
+    MEMORY_BASIC_INFORMATION r;
+    if (!VirtualQuery((const void *)a, &r, sizeof r) || !r.RegionSize) break;
+    if (a + r.RegionSize > s) { // the region that holds p's page – it begins here
+      s = a;
+      break;
+    }
+    a += r.RegionSize;
+  }
+  *start = s;
+  *end = (uintptr_t)m.BaseAddress + m.RegionSize;
+  return 1;
+}
+
 // time
 static double compat_now(void) {
   static LARGE_INTEGER freq;
@@ -178,6 +253,48 @@ static void compat_sleep(double s) {
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
+
+// The read-write memory at `p` (one region of the address space: same protection), or 0. macOS asks the kernel
+// (mach_vm_region); Linux reads /proc/self/maps.
+static inline int compat_rw_region(uintptr_t p, uintptr_t *start, uintptr_t *end) {
+#ifdef __APPLE__
+  mach_vm_address_t a = p;
+  mach_vm_size_t size = 0;
+  vm_region_basic_info_data_64_t info;
+  mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+  mach_port_t object = MACH_PORT_NULL;
+  if (mach_vm_region(mach_task_self(), &a, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object) != KERN_SUCCESS) return 0;
+  if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+  if (a > p || (info.protection & (VM_PROT_READ | VM_PROT_WRITE)) != (VM_PROT_READ | VM_PROT_WRITE)) return 0;
+  *start = (uintptr_t)a;
+  *end = (uintptr_t)(a + size);
+  return 1;
+#else
+  FILE *f = fopen("/proc/self/maps", "r");
+  if (!f) return 0;
+  char line[512];
+  int found = 0;
+  while (fgets(line, sizeof line, f)) {
+    unsigned long long s, e;
+    char perms[8] = "";
+    if (sscanf(line, "%llx-%llx %7s", &s, &e, perms) != 3) continue;
+    if (p >= s && p < e) {
+      if (perms[0] == 'r' && perms[1] == 'w') {
+        *start = (uintptr_t)s;
+        *end = (uintptr_t)e;
+        found = 1;
+      }
+      break;
+    }
+  }
+  fclose(f);
+  return found;
+#endif
+}
 
 #include <signal.h>
 static int compat_trylock(pthread_mutex_t *m) { return pthread_mutex_trylock(m) == 0; }
@@ -214,6 +331,7 @@ static compat_ssize compat_read(int fd, void *b, size_t n) { return read(fd, b, 
 static compat_ssize compat_write(int fd, const void *b, size_t n) { return write(fd, b, n); }
 static void compat_init(void) {}
 static char **compat_utf8_argv(int *argc, char **argv) { (void)argc; return argv; } // already bytes as given
+static FILE *compat_fopen(const char *path, const char *mode) { return fopen(path, mode); }
 static double compat_now(void) {
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);

@@ -46,10 +46,30 @@ export function parseChromiumFlags(text) {
 }
 
 /**
- * Every switch to append before ready: the environment's flags, then the setting's. A chosen backend (not 'auto')
- * replaces the environment's use-angle / use-gl; with 'auto' the environment's stay as they are.
+ * Safe graphics: a start without the graphics card, for a PC where souldew opens with a blank window. Asked for with
+ * `--safe-graphics` (the Windows Start menu's "souldew (safe graphics)", or on the command line) or
+ * SOULDEW_SAFE_GRAPHICS=1 (e.g. Steam's launch options). Chromium then draws in software – slower, but the window
+ * shows, and Settings › General can switch the graphics backend for the next normal start.
  */
-export function chromiumSwitches({ backend, platform, envFlags = '' }) {
+export const SAFE_GRAPHICS_ARG = '--safe-graphics';
+export function safeGraphicsRequested(argv = [], env = {}) {
+  return (Array.isArray(argv) && argv.includes(SAFE_GRAPHICS_ARG)) || env?.SOULDEW_SAFE_GRAPHICS === '1';
+}
+/** The switches of a safe start: no GPU at all, WebGL (the emulator's picture) through SwiftShader on the CPU. */
+export const SAFE_SWITCHES = [['disable-gpu', null], ['disable-gpu-compositing', null], ['enable-unsafe-swiftshader', null]];
+/** Switches that would bring the graphics card back – dropped from SOULDEW_CHROMIUM_FLAGS in a safe start. */
+const GPU_FLAG_NAMES = new Set(['use-angle', 'use-gl', 'use-vulkan', 'enable-gpu', 'ignore-gpu-blocklist', 'ignore-gpu-blacklist', 'enable-gpu-rasterization', 'enable-zero-copy']);
+
+/** The arguments for starting again normally after a safe start (the same ones without --safe-graphics). */
+export const withoutSafeGraphics = (args = []) => args.filter((a) => a !== SAFE_GRAPHICS_ARG);
+
+/**
+ * Every switch to append before ready: the environment's flags, then the setting's. A chosen backend (not 'auto')
+ * replaces the environment's use-angle / use-gl; with 'auto' the environment's stay as they are. A safe start (`safe`)
+ * ignores the backend and the environment's GPU switches and draws without the graphics card.
+ */
+export function chromiumSwitches({ backend, platform, envFlags = '', safe = false }) {
+  if (safe) return [...parseChromiumFlags(envFlags).filter(([name]) => !GPU_FLAG_NAMES.has(name) && !SAFE_SWITCHES.some(([s]) => s === name)), ...SAFE_SWITCHES];
   const own = backendSwitches(backend, platform);
   const mine = new Set(own.map(([name]) => name));
   return [...parseChromiumFlags(envFlags).filter(([name]) => !mine.has(name)), ...own];

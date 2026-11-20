@@ -6,42 +6,45 @@
 const A = (key, name, met = [], extra = {}) => ({ kind: 'area', key, name, met, ...extra });
 const B = (key, name, cap, extra = {}) => ({ kind: 'boss', key, name, cap, ...extra });
 
-/** Ace levels of vanilla HeartGold/SoulSilver (the PROGRESSION caps are Definitive HG's). */
+/**
+ * Ace levels of vanilla HeartGold/SoulSilver (the PROGRESSION caps are Definitive HG's). Falkner's ace is his Pidgeotto
+ * at 13 (Gold/Silver/Crystal's was 9), the rival's at Azalea Town 18 (Serebii, PokémonDB).
+ */
 export const VANILLA_CAPS = {
-  'rival-1': 5, falkner: 9, bugsy: 17, 'rival-2': 20, whitney: 19, morty: 25, chuck: 31, jasmine: 35, pryce: 34, 'rival-3': 32,
+  'rival-1': 5, falkner: 13, bugsy: 17, 'rival-2': 18, whitney: 19, morty: 25, chuck: 31, jasmine: 35, pryce: 34, 'rival-3': 32,
   clair: 41, 'rival-4': 38, will: 42, koga: 44, bruno: 46, karen: 47, lance: 50, 'kanto-leaders': 60, blue: 60, red: 88,
 };
 
 export const PROGRESSION = [
-  A('starter', 'Starter', [], { region: 'Johto', special: 'starter', hint: 'Dein erstes Pokémon von Prof. Lind' }),
-  A('new-bark', 'New Bark Town', [126], { region: 'Johto', hint: 'Surfer/Angeln – erst später erreichbar' }),
+  A('starter', 'Starter', [], { region: 'Johto', special: 'starter', hint: 'Your first Pokémon from Prof. Elm' }),
+  A('new-bark', 'New Bark Town', [126], { region: 'Johto', hint: 'Surf/fishing – only reachable later' }),
   A('route-29', 'Route 29', [177], { region: 'Johto' }),
   A('cherrygrove', 'Cherrygrove City', [127], { region: 'Johto' }),
   A('route-30', 'Route 30', [178], { region: 'Johto' }),
   A('route-31', 'Route 31', [179], { region: 'Johto' }),
   A('violet', 'Violet City', [128], { region: 'Johto' }),
   A('sprout-tower', 'Sprout Tower', [204], { region: 'Johto' }),
-  B('rival-1', 'Rivale (Cherrygrove)', 18, { optional: true }),
-  B('falkner', 'Falk', 15, { badge: 0 }),
+  B('rival-1', 'Rival (Cherrygrove)', 18, { optional: true }),
+  B('falkner', 'Falkner', 15, { badge: 0 }),
   A('route-32', 'Route 32', [180], { region: 'Johto' }),
   A('ruins-of-alph', 'Ruins of Alph', [209], { region: 'Johto' }),
   A('union-cave', 'Union Cave', [210], { region: 'Johto' }),
   A('route-33', 'Route 33', [181], { region: 'Johto' }),
   A('azalea', 'Azalea Town', [129], { region: 'Johto' }),
   A('slowpoke-well', 'Slowpoke Well', [211], { region: 'Johto' }),
-  B('bugsy', 'Kai', 20, { badge: 1 }),
+  B('bugsy', 'Bugsy', 20, { badge: 1 }),
   A('ilex-forest', 'Ilex Forest', [214], { region: 'Johto' }),
-  B('rival-2', 'Rivale (Azalea)', 26, { optional: true }),
+  B('rival-2', 'Rival (Azalea)', 26, { optional: true }),
   A('route-34', 'Route 34', [182], { region: 'Johto' }),
   A('goldenrod', 'Goldenrod City', [131, 215], { region: 'Johto' }),
-  B('whitney', 'Bianka', 24, { badge: 2 }),
+  B('whitney', 'Whitney', 24, { badge: 2 }),
   A('route-35', 'Route 35', [183], { region: 'Johto' }),
   A('national-park', 'National Park', [207], { region: 'Johto' }),
   A('route-36', 'Route 36', [184], { region: 'Johto' }),
   A('route-37', 'Route 37', [185], { region: 'Johto' }),
   A('ecruteak', 'Ecruteak City', [133], { region: 'Johto' }),
   A('burned-tower', 'Burned Tower', [206], { region: 'Johto' }),
-  B('morty', 'Jens', 30, { badge: 3 }),
+  B('morty', 'Morty', 30, { badge: 3 }),
   A('route-38', 'Route 38', [186], { region: 'Johto' }),
   A('route-39', 'Route 39', [187], { region: 'Johto' }),
   A('olivine', 'Olivine City', [132, 212], { region: 'Johto' }),
@@ -49,24 +52,24 @@ export const PROGRESSION = [
   A('route-41', 'Route 41', [189], { region: 'Johto' }),
   A('whirl-islands', 'Whirl Islands', [218], { region: 'Johto' }),
   A('cianwood', 'Cianwood City', [130], { region: 'Johto' }),
-  B('chuck', 'Hartwig', 35, { badge: 4 }),
+  B('chuck', 'Chuck', 35, { badge: 4 }),
   A('route-47', 'Route 47', [195], { region: 'Johto' }),
   A('route-48', 'Route 48', [196], { region: 'Johto' }),
   A('cliff-cave', 'Cliff Cave', [228, 234], { region: 'Johto' }),
   A('safari-zone', 'Safari Zone', [202, 227], { region: 'Johto' }),
-  B('jasmine', 'Jasmin', 35, { badge: 5 }),
+  B('jasmine', 'Jasmine', 35, { badge: 5 }),
   A('route-42', 'Route 42', [190], { region: 'Johto' }),
   A('mt-mortar', 'Mt. Mortar', [216], { region: 'Johto' }),
   A('mahogany', 'Mahogany Town', [134], { region: 'Johto' }),
   A('route-43', 'Route 43', [191], { region: 'Johto' }),
   A('lake-of-rage', 'Lake of Rage', [135], { region: 'Johto' }),
   A('rocket-hq', 'Team Rocket HQ', [213], { region: 'Johto' }),
-  B('pryce', 'Norbert', 42, { badge: 6 }),
-  B('rival-3', 'Rivale (Radioturm)', 40, { optional: true }),
+  B('pryce', 'Pryce', 42, { badge: 6 }),
+  B('rival-3', 'Rival (Radio Tower)', 40, { optional: true }),
   A('route-44', 'Route 44', [192], { region: 'Johto' }),
   A('ice-path', 'Ice Path', [217], { region: 'Johto' }),
   A('blackthorn', 'Blackthorn City', [136], { region: 'Johto' }),
-  B('clair', 'Sandra', 46, { badge: 7 }),
+  B('clair', 'Clair', 46, { badge: 7 }),
   A('dragons-den', "Dragon's Den", [222], { region: 'Johto' }),
   A('route-45', 'Route 45', [193], { region: 'Johto' }),
   A('route-46', 'Route 46', [194], { region: 'Johto' }),
@@ -74,14 +77,14 @@ export const PROGRESSION = [
   A('route-27', 'Route 27', [175], { region: 'Johto' }),
   A('tohjo-falls', 'Tohjo Falls', [223], { region: 'Johto' }),
   A('route-26', 'Route 26', [174], { region: 'Johto' }),
-  B('rival-4', 'Rivale (Siegesstraße)', 50, { optional: true }),
+  B('rival-4', 'Rival (Victory Road)', 50, { optional: true }),
   A('victory-road', 'Victory Road', [221], { region: 'Johto' }),
-  B('will', 'Willi (Top 4)', 52),
-  B('koga', 'Koga (Top 4)', 54),
-  B('bruno', 'Bruno (Top 4)', 56),
-  B('karen', 'Melanie (Top 4)', 58),
-  B('lance', 'Siegfried (Champ)', 60),
-  A('bell-tower', 'Bell Tower', [205, 230], { region: 'Johto', hint: 'Ho-Oh / Glockenturm' }),
+  B('will', 'Will (Elite Four)', 52),
+  B('koga', 'Koga (Elite Four)', 54),
+  B('bruno', 'Bruno (Elite Four)', 56),
+  B('karen', 'Karen (Elite Four)', 58),
+  B('lance', 'Lance (Champion)', 60),
+  A('bell-tower', 'Bell Tower', [205, 230], { region: 'Johto', hint: 'Ho-Oh / Bell Tower' }),
   A('embedded-tower', 'Embedded Tower', [232], { region: 'Johto' }),
   A('ss-aqua', 'S.S. Aqua', [226], { region: 'Kanto' }),
   A('vermilion', 'Vermilion City', [143], { region: 'Kanto' }),
@@ -124,12 +127,12 @@ export const PROGRESSION = [
   A('route-20', 'Route 20', [168], { region: 'Kanto' }),
   A('seafoam', 'Seafoam Islands', [203], { region: 'Kanto' }),
   A('route-19', 'Route 19', [167], { region: 'Kanto' }),
-  B('kanto-leaders', 'Kanto-Arenaleiter (Blaine 64)', 62, { badgesFrom: 8 }),
-  B('blue', 'Blau', 70),
+  B('kanto-leaders', 'Kanto Gym Leaders (Blaine 64)', 62, { badgesFrom: 8 }),
+  B('blue', 'Blue', 70),
   A('route-28', 'Route 28', [176], { region: 'Kanto' }),
   A('mt-silver', 'Mt. Silver', [137, 219], { region: 'Kanto' }),
   A('cerulean-cave', 'Cerulean Cave', [199], { region: 'Kanto' }),
-  B('red', 'Rot', 88),
+  B('red', 'Red', 88),
 ];
 
 export const AREAS = PROGRESSION.filter((x) => x.kind === 'area');
@@ -145,19 +148,21 @@ export function areaForMetLocation(id) {
 
 /**
  * Level cap = ace level of the next unbeaten mandatory boss. Badge-based: 0..7 Johto
- * gyms, then E4 (until 8 badges + champion), Kanto leaders, Blue, Red.
+ * gyms, then E4 (until 8 badges + champion), Kanto leaders, Blue, Red. A boss marked as defeated on the board counts
+ * as beaten too – a gym leader as well, before the badge was read from the game (not playing right now, an older
+ * savestate, a game whose badges aren't read): marking Falkner beaten moves the cap on to Bugsy.
  */
 export function levelCapFor(badgeCount, defeated = {}, vanilla = false) {
   const mandatory = BOSSES.filter((b) => !b.optional).map((b) => (vanilla && VANILLA_CAPS[b.key] ? { ...b, cap: VANILLA_CAPS[b.key] } : b));
   const kanto = mandatory.findIndex((b) => b.badgesFrom !== undefined);
   for (const [i, b] of mandatory.entries()) {
     if (b.badge !== undefined) {
-      if (badgeCount <= b.badge) return { boss: b, cap: b.cap };
+      if (badgeCount <= b.badge && !defeated[b.key]) return { boss: b, cap: b.cap };
       continue;
     }
     if (b.badgesFrom !== undefined) {
       // Blue's gym only opens with the other seven Kanto badges: at 15 badges the next boss is Blue.
-      if (badgeCount < 15) return { boss: b, cap: b.cap };
+      if (badgeCount < 15 && !defeated[b.key]) return { boss: b, cap: b.cap };
       continue;
     }
     // Kanto badges only come after the Elite Four: a 9th badge means everything before Kanto is beaten,
