@@ -2,6 +2,13 @@
 
 `npm run release` takes the release notes from the section of the version being released.
 
+## Unreleased
+
+- **Cheats in Sun/Moon and Ultra Sun/Ultra Moon no longer stop after you give an item away.** When the last one of an
+  item leaves the bag (given to a Pokémon to hold, used up), these games can keep its id in the slot with a count of 0.
+  souldew took that for a sign it wasn't looking at the bag and said "souldew didn't find your
+  bag in the game's memory" for every cheat (#45).
+
 ## 3.0.0
 
 souldew 3.0 brings multiplayer: the players of a run trade Pokémon and battle each other the way the games meant it –
