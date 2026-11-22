@@ -1675,6 +1675,9 @@ export function GameSession({ session, mode }) {
   // Shared World (docs/MULTIPLAYER.md › 9, lib/sharedworld.mjs): the partners walk in this game when they're on the
   // same map – never in a link session, a solo run or a game without the tables (the player page checks the ROM)
   const worldOk = isRun && !solo && !target.link && WORLD_SYSTEMS.includes(target.system) && !!link && others.length > 0;
+  // (a DS game in another language – found by its family, its party searched for: the Shared World's tables are the
+  // English version's; the switch isn't there, a line says why – a French Platinum's players didn't see each other)
+  const worldLanguage = (e) => !!e?.scanOnly && !!e.world && e.platform === 'nds';
   const [worldOn, setWorldOnState] = useState(() => worldEnabled(target.runId));
   const [worldNear, setWorldNear] = useState(0);
   const [worldSupported, setWorldSupported] = useState(false); // the player page knows this game's memory
@@ -2016,6 +2019,7 @@ ${!target.link && html`          ${btn(paused ? 'resume' : 'pause', t('keys.paus
   const teamEl = html`
     <${LiveStatus} status=${liveState.status} phase=${phase} names=${names} me=${me} others=${others}
       extra=${html`${worldOk && worldSupported && html`<${WorldToggle} on=${worldOn} onChange=${setWorldOn} live=${worldNear} follow=${followOn} onFollow=${worldOwnFollow ? setFollowOn : null} />`}
+        ${worldOk && !worldSupported && worldLanguage(liveRef.current?.entry) && html`<span class="tiny muted">${t('world.needsEnglish', 'Showing partners in your game needs the English (US) version of this game – the other languages keep their memory elsewhere. Trading and battling in the Union Room work in every language.')}</span>`}
         ${ownGame && html`<${PingButton} />`}`} />
     ${liveState.status === 'unsupported' && html`<span class="small muted">${isRun
       ? t('play.liveUnsupportedRun', 'This ROM isn’t in the memory table (other language or a hack with a changed layout). The run still works – enter catches by hand.')

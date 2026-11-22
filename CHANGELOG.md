@@ -33,6 +33,12 @@
   left live tracking without a link to the Pokémon in the game: it only said "in box", and its level, HP and death
   never came. Now the dialog shows the Pokémon of that species waiting in "From your game" (or in your team without an
   area) and links it: the only one by itself, one of several by your pick, or none with "Don't link".
+- **DS games in other languages say what they can't do yet.** Showing partners in your game, raids and battling for
+  money read the game's memory at places known for the English (US) versions of Platinum and HeartGold/SoulSilver.
+  In other languages these were simply missing (two players with a French Platinum didn't see each other, with no word
+  why). Now the play view says that showing partners needs the English version, a raid says "not in this version of
+  the game yet" (it said "not in this ROM hack"), and the Battle button says battles go without a wager. Trading and
+  battling in the Union Room work in every language.
 
 ## 3.0.0
 

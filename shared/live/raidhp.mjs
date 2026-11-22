@@ -357,6 +357,9 @@ export function raidSupport(entry) {
   if (!entry) return { ok: false, why: 'unknown' };
   // a ROM hack with a memory-table entry of its own (Pokémon Quetzal: addresses.json `hack`) – its battles aren't the
   // base game's: never written to
+  // (another language of a game whose English version is in the tables – found by its family, the party searched for:
+  // its RAM isn't the tables', and it isn't a hack either – "not in this version yet")
+  if (!entry.hack && (entry.scanOnly || String(entry.id || '').includes('~')) && !entry.scan3 && !entry.wram?.delta) return { ok: false, why: 'version' };
   if (entry.hack || movedGame(entry)) return { ok: false, why: 'hack' };
   if (driverOf(entry)) return { ok: true };
   return { ok: false, why: RAID_UNSUPPORTED[entry.gen] || 'version' };
