@@ -4,6 +4,26 @@
 
 ## Unreleased
 
+- **DS trades and battles: no more black screen for one of you.** When two players linked their running DS games
+  (Gen 4 and 5) – “Trade” or “Battle” on the board, in the Union Room or anywhere else – the game of the player who
+  had been playing longer (or used fast-forward more) went black right away and could stay black for minutes, with
+  nothing said, until “Leave link”. The linked consoles were lined up by how
+  long each had been switched on, so the older one waited for the younger one to catch up. Now every console's clock
+  starts together when the link starts, and both games play on at once. Tested with Diamond and Pearl linked from
+  games running for very different times, from inside the Union Room, through a whole trade.
+- **The Union Room at full speed.** While the linked DS games talked to each other (the whole time in the Union
+  Room), they ran at half speed and quick button presses could get lost. Now they run at the speed the computer
+  manages, up to normal speed, and every press counts.
+- **Already standing in the Union Room when you link? You now see each other.** A game that was in the Union Room
+  (or anywhere its wireless was on) when the link started never heard the others until it walked out and back in.
+- **Mixed versions say so.** A DS link with a partner who still has souldew 3.0.0 doesn't start; both of you are told
+  to update.
+- **A link that stands still always says so.** If a link stops moving for a minute – the games no longer hear
+  each other – or one of the linked games stops running, both of you get a message, the link ends and each game goes
+  on from where it was; “Leave link” still works at any time.
+- **Diagnostics include the link.** “Save diagnostics” now records the link session too – when it started, from which
+  games, the connection, every console's frames, the buttons sent and received, waits and how it ended – so a report
+  about a trade or battle shows where it went wrong.
 - **Cheats in Sun/Moon and Ultra Sun/Ultra Moon no longer stop after you give an item away.** When the last one of an
   item leaves the bag (given to a Pokémon to hold, used up), these games can keep its id in the slot with a count of 0.
   souldew took that for a sign it wasn't looking at the bag and said "souldew didn't find your

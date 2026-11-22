@@ -519,7 +519,7 @@ function onEvent(p) {
   } else if (e.event === 'written') written.shift()?.fn?.(!!e.ok);
   else if (e.event === 'stateLoaded') waiters.loaded.splice(0).forEach((f) => f(!!e.ok));
   else if (e.event === 'seatState' && !e.size) waiters.seatState.splice(0).forEach((f) => f(null));
-  else if (LINK_SESSION && (e.event === 'hash' || e.event === 'wait')) post({ type: `emu-link-${e.event}`, ...e });
+  else if (LINK_SESSION && (e.event === 'hash' || e.event === 'wait' || e.event === 'stuck')) post({ type: `emu-link-${e.event}`, ...e });
   else if (e.event === 'error') {
     st.error = e.message;
     fail(t('native.failed', 'The game can’t run in the fast player: {why}', { why: e.message }));
