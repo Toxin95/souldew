@@ -1,6 +1,6 @@
 {
   "name": "souldew",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "private": true,
   "description": "souldew – Pokémon SoulLinks (2–4 players) and Nuzlockes with a built-in emulator, live sync and a game library",
   "license": "GPL-3.0-or-later",
@@ -27,6 +27,8 @@
     "dist": "node scripts/check-pinned-keys.mjs && node scripts/fetch-jre.mjs arm64 && node scripts/build-ctr.mjs --check && node scripts/build-native.mjs --check && CUSTOM_DMGBUILD_PATH=scripts/dmgbuild-wrapper.mjs electron-builder --mac dmg --arm64",
     "dist:win": "node scripts/check-pinned-keys.mjs && node scripts/fetch-jre.mjs x64 && node scripts/build-ctr.mjs --check && node scripts/build-native.mjs --check && electron-builder --win nsis --x64",
     "dist:linux": "node scripts/check-pinned-keys.mjs && node scripts/fetch-jre.mjs x64 && node scripts/build-ctr.mjs --check && node scripts/build-native.mjs --check && electron-builder --linux AppImage deb --x64",
+    "dist:mac-signed": "node scripts/dist-mac-signed.mjs",
+    "test:node22": "npx -y node@22 --test --test-timeout=600000 \"test/*.test.mjs\"",
     "release": "node scripts/release.mjs",
     "matrix": "node scripts/rom-matrix.mjs --live"
   },
