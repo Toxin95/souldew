@@ -6,7 +6,7 @@ import { api } from '../lib/api.mjs';
 import { buildLogText, serverErrorText } from '../lib/errors.mjs';
 import { diag } from '../lib/diag.mjs';
 import { catalog, gameById, hackById, gameTitle, patchLabel, patchFits, patchDiag, genFromSystem } from '../lib/data.mjs';
-import { PRESETS, DEFAULT_VALUES, localizeRandomizer, randomSeed, sameSettings, withDefaults, fieldActive, fieldEnabled, forGen, buildValues } from '/shared/randomizer-options.mjs';
+import { PRESETS, DEFAULT_VALUES, localizeRandomizer, randomSeed, sameSettings, withDefaults, fieldActive, fieldEnabled, forGen, buildValues, lockedOptions, valuesForGame } from '/shared/randomizer-options.mjs';
 import { Cart, coverOf } from './library.mjs';
 import { RestartModal } from './restart.mjs';
 import { mySlotIn } from '../lib/restart.mjs';
@@ -328,12 +328,19 @@ function RestartRun({ from, mode }) {
   return html`<${NewRun} gameId=${old.game?.id || ''} hackId=${old.game?.hackId} from=${old} mode=${runMode(old)} />`;
 }
 
-function Field({ f, value, onChange, disabled, values, gen }) {
+/** Why an option can't be had for this game (lockedOptions) – shown under it, greyed out. */
+const lockedText = (why) => (why === 'starters' ? t('new.lockStarters', 'Not in this ROM hack: it has its own intro, so its starters stay as they are.')
+  : why === 'tutors' ? t('new.lockTutors', 'Not in this ROM hack: its move tutors aren’t where the randomizer writes them, so they stay as they are.')
+    : why === 'shops' ? t('new.lockShops', 'Not in this ROM hack: its shops aren’t where the randomizer writes them, so they stay as they are.') : '');
+
+function Field({ f, value, onChange, disabled, values, gen, locked = null }) {
   if (f.type === 'head') return html`<div class="small muted" style="grid-column: 1 / -1; margin: 10px 0 2px; font-weight: 600">${f.label}</div>`;
-  const dep = !fieldEnabled(f, values);
+  const dep = !fieldEnabled(f, values) || !!locked;
+  if (locked) disabled = true;
+  const help = locked ? lockedText(locked) : f.help;
   if (f.type === 'bool') {
     return html`<label class="check" style=${dep ? 'opacity:.45' : ''}><input type="checkbox" checked=${!!value} disabled=${disabled || dep} onChange=${(e) => onChange(e.target.checked)} />
-      <span>${f.label}${f.help && html`<span class="hint">${f.help}</span>`}</span></label>`;
+      <span>${f.label}${help && html`<span class="hint">${help}</span>`}</span></label>`;
   }
   if (f.type === 'int') {
     return html`<label class="field" style=${dep ? 'opacity:.45' : ''}><span>${f.label}</span>
@@ -341,9 +348,9 @@ function Field({ f, value, onChange, disabled, values, gen }) {
   }
   // options of other generations stay hidden – unless an old run already uses one
   const options = f.options.filter(([v, , more]) => v === value || forGen(more, gen));
-  return html`<label class="field" style=${`grid-column: 1 / -1${dep ? '; opacity:.45' : ''}`}><span>${f.label}</span>
-    <select value=${value} disabled=${disabled || dep} onChange=${(e) => onChange(f.numeric ? Number(e.target.value) : e.target.value)}>${options.map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select>
-    ${f.help && html`<span class="faint small">${f.help}</span>`}</label>`;
+  return html`<label class="field" style=${`grid-column: 1 / -1${dep && !locked ? '; opacity:.45' : ''}`}><span style=${locked ? 'opacity:.45' : ''}>${f.label}</span>
+    <select style=${locked ? 'opacity:.45' : ''} value=${value} disabled=${disabled || dep} onChange=${(e) => onChange(f.numeric ? Number(e.target.value) : e.target.value)}>${options.map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select>
+    ${help && html`<span class="faint small">${help}</span>`}</label>`;
 }
 
 /** One-line summary of a saved preset (wild · starters · trainers), from the localized option labels. */
@@ -677,8 +684,11 @@ function NewRun({ gameId, hackId, patchPick, romPick, friendPick, from, mode: se
     setBasedOn(saved ? p.id : null);
   };
   const gen = inspect?.info?.generation || null;
-  const changedIn = (g) => g.fields.filter((f) => f.type !== 'head' && forGen(f, gen) && fieldActive(f, values)
-    && JSON.stringify(values[f.key] ?? DEFAULT_VALUES[f.key]) !== JSON.stringify(DEFAULT_VALUES[f.key])).length;
+  // what this game can't have (a ROM hack's own intro, tutors, shops – #43): greyed out at their default, built so
+  const locked = lockedOptions(inspect?.info);
+  const shown = valuesForGame(values, inspect?.info);
+  const changedIn = (g) => g.fields.filter((f) => f.type !== 'head' && forGen(f, gen) && fieldActive(f, shown)
+    && JSON.stringify(shown[f.key] ?? DEFAULT_VALUES[f.key]) !== JSON.stringify(DEFAULT_VALUES[f.key])).length;
 
   const game = rom ? gameById(rom.gameId) : null;
   const patch = patchesFor(rom).find((p) => p.id === patchId);
@@ -727,7 +737,7 @@ function NewRun({ gameId, hackId, patchPick, romPick, friendPick, from, mode: se
     try {
       const res = await api.post('/api/runs/build', {
         // buildValues: drop what this generation lacks – stored in the run, so the other players build the same
-        romId: rom.id, patchId, values: buildValues(values, gen), randomize: randomize && canRandomize, mode, progressId: pid,
+        romId: rom.id, patchId, values: buildValues(valuesForGame(values, inspect?.info), gen), randomize: randomize && canRandomize, mode, progressId: pid,
         seeds: Object.fromEntries(slots.map((s) => [s, seeds[seedSlots.includes(s) ? s : 'p1']])), sharedSeed: !solo && seedMode === 'shared',
         players, buildFor: solo || buildFor === 'all' ? slots : ['p1'],
         gameId: game?.variantOf || game?.id || null, gameTitle: hack?.name || customHack || (game ? gameTitle(game) : rom.title), hackId: hack?.id || null,
@@ -826,7 +836,7 @@ function NewRun({ gameId, hackId, patchPick, romPick, friendPick, from, mode: se
           : t('new.randoCrash', 'The randomizer can’t build this game – its data isn’t where the randomizer expects it, as in some ROM hacks and releases. You can still play a regular SoulLink.'))
         : inspect.info?.unsupported || hackNoUpr ? (solo ? t('new.noRandomizerSolo', 'This game can’t be randomized – you can still play the Nuzlocke without the randomizer.')
           : t('new.noRandomizer', 'This game can’t be randomized – you can still play a regular SoulLink.'))
-        : t('new.ok', '{n} Pokémon · randomizer supported', { n: inspect.info.pokemonCount })}${inspect && inspect.info && inspect.info.staticsSupported === false ? ` · ${t('new.noStatics', 'gifts & legendaries stay as in the hack')}` : ''}</p>
+        : t('new.ok', '{n} Pokémon · randomizer supported', { n: inspect.info.pokemonCount })}${inspect && inspect.info && inspect.info.staticsSupported === false ? ` · ${t('new.noStatics', 'gifts & legendaries stay as in the hack')}` : ''}${inspect?.info?.startersSupported === false ? ` · ${t('new.noStarters', 'starters stay as in the hack')}` : ''}</p>
       ${mate && inspect && html`<p class="small muted">${randomize && canRandomize
         ? t('new.pairRandom', 'With the randomizer everyone needs {game}. Without it, your partners could also play {mate}.', { game: gameTitle(game), mate: gameTitle(mate) })
         : html`<span class="chip ok">${t('new.pairChip', 'Both editions')}</span> ${t('new.pairOk', 'Your partners may also play {mate} – in a run without randomizer or ROM hack, both editions work.', { mate: gameTitle(mate) })}`}</p>`}
@@ -855,7 +865,7 @@ function NewRun({ gameId, hackId, patchPick, romPick, friendPick, from, mode: se
           <div class="stack" style="padding:4px 0 6px">
             ${rnd.groups.filter((g) => g.fields.some((f) => f.type !== 'head' && forGen(f, gen))).map((g) => html`<details class="group">
               <summary>${g.title}${changedIn(g) > 0 && html`<span class="faint small">${t('new.changedCount', '{n} changed', { n: changedIn(g) })}</span>`}</summary><div class="group-body">
-              ${g.fields.filter((f) => forGen(f, gen)).map((f) => html`<${Field} f=${f} gen=${gen} values=${values} value=${values[f.key] ?? DEFAULT_VALUES[f.key]} disabled=${g.id === 'statics' && inspect?.info?.staticsSupported === false}
+              ${g.fields.filter((f) => forGen(f, gen)).map((f) => html`<${Field} f=${f} gen=${gen} values=${shown} value=${shown[f.key] ?? DEFAULT_VALUES[f.key]} disabled=${g.id === 'statics' && inspect?.info?.staticsSupported === false} locked=${locked.get(f.key) || null}
                 onChange=${(v) => { setValues({ ...values, [f.key]: v }); setPresetId('custom'); }} />`)}
             </div></details>`)}
             <details class="group"><summary>${t('new.tweaks', 'Game tweaks')}</summary><div class="group-body">

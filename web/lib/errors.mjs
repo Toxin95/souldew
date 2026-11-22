@@ -208,6 +208,7 @@ const TEXTS = {
   uprChecksum: () => t('err.uprChecksum', 'The randomizer download is damaged – nothing was installed. Try again.'),
   // a HeartGold / SoulSilver save the graveyard or the save watcher can't use (shared/gen4save.mjs)
   saveTooSmall: (v) => t('err.saveTooSmall', 'The save file is too small ({size} bytes) – a HeartGold / SoulSilver save has 512 KB.', v),
+  patchNoFit: (v) => t('err.patchNoFit', 'The ROM hack’s patch doesn’t fit this game file ({detail}) – it was made for another copy of the game, or the file is damaged.', v),
   saveNotFound: () => t('err.saveNotFound', 'No valid save in the file – save once in the game first.'),
   saveAmbiguous: () => t('err.saveAmbiguous', 'The save file isn’t clear about the latest save – save once in the game and try again.'),
   teamEmpty: () => t('err.teamEmpty', 'The team can’t become empty – at least one Pokémon has to stay in it.'),

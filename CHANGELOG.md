@@ -24,6 +24,18 @@
 - **Diagnostics include the link.** “Save diagnostics” now records the link session too – when it started, from which
   games, the connection, every console's frames, the buttons sent and received, waits and how it ended – so a report
   about a trade or battle shows where it went wrong.
+- **Blaze Black 2 Redux with the randomizer: no more black screen in the intro.** The Classic preset's "National
+  Pokédex from the start" works by rewriting Black 2's intro – in a ROM hack with an intro of its own that broke the
+  game: it kept running, but stayed black before you could pick your name (#43). Not "Every Pokémon can learn every
+  HM", as it first looked. The randomizer now checks every place it would change in a Gen 5 game: what a ROM hack
+  changed there isn't offered for it (greyed out, with the reason) – in Blaze Black 2 Redux "National Pokédex from
+  the start" and "Fastest text" go, and the starters stay the hack's own, since they sit in that same intro. Tested
+  with Blaze Black 2 Redux 1.4.1 and three seeds of the Classic preset, from the intro into the player's room.
+- **No "Save file unreadable" at the start of a new game.** A DS game prepares its save while the intro plays; souldew
+  read that, found no save in it yet and said "Save file unreadable – save once in the game first". A save that was
+  readable and isn't any more still says so.
+- **A ROM hack whose patch doesn't fit your copy of the game says so** in the new-run assistant, instead of failing
+  without a reason.
 - **Cheats in Sun/Moon and Ultra Sun/Ultra Moon no longer stop after you give an item away.** When the last one of an
   item leaves the bag (given to a Pokémon to hold, used up), these games can keep its id in the slot with a count of 0.
   souldew took that for a sign it wasn't looking at the bag and said "souldew didn't find your
