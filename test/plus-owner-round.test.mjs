@@ -195,7 +195,10 @@ test('no favourite stars on the souldew+ page (they stay in the profile editor a
 test('signed out, the sidebar\'s foot says "Sign in" with the Discord mark – the same sign-in as Settings', () => {
   const app = src('web/app.mjs');
   const fn = app.slice(app.indexOf('function RailSignIn('), app.indexOf('/** One section of the rail'));
-  assert.match(fn, /if \(!acct\.loaded \|\| acct\.session\?\.signedIn\) return null;/, 'nothing while unknown or signed in');
+  assert.match(fn, /if \(acct\.session\?\.signedIn\) return null;/, 'nothing signed in');
+  // 3.0.1: while the saved sign-in is still being read, "Loading …" in the chip's place – never "Sign in" for a moment
+  assert.match(fn, /if \(!acct\.known\) \{\s*return html`<div class="rail-signin-wrap"><div class="rail-me rail-signin rail-acct-loading" role="status">/, 'loading while unknown');
+  assert.match(fn, /t\('common\.loading', 'Loading …'\)/);
   assert.match(fn, /await signIn\(\);/, 'lib/account.mjs signIn – what Settings › Account calls');
   assert.match(fn, /<\$\{Icon\} name="discord"/);
   assert.match(fn, /class="rail-me rail-signin"/, 'the profile chip\'s own class: every skin styles both alike');
@@ -232,4 +235,19 @@ test('the souldew+ launch looks\' stills ship with the app until the previews ca
   assert.equal(P.shippedStill('nope'), null);
   const v = src('web/views/launchlooks.mjs');
   assert.ok(v.indexOf("previewSrc('launch', name") < v.indexOf('shippedStill(name)'), 'the previews first');
+});
+
+// 3.0.1: at the start the saved sign-in is read in the background (the keychain may take a moment) – until then every
+// account place says "Loading …", never "signed out" for a moment (lib/account.mjs `known`)
+test('account at start: "Loading …" everywhere until the saved sign-in is read – Settings, Friends, the profile, souldew+', () => {
+  const settings = src('web/views/settings/account.mjs');
+  assert.match(settings, /const on = acct\.known && acct\.session\.signedIn;/);
+  assert.match(settings, /\$\{!acct\.known \? html`<p class="muted small">\$\{t\('common\.loading', 'Loading …'\)\}/);
+  assert.match(settings, /\$\{acct\.known && !on && html`<\$\{Group\} title="souldew\+">/, 'no souldew+ sign-in offer while unknown');
+  for (const f of ['web/views/friends.mjs', 'web/views/profile.mjs', 'web/views/plus.mjs']) {
+    assert.match(src(f), /if \(!acct\.known\) return html`<div class="empty-state"><p class="muted">\$\{t\('common\.loading', 'Loading …'\)\}<\/p><\/div>`;/, f);
+    assert.doesNotMatch(src(f), /if \(!acct\.loaded\) return null;/, `${f}: not the old "answered once" check`);
+  }
+  // `known` is the server's word that it has read the saved sign-in (an older server: as soon as it answers)
+  assert.match(src('web/lib/account.mjs'), /known: r\.session\?\.loaded !== false/);
 });

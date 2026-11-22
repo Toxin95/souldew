@@ -49,6 +49,8 @@
   missing, and reinstalling Java didn't help. Now it says what's going on: turn System Integrity Protection back on,
   then try again. Checking for Java also waits longer the very first time (macOS checks a new program first) and tries
   once more, and "Save diagnostics" lists every Java souldew tried and how it ended.
+- **Your account shows "Loading …" at the start** while souldew reads your saved sign-in, instead of "Sign in" for a
+  moment – in the sidebar, Settings › Account, Friends, your profile and souldew+.
 - **Cheats in Sun/Moon and Ultra Sun/Ultra Moon no longer stop after you give an item away.** When the last one of an
   item leaves the bag (given to a Pokémon to hold, used up), these games can keep its id in the slot with a count of 0.
   souldew took that for a sign it wasn't looking at the bag and said "souldew didn't find your

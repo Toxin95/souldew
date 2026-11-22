@@ -303,7 +303,7 @@ export function PlusView() {
   const { navigate } = useApp();
   const acct = useAccount();
   useCosmetics();
-  if (!acct.loaded) return null;
+  if (!acct.known) return html`<div class="empty-state"><p class="muted">${t('common.loading', 'Loading …')}</p></div>`;
   const state = plusState(acct);
   const me = acct.me;
   return html`<div class="plus-page" data-state=${state.kind}>
