@@ -758,6 +758,25 @@ export function lastWildAt(doc, manifest, gen, area, slot) {
 }
 
 /**
+ * Pokémon of `slot`'s game a hand-entered "Caught" of `species` can be linked to (a manual entry with no key isn't
+ * followed by live tracking – "in box" only): the ones waiting in "From your game" (`inbox`: the board's inbox items,
+ * this computer's player only) and the team members the live data has no area for, none already filed for this player.
+ * → [{ key, species, nickname, level, shiny, gender, form? }], the inbox's first.
+ */
+export function linkCandidates(doc, slot, species, inbox = []) {
+  if (!doc || !species) return [];
+  const used = new Set(Object.entries(doc.scan('enc:')).filter(([k, e]) => k.endsWith(`:${slot}`) && e?.key).map(([, e]) => e.key));
+  const out = [];
+  const add = (m) => {
+    if (!m?.key || used.has(m.key) || m.species !== species || m.isEgg || m.egg || out.some((x) => x.key === m.key)) return;
+    out.push({ key: m.key, species: m.species, nickname: m.nickname ?? m.nick ?? '', level: m.level ?? m.metLevel ?? null, shiny: !!m.shiny, gender: m.gender ?? null, ...(m.form ? { form: m.form } : {}) });
+  };
+  for (const it of inbox || []) add(it?.mon);
+  for (const m of live(doc, slot)?.party || []) if (!m.area) add(m);
+  return out;
+}
+
+/**
  * A solo blackout per the `blackout` rule. 'party': every Pokémon in the party (eggs aside) is at 0 HP on a live
  * read – no marked death needed. 'box': nothing caught is alive anymore, in the party or the boxes (after at
  * least one catch). Like wipedSlot, a blackout the player waved off (`run:resumed`) counts again only once it

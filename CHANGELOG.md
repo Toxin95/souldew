@@ -29,6 +29,10 @@
   into your team only after the Pokédex entry and the nickname screen, and souldew asked after 10 seconds. It now waits
   a minute on the 3DS. And when you did press "Mark as spent" and that Pokémon turns up in your team within a few
   minutes after all, souldew files it as the area's catch instead of keeping the area spent.
+- **A catch you enter by hand is linked to the Pokémon in your game** (ticket #37). Entering "Caught" on the board
+  left live tracking without a link to the Pokémon in the game: it only said "in box", and its level, HP and death
+  never came. Now the dialog shows the Pokémon of that species waiting in "From your game" (or in your team without an
+  area) and links it: the only one by itself, one of several by your pick, or none with "Don't link".
 
 ## 3.0.0
 
