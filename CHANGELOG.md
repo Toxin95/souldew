@@ -2,6 +2,23 @@
 
 `npm run release` takes the release notes from the section of the version being released.
 
+## Unreleased
+
+- **DS trades: no more black screen for one of you.** When two players linked their running DS games (Gen 4 and 5) –
+  “Trade” on the board, then the Union Room – the game of the player who had been playing longer (or used fast-forward
+  more) could stay black for minutes, with nothing said, until “Leave link”. The linked consoles were lined up by how
+  long each had been switched on, so the older one waited for the younger one to catch up. Now every console's clock
+  starts together when the link starts, and both games play on at once. Tested with Diamond and Pearl linked from
+  games running for very different times, from inside the Union Room, through a whole trade.
+- **Already standing in the Union Room when you link? You now see each other.** A game that was in the Union Room
+  (or anywhere its wireless was on) when the link started never heard the others until it walked out and back in.
+- **A link that stands still always says so.** If a link stops moving for half a minute – the games no longer hear
+  each other – or one of the linked games stops running, both of you get a message, the link ends and each game goes
+  on from where it was; “Leave link” still works at any time.
+- **Diagnostics include the link.** “Save diagnostics” now records the link session too – when it started, from which
+  games, the connection, every console's frames, the buttons sent and received, waits and how it ended – so a report
+  about a trade or battle shows where it went wrong.
+
 ## 3.0.0
 
 souldew 3.0 brings multiplayer: the players of a run trade Pokémon and battle each other the way the games meant it –

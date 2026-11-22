@@ -833,6 +833,8 @@
   "linkplay.desync2": "I giochi sono andati fuori sincrono, quindi il collegamento è stato interrotto. Per correttezza tornate entrambi ai salvataggi di prima del collegamento: l’ultimo salvataggio della sessione resta come copia nella cartella della run.",
   "linkplay.rejoinGone": "Nessuno ha risposto: gli altri hanno lasciato il collegamento.",
   "linkplay.rejoinBusy": "I giochi degli altri sono nel mezzo di uno scambio wireless, quindi non puoi rientrare: il collegamento è terminato.",
+  "linkplay.stalled": "Il collegamento è rimasto fermo per mezzo minuto: i giochi hanno smesso di sentirsi, quindi il collegamento è stato interrotto. Il tuo gioco riprende da dove era.",
+  "linkplay.stuck": "Uno dei giochi collegati ha smesso di andare avanti, quindi il collegamento è stato interrotto. Il tuo gioco riprende da dove era. Se succede di nuovo, invia «Salva diagnostica» (nel menu dell’audio) da entrambi i computer.",
   "linkplay.goUnionRoom": "Incontratevi nel Centro Pokémon: al bancone della Sala Unione (wireless DS).",
   "linkplay.relayed": "tramite relay (TURN)",
   "linkplay.resultDraw": "Pareggio",

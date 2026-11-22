@@ -40,6 +40,8 @@ export const reasonText = (code, name) => ({
   linkDesync: t('linkplay.desync2', 'The games fell out of step, so the link was stopped. To keep it fair, both of you are back at your saves from before the link – the session’s last save is kept as a backup in the run folder.'),
   linkStart: t('linkplay.startFailed', 'The linked games didn’t start.'),
   linkRejoinGone: t('linkplay.rejoinGone', 'Nobody answered – the others have left the link.'),
+  linkStalled: t('linkplay.stalled', 'The link stood still for half a minute – the games stopped hearing each other, so the link was stopped. Your game goes on from where it was.'),
+  linkStuck: t('linkplay.stuck', 'One of the linked games stopped running, so the link was stopped. Your game goes on from where it was. If it happens again, please send “Save diagnostics” (in the sound menu) from both computers.'),
   linkRejoinBusy: t('linkplay.rejoinBusy', 'The others’ games are in the middle of a wireless exchange right now, so you can’t rejoin – the link has ended.'),
   busy: t('linkplay.busy', '{name} is in another link right now.', { name }),
   linkNoAnswer: t('linkplay.noAnswer', '{name} didn’t answer.', { name }),

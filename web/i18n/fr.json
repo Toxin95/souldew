@@ -833,6 +833,8 @@
   "linkplay.desync2": "Les jeux se sont désynchronisés, le link a donc été arrêté. Pour rester équitable, vous revenez tous les deux à vos sauvegardes d’avant le link – la dernière sauvegarde de la session est gardée en copie dans le dossier du run.",
   "linkplay.rejoinGone": "Personne n’a répondu – les autres ont quitté le link.",
   "linkplay.rejoinBusy": "Les jeux des autres sont en plein échange sans fil, tu ne peux donc pas revenir – le link est terminé.",
+  "linkplay.stalled": "Le link est resté figé une demi-minute – les jeux ne s’entendaient plus, le link a donc été arrêté. Ton jeu reprend là où il en était.",
+  "linkplay.stuck": "L’un des jeux reliés s’est arrêté, le link a donc été arrêté. Ton jeu reprend là où il en était. Si cela se reproduit, envoie « Enregistrer le diagnostic » (dans le menu du son) depuis les deux ordinateurs.",
   "linkplay.goUnionRoom": "Retrouvez-vous au Centre Pokémon : comptoir du Club Union (sans fil DS).",
   "linkplay.relayed": "relayé (TURN)",
   "linkplay.resultDraw": "Match nul",
