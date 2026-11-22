@@ -26,6 +26,7 @@ import { soulLinkRulesFrom, hostSlotOf } from '/shared/hostrules.mjs';
 import { rulesWithDefaults } from '/shared/rules.mjs';
 import { useAccount, useFriends } from '../lib/account.mjs';
 import { acceptInvite } from '../lib/friendinvite.mjs';
+import { FindPartnerLink } from './findpartner.mjs';
 import { FirstSteps } from './firststeps.mjs';
 import { IntroSaveOption, useIntroSave } from './introsave.mjs';
 import { SHINY_RATES, NORMAL_RATE, MIN_RATE, cleanShiny, shinyOdds, shinyNeedsHigh } from '/shared/shiny.mjs';
@@ -796,6 +797,8 @@ function NewRun({ gameId, hackId, patchPick, romPick, friendPick, from, mode: se
             ${friends.filter((f) => f.user.id === invited[s]?.id || !Object.values(invited).some((x) => x?.id === f.user.id)).map((f) => html`<option value=${f.user.id}>${t('new.inviteFriendOpt', 'Invite {name}', { name: f.user.name })}</option>`)}</select>`}</label>`)}
       </div>
       ${!solo && Object.values(invited).some(Boolean) && html`<p class="small muted">${t('new.friendsInvited', 'Your friends get the invite in souldew as soon as the run is built.')}</p>`}
+      ${!solo && !from && !Object.values(invited).some(Boolean) && html`<${FindPartnerLink} game=${hack?.name || customHack || (game ? gameTitle(game) : rom?.title || '')}
+        partners=${count - 1} rules=${randomize && canRandomize ? 'Randomized' : ''} />`}
     </section>
 
     <section class="panel stack">

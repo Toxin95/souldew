@@ -64,6 +64,7 @@ import { HandheldView } from './views/handheld.mjs';
 import { railGroups, FOOT_SECTIONS } from './lib/railnav.mjs';
 import { accountEvent, useAccount, signIn, cancelSignIn, cosmeticsPackAccess } from './lib/account.mjs';
 import { useSocial } from './lib/socialapp.mjs';
+import { thankedFor } from './lib/pluspage.mjs';
 import { Avatar } from './views/social.mjs';
 import { initUiScale, watchUiScaleKeys, useUiScale, setUiScale, stepUi, suggestUiScale, uiScaleKeys } from './lib/uiscale.mjs';
 import { uiScaleLabel } from '/shared/uiscale.mjs';
@@ -1136,7 +1137,7 @@ function App() {
     : route.route !== 'play' ? route.route
     : showsSession && session ? playingIn : rp.run ? sectionOf(rp.run) : 'library';
   // souldew+ at the rail's foot says "thank you" to every member (supporter, souldew+, patron)
-  const thanks = !!social.signedIn && (social.me?.entitlement?.tier || 'none') !== 'none';
+  const thanks = !!social.signedIn && thankedFor(social.me?.entitlement);
   const NAV = [
     { id: 'library', label: t('nav.library', 'Library'), icon: 'library', accent: '#e0a458' },
     // the board's to-do count shows at the section of the open run
