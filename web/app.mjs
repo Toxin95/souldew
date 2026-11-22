@@ -431,11 +431,16 @@ function App() {
     return m;
   }, []);
   // Only re-renders when the inbox content actually changed (live snapshots arrive every frame).
+  const inboxNow = useRef(NO_INBOX);
+  // Takes the new inbox, or a function of the current one (the board's "Assign" / "Ignore" pass one – read as an object
+  // it would empty the whole inbox until the next snapshot refilled it).
   const setInbox = useCallback((x) => {
+    if (typeof x === 'function') x = x(inboxNow.current);
     const next = { inbox: x?.inbox || [], alerts: x?.alerts || [] };
     const key = JSON.stringify(next);
     if (key === inboxKey.current) return;
     inboxKey.current = key;
+    inboxNow.current = next;
     setInboxState(next);
   }, []);
 
