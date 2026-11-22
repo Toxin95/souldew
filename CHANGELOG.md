@@ -2,10 +2,8 @@
 
 `npm run release` takes the release notes from the section of the version being released.
 
-## Unreleased
+## 3.0.1
 
-- **“Assign” and “Ignore” in the Live tab's inbox no longer empty it for a moment.** Using either briefly cleared every
-  waiting Pokémon until the next live update brought them back.
 - **DS trades and battles: no more black screen for one of you.** When two players linked their running DS games
   (Gen 4 and 5) – “Trade” or “Battle” on the board, in the Union Room or anywhere else – the game of the player who
   had been playing longer (or used fast-forward more) went black right away and could stay black for minutes, with
@@ -107,6 +105,8 @@
   why). Now the play view says that showing partners needs the English version, a raid says "not in this version of
   the game yet" (it said "not in this ROM hack"), and the Battle button says battles go without a wager. Trading and
   battling in the Union Room work in every language.
+- **“Assign” and “Ignore” in the Live tab's inbox no longer empty it for a moment.** Using either briefly cleared every
+  waiting Pokémon until the next live update brought them back.
 
 ## 3.0.0
 
