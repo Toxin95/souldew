@@ -44,6 +44,37 @@
   item leaves the bag (given to a Pokémon to hold, used up), these games can keep its id in the slot with a count of 0.
   souldew took that for a sign it wasn't looking at the bag and said "souldew didn't find your
   bag in the game's memory" for every cheat (#45).
+- **A beaten trainer's team is never taken for yours any more** (#89). In HeartGold and SoulSilver, Platinum, Diamond and
+  Pearl in languages other than English, souldew finds your team by searching the game's memory. After a trainer
+  battle it could settle on the trainer's party left behind there, with every Pokémon of it at 0 HP, and say your
+  team was wiped and the Nuzlocke over. Now it takes only the team that belongs to your trainer in the game's save data.
+  And whatever game: a team with none of your Pokémon in it is held back until it has stood for a while outside a
+  battle (the game never swaps the whole team at once). A team where every Pokémon is down never comes in that way, so a
+  wrong read can't end a run.
+- **X/Y and Omega Ruby/Alpha Sapphire: souldew looks for your team when it isn't where it expects it** (ticket #37,
+  #82). souldew reads the team of these games at a fixed place per update, and for some players the team wasn't there
+  (no team at all for minutes) or a new catch never showed up, until they saved, reset and loaded the game again. Now,
+  when no team turns up for a while in the game, and once a while after the team was first read, souldew searches the
+  game's memory for its team and reads it there too; when that place gets a new Pokémon the old one doesn't show,
+  souldew moves over. "Save diagnostics" notes the search and where it found the team.
+- **Red and Blue: a catch that goes to the PC counts** (#83). With six Pokémon in your team, the game sends a catch to
+  the PC box, and souldew only read the team, so the catch was never filed for its area. souldew now also reads the
+  box you have chosen in the PC: a Pokémon that lands there right after a wild battle is filed under the place you are,
+  like one that joins the team.
+- **3DS: "Wild … not caught" no longer comes while you name your catch.** X/Y and the other 3DS games put a catch
+  into your team only after the Pokédex entry and the nickname screen, and souldew asked after 10 seconds. It now waits
+  a minute on the 3DS. And when you did press "Mark as spent" and that Pokémon turns up in your team within a few
+  minutes after all, souldew files it as the area's catch instead of keeping the area spent.
+- **A catch you enter by hand is linked to the Pokémon in your game** (ticket #37). Entering "Caught" on the board
+  left live tracking without a link to the Pokémon in the game: it only said "in box", and its level, HP and death
+  never came. Now the dialog shows the Pokémon of that species waiting in "From your game" (or in your team without an
+  area) and links it: the only one by itself, one of several by your pick, or none with "Don't link".
+- **DS games in other languages say what they can't do yet.** Showing partners in your game, raids and battling for
+  money read the game's memory at places known for the English (US) versions of Platinum and HeartGold/SoulSilver.
+  In other languages these were simply missing (two players with a French Platinum didn't see each other, with no word
+  why). Now the play view says that showing partners needs the English version, a raid says "not in this version of
+  the game yet" (it said "not in this ROM hack"), and the Battle button says battles go without a wager. Trading and
+  battling in the Union Room work in every language.
 
 ## 3.0.0
 
