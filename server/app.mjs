@@ -11,7 +11,7 @@ import { upgradeStep, backupInfo, majorOf } from './lib/upgrade.mjs';
 import { AUTO_SLOT, STATE_EXT, mtimeOf, statePath as statePathIn, rotateAutoState as rotateAutoStateIn } from './lib/statefiles.mjs';
 import { WEB_DIR, SHARED_DIR, CACHE_DIR, DATA_DIR, CONFIG_PATH, NODE_MODULES, DEV, LIBRARY_DIR } from './lib/paths.mjs';
 import { writeFileAtomic, httpError, safeFileName, safeJoin, realInside, logLine, readRange } from './lib/fsutil.mjs';
-import { detectJava, uprStatus, installUpr, runBridge, inspectRom } from './lib/toolchain.mjs';
+import { detectJava, uprStatus, installUpr, runBridge, inspectRom, javaDiagnostics, missingToolNow } from './lib/toolchain.mjs';
 import { preparePatchedRom, KNOWN_PATCHES } from './lib/roms.mjs';
 import { ROM_EXTENSIONS, PATCH_EXTENSIONS, isCtrExt, matchCatalog } from '../shared/romid.mjs';
 import { ALL_SLOTS, slotsOf, runMode } from '../shared/slots.mjs';
@@ -1322,8 +1322,7 @@ export function startServer({ port = 7373, host = '127.0.0.1', background = true
       // for the rest of the form comes from the catalog when UPR can't read the game
       const game = (catalog().games || []).find((g) => g.system === '3ds' && (g.serial === patched.header?.code || g.productCode === patched.header?.code || (g.titleIds || []).includes(patched.header?.titleId)));
       info = await inspectCtr(patched.path, patched.header, runBridge);
-      if (info.unsupported && !detectJava().ok) info.missingTool = 'java';
-      else if (info.unsupported && !uprStatus().installed) info.missingTool = 'upr';
+      if (info.unsupported && missingToolNow()) info.missingTool = missingToolNow();
       // outputSize: what one randomized game will take (its NCCH – a cartridge image is padded to 2/4 GB)
       return { patched: { crc: null, baseCrc: null, size: patched.size, outputSize: ncchSizeOf(patched.path), header: patched.header, patchName: null, system: '3ds' },
         info: { generation: game?.generation || null, ...info }, shiny: { ok: false, reason: 'game' }, log };
@@ -1812,6 +1811,8 @@ export function startServer({ port = 7373, host = '127.0.0.1', background = true
   // ---- 3DS in the built-in player ------------------------------------------------------------------------------
   route('GET', /^\/api\/ctr\/status$/, () => ({ tools: ctrToolsNow(), session: ctr.status() }));
   // "Save diagnostics": the graphics card, how the last 3DS / fast-player game ended and what its host wrote last
+  // "Save diagnostics": the Java check – every candidate's path (home shortened), how it ended, its first lines (#40)
+  route('GET', /^\/api\/diagnostics\/java$/, () => javaDiagnostics());
   route('GET', /^\/api\/diagnostics\/players$/, () => JSON.parse(redactHome(JSON.stringify({ ctr: { tools: ctrToolsNow(), inventory: ctrInventory(), ...ctr.diagnostics() }, native: native.diagnostics() }))));
   route('POST', /^\/api\/ctr\/start$/, async (req) => {
     const { rom, key, scale } = await readBody(req);
@@ -2383,7 +2384,6 @@ export function startServer({ port = 7373, host = '127.0.0.1', background = true
     }
   });
 
-  server.on('close', () => {
   // The players' host streams as WebSockets (#38: an endless HTTP response filled C:\Windows\Temp through antivirus
   // HTTP scanning): the same checks as the API (this computer's Host, the app's own Origin – a browser always sends one
   // for a WebSocket), then the session takes the socket as it took the response.
@@ -2407,6 +2407,7 @@ export function startServer({ port = 7373, host = '127.0.0.1', background = true
     const ws = acceptStream(req, socket);
     if (ws) sessions.attachStream(id, ws);
   });
+  server.on('close', () => {
     accounts.close();
     ctr.stop();
     azahar?.stop();

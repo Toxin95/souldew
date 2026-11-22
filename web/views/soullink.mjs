@@ -3,7 +3,7 @@ import { useApp, Modal, Led } from '../lib/ui.mjs';
 import { Icon } from '../lib/icons.mjs';
 import { t, ago, currentLang } from '../lib/i18n.mjs';
 import { api } from '../lib/api.mjs';
-import { buildLogText, serverErrorText } from '../lib/errors.mjs';
+import { buildLogText, serverErrorText, javaCrashText } from '../lib/errors.mjs';
 import { diag } from '../lib/diag.mjs';
 import { catalog, gameById, hackById, gameTitle, patchLabel, patchFits, patchDiag, genFromSystem } from '../lib/data.mjs';
 import { PRESETS, DEFAULT_VALUES, localizeRandomizer, randomSeed, sameSettings, withDefaults, fieldActive, fieldEnabled, forGen, buildValues, lockedOptions, valuesForGame } from '/shared/randomizer-options.mjs';
@@ -826,6 +826,7 @@ function NewRun({ gameId, hackId, patchPick, romPick, friendPick, from, mode: se
         : inspect.failed ? t('new.checkFailed', 'This combination of game and ROM hack doesn’t work – see the message above.')
         // (a hack with a randomizer of its own – Pokémon Quetzal: its new-game options)
         : hackNoUpr && hack?.ownRandomizer ? t('new.ownRandomizer', 'souldew can’t randomize {hack} – but the hack has a randomizer of its own: switch it on in the game’s options when you start a new game.', { hack: hack.name })
+        : inspect.info?.missingTool === 'javaCrash' ? javaCrashText(solo ? t('new.javaCrashSolo', 'You can still play the Nuzlocke without the randomizer.') : t('new.javaCrashLink', 'You can still play a regular SoulLink.'))
         : inspect.info?.missingTool === 'java' ? (solo ? t('new.noJavaSolo', 'Java wasn’t found, so the randomizer can’t run. Install Java (e.g. Temurin 21 from adoptium.net) and restart the app – or play the Nuzlocke without the randomizer.')
           : t('new.noJava', 'Java wasn’t found, so the randomizer can’t run. Install Java (e.g. Temurin 21 from adoptium.net) and restart the app – or play a regular SoulLink.'))
         : inspect.info?.missingTool === 'upr' ? (solo ? t('new.noUprSolo', 'The randomizer (Universal Pokémon Randomizer ZX) is missing – you can still play the Nuzlocke without it.')
