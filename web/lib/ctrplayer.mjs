@@ -474,6 +474,7 @@ function onFfSound(p) {
 // ---- memory (the regions the live reader needs – and the bag for the cheats – ten times a second) ---------------------
 let addresses = null;
 let extraRegions = []; // __emu.watch(): more regions on top of the game's (the bag's search, diagnostics, research)
+const extraByKey = new Map(); // (who asked for which: the bag, the party found, a search – each keeps its own)
 /** Tell the host what to read; → the regions asked for (at most 16 – the game's own first). */
 async function watchFor(titleId) {
   try {
@@ -1093,13 +1094,17 @@ window.__emu = {
   },
   /**
    * More memory to read (at most 16 regions of 64 KB together with the game's own) – the 3DS bag's search
-   * (shared/live/cheats.mjs locateCtrBag), diagnostics and research; replaces what was asked before. Resolves true
+   * (shared/live/cheats.mjs locateCtrBag), the party's (shared/live/gen67.mjs locateCtrParty), diagnostics and
+   * research; replaces what was asked before under the same `key`. Resolves true
    * once the host has sent all of them (read() has them then – unmapped ones read null), false when they didn't fit
    * in or no memory came.
    */
-  async watch(regions = []) {
+  async watch(regions = [], key = 'extra') {
     const want = regions.filter((r) => Number.isInteger(r.addr) && Number.isInteger(r.len) && r.len > 0 && r.len <= 65536);
-    extraRegions = want;
+    // `key`: whose regions these are – they replace only that one's (the party found stays while the bag is searched)
+    if (want.length) extraByKey.set(key, want);
+    else extraByKey.delete(key);
+    extraRegions = [...extraByKey.values()].flat();
     st.watching = '';
     if (!st.liveMemory || st.ended) return false;
     const sent = await watchFor(st.title && !/^0+$/.test(st.title) ? st.title : null);

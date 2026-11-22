@@ -14,7 +14,7 @@ import { applyCheat, cheatsFor, cheatBlock, cheatAllowed, bagLayoutKey, CHEATS, 
 import { CheatMenu, cheatConfirmText, cheatDoneText, cheatFailText } from './cheatmenu.mjs';
 import { DeathReveal, effectiveSpeed } from '../lib/reveal.mjs';
 import { MusicKeyTracker } from '/shared/live/location.mjs';
-import { probeGen67, runningVersion } from '/shared/live/gen67.mjs';
+import { probeGen67, runningVersion, locateCtrParty } from '/shared/live/gen67.mjs';
 import { PlayHome } from './playhome.mjs';
 import { PartyGrid } from './party.mjs';
 import { PartnerScreens, PartnerTiles, usePartnerLayout, useScreenShare } from './partnerscreen.mjs';
@@ -1187,12 +1187,29 @@ export function GameSession({ session, mode }) {
             // 3DS: memory comes in but no team for a minute – what each update's address holds goes into the diagnostics
             // once (ticket #21: a team that wasn't found any more after reopening the game), and when one turns up later
             if (entry.gen >= 6) {
+              // Gen 6: the party object searched for in the heap (gen67.mjs locateCtrParty) – when no known address has
+              // held a team for a while in the game (the place sign reads), at most every 3 minutes; and once, a while
+              // after the first team, to make sure no other party object is the game's (a catch that didn't show, #37).
+              // (only in the game: on the title screen the save's team is loaded but the party object isn't set up yet)
+              const searchParty = (why, team) => {
+                ctrNoTeam.searched = Date.now();
+                ctrNoTeam.searches = (ctrNoTeam.searches || 0) + 1;
+                locateCtrParty(ent, { read: e.read, watch: e.watch }, state, { team })
+                  .then((r) => r && diag('live', { type: 'ctrPartySearch', why, ...r }), () => {});
+              };
+              const canSearch = entry.gen === 6 && e.watch && !inBattle && !state.g67Search && !state.ctrBagSearch && (ctrNoTeam.searches || 0) < 6;
               if (res?.party?.length) {
-                if (ctrNoTeam.told && !ctrNoTeam.found) diag('live', { type: 'ctrTeamFound', after: Math.round((Date.now() - ctrNoTeam.since) / 1000), version: state.g67 != null ? entry.partyAddrs?.[state.g67]?.version || null : null, runs: state.ctrVersion ?? null });
+                if (ctrNoTeam.told && !ctrNoTeam.found) diag('live', { type: 'ctrTeamFound', after: Math.round((Date.now() - ctrNoTeam.since) / 1000), version: state.g67 != null ? entry.partyAddrs?.[state.g67]?.version || null : null, found: state.g67Extra?.[0]?.addr && state.g67 >= (entry.partyAddrs?.length || 0) ? state.g67Extra[0].addr : null, runs: state.ctrVersion ?? null });
                 ctrNoTeam.found = true;
                 ctrNoTeam.since = 0;
+                ctrNoTeam.teamAt ||= Date.now();
+                if (canSearch && hereNow && !ctrNoTeam.checked && Date.now() - ctrNoTeam.teamAt > 45000) {
+                  ctrNoTeam.checked = true;
+                  searchParty('check', res.party);
+                }
               } else if (!e.paused?.()) {
                 ctrNoTeam.since ||= Date.now();
+                if (canSearch && hereNow && Date.now() - ctrNoTeam.since > 20000 && Date.now() - (ctrNoTeam.searched || 0) > 180000) searchParty('noTeam', lastTeam);
                 if (!ctrNoTeam.told && Date.now() - ctrNoTeam.since > 60000) {
                   ctrNoTeam.told = true;
                   const rd = romDataNow();
@@ -1266,7 +1283,7 @@ export function GameSession({ session, mode }) {
                 const balls = readBalls(ent, e.read, state);
                 if (balls > 0) bw.seen(party.filter((m) => m?.key && m.maxHp > 0 && m.hp === 0).map((m) => m.key));
                 // a 3DS bag that isn't where souldew knows it: searched for nearby, at most once a minute
-                else if (balls === null && ent.platform === '3ds' && e.watch && Date.now() - (state.ctrBagSearched || 0) > 60000) {
+                else if (balls === null && ent.platform === '3ds' && e.watch && !state.g67Search && Date.now() - (state.ctrBagSearched || 0) > 60000) {
                   state.ctrBagSearched = Date.now();
                   locateCtrBag(ent, { read: e.read, watch: e.watch }, state).then((r) => r && diag('live', { type: 'ctrBagSearch', ...r }), () => {});
                 }

@@ -15,6 +15,12 @@
   And whatever game: a team with none of your Pokémon in it is held back until it has stood for a while outside a
   battle (the game never swaps the whole team at once). A team where every Pokémon is down never comes in that way, so a
   wrong read can't end a run.
+- **X/Y and Omega Ruby/Alpha Sapphire: souldew looks for your team when it isn't where it expects it** (ticket #37,
+  #82). souldew reads the team of these games at a fixed place per update, and for some players the team wasn't there
+  (no team at all for minutes) or a new catch never showed up, until they saved, reset and loaded the game again. Now,
+  when no team turns up for a while in the game, and once a while after the team was first read, souldew searches the
+  game's memory for its team and reads it there too; when that place gets a new Pokémon the old one doesn't show,
+  souldew moves over. "Save diagnostics" notes the search and where it found the team.
 
 ## 3.0.0
 
