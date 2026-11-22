@@ -219,6 +219,10 @@ function buildGb() {
   run('make', [...mk, 'clean'], { stdio: 'ignore' }); // (its objects sit next to the sources: none of another platform's)
   run('make', [...mk, `-j${jobs}`]);
   copyFileSync(join(bin, SOURCES.gb.file), join(out, SOURCES.gb.file));
+  // SameBoy's libretro Makefile links with -install_name set to the full build path (LC_ID_DYLIB) – the prefix map
+  // can't reach that, so the shipped core would carry the build folder (the account name). Nothing links against it
+  // (libretro cores are dlopen'ed by path), so a plain name is enough.
+  if (os === 'darwin' && !cross) run('install_name_tool', ['-id', `@rpath/${SOURCES.gb.file}`, join(out, SOURCES.gb.file)]);
   license('gb', src);
 }
 
