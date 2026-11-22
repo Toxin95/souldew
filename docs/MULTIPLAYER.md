@@ -302,7 +302,8 @@ computer, and each game goes on alone from where it was (`resumeSolo`, as after 
   same consoles, so all see it at the same frame → `linkStuck`. Until a console has finished its first frame, the host
   sends no picture of it (the page keeps the game as it was before the link instead of a black screen).
 
-What happened in 3.0.0 (tickets #36 HeartGold ↔ HeartGold, #44 Pearl): the DS backend ordered the consoles by their own
+What happened in 3.0.0 (tickets #36 and #47 HeartGold, #44 Pearl, GitHub #88 Platinum – trades and battles, Union Room and
+Pokémon Center, all reported from Windows, reproduced on a Mac with the 3.0.0 binaries): the DS backend ordered the consoles by their own
 emulated clocks (`SysTimestamp`, time since the console was switched on). Consoles that join from running games have
 been on for very different times – minutes apart, much more with fast-forward – so the one on longer stood still
 until the others caught up; its picture stayed at the link host's empty (black) buffer, frames and hashes went on

@@ -4,9 +4,10 @@
 
 ## Unreleased
 
-- **DS trades: no more black screen for one of you.** When two players linked their running DS games (Gen 4 and 5) –
-  “Trade” on the board, then the Union Room – the game of the player who had been playing longer (or used fast-forward
-  more) could stay black for minutes, with nothing said, until “Leave link”. The linked consoles were lined up by how
+- **DS trades and battles: no more black screen for one of you.** When two players linked their running DS games
+  (Gen 4 and 5) – “Trade” or “Battle” on the board, in the Union Room or anywhere else – the game of the player who
+  had been playing longer (or used fast-forward more) went black right away and could stay black for minutes, with
+  nothing said, until “Leave link”. The linked consoles were lined up by how
   long each had been switched on, so the older one waited for the younger one to catch up. Now every console's clock
   starts together when the link starts, and both games play on at once. Tested with Diamond and Pearl linked from
   games running for very different times, from inside the Union Room, through a whole trade.
