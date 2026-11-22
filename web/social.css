@@ -100,6 +100,9 @@ button.rail-me.rail-signin:disabled { cursor: progress; opacity: .8; }
 .fr-invite { margin-right: 8px; opacity: 0; transition: opacity .15s; }
 .fr-row:hover .fr-invite, .fr-row.on .fr-invite, .fr-invite:focus-visible { opacity: 1; }
 .fr-empty { padding: 18px 8px; }
+/* "No partner yet? Find one on the souldew Discord" (views/findpartner.mjs) – a quiet line, never a section */
+.lfg-link { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0; }
+.lfg-link svg { flex: none; }
 .fr-pane { min-width: 0; }
 .fr-card { padding: 0; overflow: hidden; }
 .fr-card-banner { height: 108px; }

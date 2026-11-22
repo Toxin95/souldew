@@ -20,6 +20,7 @@ import { coverOf } from './library.mjs';
 import { takenSlots } from './invitecode.mjs';
 import { Avatar, presenceText, canAskToJoin, Badges, CodeChip, TitlePlate, achTitle } from './social.mjs';
 import { Banner, Nameplate } from '../lib/cosmetics/components.mjs';
+import { FindPartnerLink } from './findpartner.mjs';
 
 /** The cover of a game a friend plays (by its short title – presence carries no ids). */
 export function coverForTitle(library, title) {
@@ -341,7 +342,8 @@ export function FriendsView() {
         </div>`)}
         ${data && !data.friends.length && html`<div class="fr-empty stack-s"><b>${t('fr.none', 'No friends yet')}</b>
           <span class="small muted">${t('fr.noneText', 'Add your SoulLink partners by their handle or friend code – then you see who’s online and invite them with one click.')}</span>
-          <div><button class="btn small" onClick=${() => setAdding(true)}><${Icon} name="plus" size=${14} />${t('fr.add', 'Add friend')}</button></div></div>`}
+          <div><button class="btn small" onClick=${() => setAdding(true)}><${Icon} name="plus" size=${14} />${t('fr.add', 'Add friend')}</button></div>
+          <${FindPartnerLink} /></div>`}
         ${data?.outgoing?.length > 0 && html`<div class="fr-group"><h3 class="fr-head">${t('fr.sent', 'Sent requests')}</h3>
           ${data.outgoing.map((r) => html`<div class="fr-req row nowrap" key=${r.id}><${Avatar} user=${r.to} size=${30} />
             <span class="grow stack-s fr-text"><b class="ellipsis">${r.to?.name}</b><span class="small muted">${t('fr.waitingAccept', 'waiting for them to accept')}</span></span>

@@ -24,6 +24,22 @@
 - **Diagnostics include the link.** “Save diagnostics” now records the link session too – when it started, from which
   games, the connection, every console's frames, the buttons sent and received, waits and how it ended – so a report
   about a trade or battle shows where it went wrong.
+- **Try souldew+ free for 7 days.** The souldew+ page offers it once per Discord account (if it's at least 30 days old
+  and never had souldew+ or Legend): no payment details, nothing renews, nothing to cancel. While it runs, the page and
+  Settings › Account show “Trial · ends …” and how to keep it on Buy Me a Coffee; when it ends, souldew goes back to
+  its free looks and your picks wait for you – exactly like an ended membership. Once it's used, the offer is gone.
+- **No partner yet? Find one on the souldew Discord.** When you set up a SoulLink without a souldew friend in the other
+  seats, and on the Friends page while you have no friends there yet, a small link opens the partner finder: game,
+  how many partners, language and time zone, when you play and rules – prefilled where souldew knows them. “Post on
+  Discord” puts it in #find-a-partner under your Discord name, with the same “I'm in” button and private group thread
+  as the bot's own form, and opens it. Signed out, the link offers the sign-in instead.
+- **Your souldew+ tier on Discord follows your account.** Once a membership is on your souldew account, the matching
+  role – 💧 Supporter, 🔗 souldew+ (also during the trial and with the Lifetime role) or 🏆 Legend – comes on the souldew
+  Discord by itself within about 10 minutes, and goes again when the tier does.
+- **A daily anonymous usage count**, under the same switch as “playing now” (Settings › Online): once a day souldew
+  tells the team that it was used – version, system, processor, the week of first use and on how many recent days it
+  ran, with a random value that's new every day. No id for you or your computer. What exactly is sent:
+  [docs/PRIVACY.md](docs/PRIVACY.md#daily-usage-count).
 - **Cheats in Sun/Moon and Ultra Sun/Ultra Moon no longer stop after you give an item away.** When the last one of an
   item leaves the bag (given to a Pokémon to hold, used up), these games can keep its id in the slot with a count of 0.
   souldew took that for a sign it wasn't looking at the bag and said "souldew didn't find your
