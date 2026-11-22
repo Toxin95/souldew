@@ -24,6 +24,7 @@ import { LocationSign, readHere, nextHere, areaOfHere, musicInfo, loadRomLocatio
 import { FeatureCheck, romFeatures } from '/shared/live/features.mjs';
 import { gymCapsFamily } from '/shared/routes.mjs';
 import { shiftEntry } from '/shared/live/romwram.mjs';
+import { TeamGuard } from '/shared/live/teamguard.mjs';
 import { RulesTab } from './board.mjs';
 import { ChoicesTab } from './playtogether.mjs';
 import { LaunchStage, insertCover } from './launchstage.mjs';
@@ -1112,6 +1113,8 @@ export function GameSession({ session, mode }) {
       let fcOwn = null; // the ROM data fc was made from
       const ctrNoTeam = { since: 0, told: false, found: false }; // 3DS: since when memory comes without a team (diagnostics)
       let seenKeys = null; // the Pokémon of the first team read – one that joins later is a catch
+      const teamGuard = new TeamGuard();
+      let lastTeam = null; // the team the guard let through last
       let lastBalls = 0; // when the bag was last looked at for Poké Balls
       setFeatures(null);
       const tick = () => {
@@ -1157,7 +1160,15 @@ export function GameSession({ session, mode }) {
             // ROM's types and badge flags (the battle's current types, Gen 3 badges)
             const own = romOwnNow();
             const TT = (sp ? T.withSpecies(sp, own) : T).withRom(own).withShinyOdds(target.shinyOdds);
-            const res = readLiveParty(ent, e.read, TT, state);
+            const read0 = readLiveParty(ent, e.read, TT, state);
+            // a team with none of the last team's Pokémon is held back until it has stood outside a battle for a while
+            // (shared/live/teamguard.mjs, #89: an opponent's party read as the player's must not end the run)
+            // (while one is held, whether a battle runs is asked with the team let through last – the battle readers go by it)
+            if (read0?.party && teamGuard.pending && lastTeam) inBattle = !!readLiveBattle(ent, e.read, TT, state, lastTeam);
+            const kept = read0?.party ? teamGuard.see(read0.party, { inBattle }) : read0?.party;
+            if (kept?.length) lastTeam = kept;
+            if (read0?.party && !kept && teamGuard.held === 1) diag('live', { type: 'teamSwapHeld', size: read0.party.length, down: read0.party.filter((m) => m && m.maxHp > 0 && m.hp === 0).length, inBattle });
+            const res = read0?.party && !kept ? null : read0;
             // 3DS: the party's address moved to another update's (a copy that stood still, ticket #35)
             for (const ev of state.g67Log?.splice(0) || []) diag('live', { type: 'ctrPartySwitch', ...ev, runs: state.ctrVersion ?? null });
             // (again when the ROM's data came only on a later try – the server couldn't read the file at first)

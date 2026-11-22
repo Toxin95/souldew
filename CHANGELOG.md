@@ -8,6 +8,13 @@
   item leaves the bag (given to a Pokémon to hold, used up), these games can keep its id in the slot with a count of 0.
   souldew took that for a sign it wasn't looking at the bag and said "souldew didn't find your
   bag in the game's memory" for every cheat (#45).
+- **A beaten trainer's team is never taken for yours any more** (#89). In HeartGold and SoulSilver, Platinum, Diamond and
+  Pearl in languages other than English, souldew finds your team by searching the game's memory. After a trainer
+  battle it could settle on the trainer's party left behind there, with every Pokémon of it at 0 HP, and say your
+  team was wiped and the Nuzlocke over. Now it takes only the team that belongs to your trainer in the game's save data.
+  And whatever game: a team with none of your Pokémon in it is held back until it has stood for a while outside a
+  battle (the game never swaps the whole team at once). A team where every Pokémon is down never comes in that way, so a
+  wrong read can't end a run.
 
 ## 3.0.0
 

@@ -919,6 +919,17 @@ function readDS(entry, read, T, state) {
       return null;
     }
   }
+  // 1b) Gen 4 in the other languages (no pointer of their own): the save data through the NitroSDK module params
+  // (*(0x02000BA8)+0x20 on HGSS/Pt, *(0x02000B70)+0x20 on DP) – its party, once the trainer there owns a Pokémon of it
+  if (!core && gen === 4 && entry.scanOnly) {
+    const own = savedParty4(entry, read, T);
+    if (own) {
+      state.saveBase = own.base;
+      state.partyAddr = own.core;
+      state.ownedTeam = true;
+      return dsResult(entry, read, T, state, own.party);
+    }
+  }
   // 2) remembered address from a previous scan
   if (state.partyAddr) {
     const party = readPartyCore(read, state.partyAddr, size, gen, T);
@@ -930,13 +941,39 @@ function readDS(entry, read, T, state) {
   state.lastScan = Date.now();
   const ram = read(0x02000000, 0x400000);
   if (!ram) return null;
-  const hits = scanPartyCore(ram, size, gen, T);
+  const hits = scanPartyCore(ram, size, gen, T, { limit: 24 });
   if (!hits.length) return null;
-  // The canonical party is the lowest stable hit; battle copies come and go.
-  state.partyAddr = hits[0];
+  // The canonical party is the lowest stable hit; battle copies come and go. Gen 4: the one in the save data of a
+  // trainer who owns a Pokémon of it – the lowest hit may be an opponent's party left in the heap after a battle (#89:
+  // a German HeartGold took the beaten trainer's team for the player's and the run ended)
+  const owned = gen === 4 ? hits.find((a) => ownedCopy(entry, read, T, a, size)) : null;
+  state.partyAddr = owned || hits[0];
   const party = readPartyCore(read, state.partyAddr, size, gen, T);
   if (!party) return null;
   return scannedResult(entry, read, T, state, party, size);
+}
+
+/** Gen 4: the party core at `addr` lies in a save image whose trainer owns a Pokémon of it. */
+function ownedCopy(entry, read, T, addr, size) {
+  if (!entry.partyMonsOffset) return false;
+  const party = readPartyCore(read, addr, size, 4, T);
+  return !!party && !!ownsTeam(entry, read, addr - (hex(entry.partyMonsOffset) - 8), party);
+}
+
+/**
+ * Gen 4 (any language): the save data the NitroSDK module params lead to and the party in it – only when the trainer in
+ * its general block owns a Pokémon of that party. → { base, core, party } or null.
+ */
+function savedParty4(entry, read, T) {
+  if (!entry.partyMonsOffset) return null;
+  const mp = read(/^(diamond|pearl)/.test(entry.id) ? 0x02000b70 : 0x02000ba8, 4);
+  const mpv = mp ? u32le(mp, 0) : 0;
+  const p = mpv >= 0x02000000 && mpv < 0x02400000 ? read(mpv + 0x20, 4) : null;
+  const base = p ? u32le(p, 0) : 0;
+  const core = base + hex(entry.partyMonsOffset) - 8;
+  if (base < 0x02000000 || core + 8 >= 0x02400000) return null;
+  const party = readPartyCore(read, core, 236, 4, T);
+  return party && ownsTeam(entry, read, base, party) ? { base, core, party } : null;
 }
 
 /** Party, PC boxes and badges of a DS game whose party was found at state.partyAddr. */
@@ -961,8 +998,16 @@ function scannedResult(entry, read, T, state, party, size) {
     const saved = readPartyCore(read, own, size, entry.gen, T);
     if (saved) {
       state.partyAddr = own;
+      state.ownedTeam = true;
       return dsResult(entry, read, T, state, saved);
     }
+  }
+  if (base) state.ownedTeam = true;
+  // Once the team was found in its trainer's save data this session, a party without one is no team of the player's:
+  // an opponent's party in the heap, a battle's copy (#89). Nothing rather than that – the search goes on.
+  else if (state.ownedTeam) {
+    state.partyAddr = null;
+    return null;
   }
   return dsResult(entry, read, T, state, party);
 }
