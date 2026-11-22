@@ -30,6 +30,15 @@ local wireless in Diamond/Pearl/Platinum, HeartGold/SoulSilver, Black/White and 
     stood still until the others caught up – in 3.0.0 its player saw black for minutes (tickets #36, #44). The base
     comes from the agreed state, so it is the same on every peer; whole-session states carry it (`LMP2`; an `LMP1`
     state of 3.0.0 keeps the old meaning).
+  - **Every console finishes every session frame** (since 3.0.1). A waiting console times out only once every other
+    console passed its horizon; when the one holding it back already stood at its frame end, 3.0.0 ended the session
+    frame there, and in a wireless exchange the consoles took turns finishing frames: the games ran at half speed for
+    the whole Union Room visit and the input queue (8 frames) overflowed, dropping presses. `run_frame` now lets that
+    console start its next frame right away (with its next buttons if queued, else the ones it holds) until every
+    console has finished one more frame. The order of what the consoles do is the same; only the frames are counted
+    out fairly. Recordings made with 3.0.0 replay differently (re-recorded: Diamond ↔ Pearl trade from two running
+    games 4,000 frames apart, both linked inside the Union Room). Measured: 2 consoles through a Union Room trade
+    170 session frames a second on an M-series Mac (2.8× real time, was 266 at half the work).
   - **A game whose wireless was on** (standing in the Union Room alone when the link started): melonDS powers the Wi-Fi
     chip on from the state without calling `MP_Begin`, so such a console never received anything. The backend now
     reads the chip's power (POWCNT2 and `W_POWER_US`) after loading a state and counts it as connected.

@@ -62,7 +62,11 @@ const MAX_SAVE_BYTES = 4 * 1024 * 1024; // (server/lib/native.mjs MAX_SAVE: a pa
 // A link that stands still never does so silently (souldew 3.0.0: a DS console stood still, its player saw black and
 // nothing was said): our link host waiting this long at one frame for a partner's buttons ends the link with a message
 // (both sides – the other one waits for ours by then too), and each game goes on alone. A rejoin under way restarts it.
-export const STALL_MS = 30 * 1000;
+export const STALL_MS = 60 * 1000;
+// What this build's DS link host does differently from souldew 3.0.0 (the consoles' session clock, docs/MULTIPLAYER-DS.md):
+// a 3.0.0 computer would compute other consoles – a DS link only starts when every seat says it has this.
+export const DS_CLOCK_CAP = 'dsclock1';
+const hasDsClock = (caps) => Array.isArray(caps) && caps.includes(DS_CLOCK_CAP);
 const DIAG_EVERY_MS = 10 * 1000; // a running session's state into the diagnostics (Help › "Save diagnostics")
 // A session the others are told about ('linked'): from the moment every seat said yes until it ends. While only invited,
 // a player is asked once more – the "in another link" answer covers that short moment.
@@ -287,7 +291,7 @@ export class LinkSessions {
     const sid = this.state.sid;
     this.inviteTimer = setTimeout(() => this.state.sid === sid && this.state.phase === 'inviting' && this._fail('linkNoAnswer'), INVITE_TIMEOUT_MS);
     this.inviteTimer?.unref?.();
-    this._send({ t: 'invite', kind, seats, sha1: { [this.me]: own.sha1 }, crc: { [this.me]: own.crc || null }, system: c.system, caps: [WAGER_CAP], wager: bet, format: fmt }, { relayToo: true });
+    this._send({ t: 'invite', kind, seats, sha1: { [this.me]: own.sha1 }, crc: { [this.me]: own.crc || null }, system: c.system, caps: [WAGER_CAP, DS_CLOCK_CAP], wager: bet, format: fmt }, { relayToo: true });
   }
 
   /** Answer an invite – `wager`: the most this player puts in (less than offered: the wager is lowered for everybody). */
@@ -298,7 +302,7 @@ export class LinkSessions {
     const own = c?.slots?.[this.me];
     // (Game Boy and Game Boy Color games share the cable: Blue ↔ Yellow, Gold ↔ Crystal …)
     const bad = !c?.tool ? 'linkMissing' : !c.supported || !sameLinkSystem(c.system, st.system) ? 'linkSystem' : !own?.rom ? 'linkOwnMissing'
-      : this.block((st.seats || []).filter((s) => s !== this.me), st.kind);
+      : st.system === 'nds' && !st.dsClock ? 'linkOlder' : this.block((st.seats || []).filter((s) => s !== this.me), st.kind);
     if (bad) {
       this._send({ t: 'refuse', reason: bad }, { relayToo: true });
       return this._set({ phase: 'ended', error: bad, ended: { reason: bad, mine: true, at: Date.now() } });
@@ -313,7 +317,7 @@ export class LinkSessions {
       st.wager.accepts[this.me] = stake;
     }
     this._set({ phase: 'preparing' });
-    this._send({ t: 'accept', sha1: { [this.me]: own.sha1 }, crc: { [this.me]: own.crc || null }, caps: [WAGER_CAP], wager: stake }, { relayToo: true });
+    this._send({ t: 'accept', sha1: { [this.me]: own.sha1 }, crc: { [this.me]: own.crc || null }, caps: [WAGER_CAP, DS_CLOCK_CAP], wager: stake }, { relayToo: true });
     this._resolve();
   }
 
@@ -532,6 +536,7 @@ export class LinkSessions {
         wager: { offer: m.kind === 'battle' && Array.isArray(m.caps) && m.caps.includes(WAGER_CAP) ? Math.max(0, Math.floor(Number(m.wager) || 0)) : 0, accepts: {},
           caps: { [m.from]: Array.isArray(m.caps) && m.caps.includes(WAGER_CAP) } },
         format: m.kind === 'battle' && ['single', 'double', 'multi'].includes(m.format) ? m.format : null,
+        dsClock: hasDsClock(m.caps), // (the inviter's build links DS consoles the way this one does)
       });
     }
     if (m.sid !== st.sid) return;
@@ -540,6 +545,7 @@ export class LinkSessions {
     if (m.t === 'bye') return this._end(m.reason || 'left');
     if (m.t === 'accept') {
       if (typeof m.sha1?.[m.from] !== 'string') return;
+      if (st.system === 'nds' && !hasDsClock(m.caps)) return this._fail('linkOlder'); // (a 3.0.0 partner: its consoles would differ)
       st.sha1[m.from] = m.sha1[m.from];
       st.crc[m.from] = m.crc?.[m.from] || null;
       st.accepted[m.from] = true;

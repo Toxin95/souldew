@@ -122,7 +122,7 @@ bool solo = false;    // one console alone (see the header)
 int lastHost = -1;    // the seat that sent the last CMD frame (LocalMP's LastHostID)
 
 /** Pick the console that runs next (lock held). Returns -1 when the session frame is over. */
-int pick() {
+int pick(int *doneBest = nullptr) {
   int best = -1;
   u64 bv = 0;
   int bp = 0;
@@ -138,6 +138,7 @@ int pick() {
     }
     if (best < 0 || v < bv || (v == bv && p < bp)) best = i, bv = v, bp = p;
   }
+  if (doneBest) *doneBest = best >= 0 && seats[best].st == St::Done ? best : -1;
   if (best < 0 || seats[best].st == St::Done) return -1;
   return best;
 }
@@ -403,16 +404,37 @@ void d_set_input(int seat, link_input in) {
   while (seats[seat].inputs.size() > 8) seats[seat].inputs.pop_front();
 }
 
+/**
+ * One session frame: every console finishes one more frame. A console that waits mid-frame for a packet times out only
+ * once every other console passed its horizon – and the one that holds it back may already be at its frame end. That
+ * one then starts its next frame right away (with its next buttons if they are queued, else the ones it holds), so the
+ * waiting one can go on. (souldew 3.0.0 ended the session frame there instead: in a wireless exchange – the whole Union
+ * Room – the consoles took turns finishing their frames, the games ran at half speed and the input queue overflowed.)
+ * The order of everything the consoles do is the same either way; only the frames are counted out fairly.
+ */
 void d_run_frame() {
   std::unique_lock<std::mutex> lk(lock);
-  for (int i = 0; i < nseats; i++)
+  u32 target[LINK_MAX_SEATS];
+  for (int i = 0; i < nseats; i++) {
+    target[i] = seats[i].frames + 1;
     if (seats[i].st == St::Done) seats[i].st = St::Ready; // the next frame (a console still waiting mid-frame goes on)
-  const int next = pick();
-  if (next < 0) return;
-  baton = next;
-  seats[next].st = St::Running;
-  cv.notify_all();
-  cv.wait(lk, [&] { return baton == -1; });
+  }
+  for (int ahead = 0;;) {
+    int done = -1;
+    const int next = pick(&done);
+    if (next < 0) {
+      bool all = true;
+      for (int i = 0; i < nseats; i++) all = all && seats[i].frames >= target[i];
+      // (a console never runs more than a few frames ahead: the others' waits end within 4 ms of emulated time)
+      if (all || done < 0 || ++ahead > 3 * nseats) return;
+      seats[done].st = St::Ready; // the console holding the others back starts its next frame now
+      continue;
+    }
+    baton = next;
+    seats[next].st = St::Running;
+    cv.notify_all();
+    cv.wait(lk, [&] { return baton == -1; });
+  }
 }
 
 void d_video(int seat, const uint32_t **px, unsigned *w, unsigned *h, unsigned *stride) {

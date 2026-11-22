@@ -293,8 +293,8 @@ Since November 2026 (branch `feat/engine`, Settings › Emulators › **"souldew
 
 **A stall is never silent** (since 3.0.1). Two ways a link can stand still, both end it with a message on every
 computer, and each game goes on alone from where it was (`resumeSolo`, as after "Leave link"):
-- *Lockstep:* our host waits at one frame for a partner's buttons (`wait`, every 250 ms) for 30 s (`STALL_MS` in
-  `web/lib/linksession.mjs`; a partner rejoining restarts it) → "The link stood still for half a minute …"
+- *Lockstep:* our host waits at one frame for a partner's buttons (`wait`, every 250 ms) for 60 s (`STALL_MS` in
+  `web/lib/linksession.mjs`; a partner rejoining restarts it) → "The link stood still for a minute …"
   (`linkStalled`, a `bye` tells the others – by then they wait for ours too).
 - *A console:* frames go on but one console doesn't finish them (a DS console can stop mid-frame for a wireless packet –
   never for long by design). The link host compares each console's finished frames with the session's (`frames()` in
@@ -308,7 +308,10 @@ been on for very different times – minutes apart, much more with fast-forward 
 until the others caught up; its picture stayed at the link host's empty (black) buffer, frames and hashes went on
 (nothing waited, nothing differed), and nobody was told. Every e2e had started both consoles at the same moment (from
 saves, or states exported at one frame of a recording), so it never showed. Fixed with a session clock per console
-(MULTIPLAYER-DS.md); the diagnostics now carry the link (`diag('link', …)`: start, every 10 s the frame / each
+(MULTIPLAYER-DS.md). Found on the way: in a wireless exchange the DS consoles finished only every other session
+frame (half speed in the Union Room, dropped presses) – fixed too, which is what makes "behind the session" a reliable
+sign of a stuck console. A 3.0.0 partner computes other DS consoles: the invite/accept carry the cap `dsclock1`, a DS
+link without it on every seat doesn't start (`linkOlder`, "update souldew on both computers"); the diagnostics now carry the link (`diag('link', …)`: start, every 10 s the frame / each
 console's `done` / `have` / buttons sent and received / last frame received per seat, waits, `stuck`, the end).
 
 **Desync detection.**

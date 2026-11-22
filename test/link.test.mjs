@@ -294,7 +294,7 @@ function browserGlobals() {
 }
 
 /** Two pages of one run (p1 = Sam, p2 = Tim): their channel, their servers (fetch), what reached the link hosts. */
-async function pair({ missingOnB = false, seamless = false, binary = false, saveStatus = 200, consoles = null, oldB = false, rules = {}, third = null, beforeRestore = undefined } = {}) {
+async function pair({ missingOnB = false, seamless = false, binary = false, saveStatus = 200, consoles = null, oldB = false, rules = {}, third = null, beforeRestore = undefined, system = 'gba' } = {}) {
   const g = browserGlobals();
   const { LinkSessions } = await import('../web/lib/linksession.mjs');
   const roms = { p1: 'a'.repeat(40), p2: 'b'.repeat(40), p3: 'c'.repeat(40) };
@@ -330,7 +330,7 @@ async function pair({ missingOnB = false, seamless = false, binary = false, save
     const s = server[who];
     const body = opts.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : null;
     const json = (v) => ({ ok: true, status: 200, json: async () => v });
-    if (url.startsWith('/api/link/check')) return json({ tool: true, supported: true, system: 'gba', slots: { [who]: { rom: true, sha1: roms[who], crc: null } } });
+    if (url.startsWith('/api/link/check')) return json({ tool: true, supported: true, system, slots: { [who]: { rom: true, sha1: roms[who], crc: null } } });
     if (url === '/api/link/resolve') return json({ seats: {}, missing: s.missing });
     if (url === '/api/link/pick') { s.missing = []; return json({ ok: true }); }
     if (url.startsWith('/api/runs/')) return { ok: saveStatus === 200, status: saveStatus, arrayBuffer: async () => new TextEncoder().encode(`save of ${who}`).buffer };
@@ -602,7 +602,7 @@ test('linksession: hashes differ → the session ends on both, each run\'s save 
   A.stop(), B.stop();
 });
 
-test('linksession: a link that stands still is never silent – waiting at one frame for half a minute ends it on both with a message, each game goes on', async () => {
+test('linksession: a link that stands still is never silent – waiting at one frame for a minute ends it on both with a message, each game goes on', async () => {
   const { A, B, g, settle, closed, emuLog } = await pair({ seamless: true });
   const { STALL_MS } = await import('../web/lib/linksession.mjs');
   const { diagDump } = await import('../web/lib/diag.mjs');
@@ -628,7 +628,7 @@ test('linksession: a link that stands still is never silent – waiting at one f
   A.stall.since -= STALL_MS;
   await A._in({ t: 'rejoin', sid: A.state.sid, from: 'p2' }).catch(() => {});
   assert.equal(A.stall, null);
-  // still at frame 700 half a minute later: the link ends – on both (the bye), with the message, each game alone again
+  // still at frame 700 a minute later: the link ends – on both (the bye), with the message, each game alone again
   g.post({ type: 'emu-link-wait', seats: 2, frame: 700, ms: 250 });
   await settle(50);
   A.stall.since -= STALL_MS;
@@ -651,6 +651,29 @@ test('linksession: a link that stands still is never silent – waiting at one f
   assert.ok(log.some((e) => e.type === 'end' && e.reason === 'linkStalled'));
   assert.ok(log.some((e) => e.type === 'start' && e.fromState.length === 2), 'both seats from the running games');
   A.stop(), B.stop();
+});
+
+test('linksession, DS: a partner on souldew 3.0.0 (no session clock) – the link doesn\'t start, both are told to update', async () => {
+  // (oldB: everything to and from B goes without caps, as an older build sends it)
+  const { A, B, settle } = await pair({ system: 'nds', oldB: true });
+  await A.invite('trade', ['p2']);
+  await settle(100);
+  await B.accept();
+  await settle(800);
+  assert.equal(B.state.phase, 'ended');
+  assert.equal(B.state.ended.reason, 'linkOlder');
+  assert.equal(A.state.phase, 'ended');
+  assert.equal(A.state.ended.reason, 'linkOlder');
+  A.stop(), B.stop();
+  // the same builds: a DS link goes ahead
+  const p = await pair({ system: 'nds' });
+  await p.A.invite('trade', ['p2']);
+  await p.settle(100);
+  await p.B.accept();
+  await p.settle(3500);
+  assert.equal(p.A.state.phase, 'running');
+  assert.equal(p.B.state.phase, 'running');
+  p.A.stop(), p.B.stop();
 });
 
 test('linksession: a console the link host reports stuck ends the link on both with a message (never a silent black game)', async () => {

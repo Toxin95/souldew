@@ -10,9 +10,14 @@
   long each had been switched on, so the older one waited for the younger one to catch up. Now every console's clock
   starts together when the link starts, and both games play on at once. Tested with Diamond and Pearl linked from
   games running for very different times, from inside the Union Room, through a whole trade.
+- **The Union Room at full speed.** While the linked DS games talked to each other (the whole time in the Union
+  Room), they ran at half speed and quick button presses could get lost. Now they run at the speed the computer
+  manages, up to normal speed, and every press counts.
 - **Already standing in the Union Room when you link? You now see each other.** A game that was in the Union Room
   (or anywhere its wireless was on) when the link started never heard the others until it walked out and back in.
-- **A link that stands still always says so.** If a link stops moving for half a minute – the games no longer hear
+- **Mixed versions say so.** A DS link with a partner who still has souldew 3.0.0 doesn't start; both of you are told
+  to update.
+- **A link that stands still always says so.** If a link stops moving for a minute – the games no longer hear
   each other – or one of the linked games stops running, both of you get a message, the link ends and each game goes
   on from where it was; “Leave link” still works at any time.
 - **Diagnostics include the link.** “Save diagnostics” now records the link session too – when it started, from which
