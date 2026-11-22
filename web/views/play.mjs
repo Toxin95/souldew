@@ -1237,8 +1237,8 @@ export function GameSession({ session, mode }) {
               if (ended) wildEndRef.current?.(ended);
               setDemo(!!seen && !fight);
               inBattle = !!seen;
-              noteMons([...res.party, ...(res.boxes || [])]);
-              liveRead.current = { boxes: Array.isArray(res.boxes), party: res.party.length };
+              noteMons([...res.party, ...(res.boxes || []), ...(res.box || [])]);
+              liveRead.current = { boxes: Array.isArray(res.boxes) || Array.isArray(res.box), party: res.party.length }; // (Gen 1: the box chosen in the PC – where a catch with a full team goes)
               setLiveState({ status: 'live', entry: entry.name });
               if (Number.isInteger(entry.gen)) setLiveGen((g) => (g === entry.gen ? g : entry.gen));
               setLiveGame((g) => (g === entry.id ? g : entry.id || ''));
@@ -1266,7 +1266,7 @@ export function GameSession({ session, mode }) {
               // (a game still in a link room after its session ended – it says so itself: nothing of it is the run's)
               const g0 = isRun && !target.link ? gameOfEntry(ent) : null;
               const linkedGame = !!g0 && gameLinked(g0, e.read, { inBattle: !!seen });
-              if (isRun) snapRef.current?.({ source: 'live', party, boxes: res.boxes || null, game: entry.id, here: hereNow, ...(res.badges !== undefined ? { badges: res.badges } : {}), ...(romCaps !== undefined ? { romCaps } : {}), ...(linkedGame ? { linkedGame: true } : {}) }, { battle: fight, held: shown.held });
+              if (isRun) snapRef.current?.({ source: 'live', party, boxes: res.boxes || null, ...(res.box ? { box: res.box } : {}), game: entry.id, here: hereNow, ...(res.badges !== undefined ? { badges: res.badges } : {}), ...(romCaps !== undefined ? { romCaps } : {}), ...(linkedGame ? { linkedGame: true } : {}) }, { battle: fight, held: shown.held });
               const g = pay && gameNow();
               if (g) {
                 if (ent.gen === 3 && world3?.from !== ent) world3 = { from: ent, t: worldTable(ent) };

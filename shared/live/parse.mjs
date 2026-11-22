@@ -200,7 +200,9 @@ function readGB(entry, read, T, state = {}) {
   // frame can end halfway. There is no checksum: Gen 1 keeps HP in front of the OT ID and DVs, so a slot rewritten
   // that far reads as the incoming mon's species and HP under the old mon's key – a death or an "evolution" that
   // never happened. So a party that changed counts once it reads the same twice in a row (one poll later).
-  const sig = `${Array.prototype.join.call(head.subarray(0, 1 + count), ',')}|${Array.prototype.join.call(mons.subarray(0, count * size), ',')}|${Array.prototype.join.call(nicks.subarray(0, count * entry.nameLength), ',')}`;
+  // (Gen 1: the box chosen in the PC too – a catch sent there is written a byte at a time as well)
+  const boxHead = gen === 1 && entry.box?.countAddr ? read(hex(entry.box.countAddr), 22) : null;
+  const sig = `${Array.prototype.join.call(head.subarray(0, 1 + count), ',')}|${Array.prototype.join.call(mons.subarray(0, count * size), ',')}|${Array.prototype.join.call(nicks.subarray(0, count * entry.nameLength), ',')}${boxHead ? `|${Array.prototype.join.call(boxHead, ',')}` : ''}`;
   const changed = state.gbSig !== undefined && state.gbSig !== sig;
   state.gbSig = sig;
   if (changed) return { torn: true };
@@ -242,7 +244,46 @@ function readGB(entry, read, T, state = {}) {
   }
   // No party = title screen / intro (WRAM cleared): the badge byte means nothing yet – a 0 here would
   // lower the level cap and make the real count look "newly earned" once the save is loaded.
-  return { party, badges: count ? readBadgeBits(entry, read) : undefined };
+  const box = count ? readBoxGB(entry, read, T) : null;
+  return { party, badges: count ? readBadgeBits(entry, read) : undefined, ...(box ? { box } : {}) };
+}
+
+/**
+ * Gen 1: the PC box chosen in Bill's PC is kept in WRAM (pokered wram.asm wNumInBox / wBoxSpecies / wBoxMons /
+ * wBoxMonNicks – addresses.json `box`), and a catch with a full party goes there (#83). Only that box – the others are
+ * in the save – so it is handed on as `box` (catches), never as the whole PC (`boxes`: what's gone from it). The box
+ * struct is the party struct's first 33 bytes: species, HP, the box level at +0x03, the OT ID and the DVs where the
+ * party has them. null when it doesn't read as a box (a count over 20, no terminator, a species that isn't one).
+ */
+function readBoxGB(entry, read, T) {
+  const b = entry.box;
+  if (entry.gen !== 1 || !b?.countAddr) return null;
+  const head = read(hex(b.countAddr), 22);
+  if (!head) return null;
+  const n = head[0];
+  if (n > 20 || head[1 + n] !== 0xff) return null;
+  if (!n) return [];
+  const size = b.structSize || 33;
+  const mons = read(hex(b.monsAddr), size * n);
+  const nicks = read(hex(b.nicknamesAddr), entry.nameLength * n);
+  if (!mons || !nicks) return null;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const d = mons.subarray(i * size, (i + 1) * size);
+    const species = T.idx1?.[d[0]] || 0;
+    if (!species || T.idx1?.[head[1 + i]] !== species) return null;
+    const level = d[0x03];
+    if (level < 1 || level > 100) return null;
+    const otId = u16be(d, 0x0c);
+    const dv = u16be(d, 0x1b);
+    out.push({
+      key: `g1-${otId.toString(16)}-${dv.toString(16).padStart(4, '0')}`,
+      species, nickname: decodeText(nicks.subarray(i * entry.nameLength, (i + 1) * entry.nameLength), T.cs1, 0x50),
+      level, hp: 0, maxHp: 0, status: 0, item: 0, moves: [d[8], d[9], d[10], d[11]].filter(Boolean),
+      shiny: false, metLocation: null, metLevel: null, isEgg: false, otId, inBox: true,
+    });
+  }
+  return out;
 }
 
 const popcount = (n) => n.toString(2).replace(/0/g, '').length;

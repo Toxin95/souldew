@@ -1323,7 +1323,8 @@ export function logSaveImport(doc, manifest, slot, { undo = false } = {}) {
 }
 
 /**
- * Apply a snapshot of `slot`'s game: { party: [mon], boxes: [mon]|null, badges, trainer, playTime, source }.
+ * Apply a snapshot of `slot`'s game: { party: [mon], boxes: [mon]|null, box?: [mon], badges, trainer, playTime, source }
+ * (`box`: the one PC box a game keeps in RAM – Gen 1's – for catches only).
  * Mons are normalized: { key, species, nickname, level, hp, maxHp, status, shiny, gender, metLocation, metLevel, isEgg, inParty }.
  * `battle` (optional, the live battle right now): { kind: 'wild'|'trainer', enemy: { species, level } } – a mon
  * that falls in it gets that opponent as its death cause.
@@ -1426,7 +1427,9 @@ export function applySnapshot(doc, manifest, gen, slot, snap, { auto = true, rd 
   const deaths = [];
   const writes = {};
   const party = trustLevels(doc, slot, (snap.party || []).map((m) => ({ ...m, inParty: true })), known, snap.source);
-  const all = [...party, ...(snap.boxes || [])];
+  // (`box`: Gen 1's box chosen in the PC – a catch with a full team goes there, #83; not the whole PC, so nothing in it
+  // says a Pokémon is gone)
+  const all = [...party, ...(snap.boxes || []), ...(snap.box || [])];
   const seen = new Set();
   // the Pokémon the app saw as eggs (a hatched Pokémon keeps the egg's key – Crystal: hatchedMon): the eggs of the last
   // live team, the hatched ones it still carries untracked (liveMon `hatched` – the egg is gone from the team after the

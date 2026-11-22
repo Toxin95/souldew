@@ -21,6 +21,10 @@
   when no team turns up for a while in the game, and once a while after the team was first read, souldew searches the
   game's memory for its team and reads it there too; when that place gets a new Pokémon the old one doesn't show,
   souldew moves over. "Save diagnostics" notes the search and where it found the team.
+- **Red and Blue: a catch that goes to the PC counts** (#83). With six Pokémon in your team, the game sends a catch to
+  the PC box, and souldew only read the team, so the catch was never filed for its area. souldew now also reads the
+  box you have chosen in the PC: a Pokémon that lands there right after a wild battle is filed under the place you are,
+  like one that joins the team.
 
 ## 3.0.0
 
