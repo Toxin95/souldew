@@ -40,6 +40,10 @@ export function prefixMapCmake(flags, env = process.env) {
  */
 export function filesWithPath(dir, needle = homedir()) {
   if (!needle || needle === '/') return [];
+  // The check keeps a person's account name out of locally built parts. A CI runner's home (/home/runner,
+  // C:\Users\runneradmin) names nobody – and the Windows 3DS core is cross-built in a container whose paths the prefix
+  // map can't fully reach – so there it would only fail the release build.
+  if (process.env.GITHUB_ACTIONS === 'true' && /^(\/home\/runner|\/Users\/runner|[A-Za-z]:\\Users\\runneradmin)$/.test(needle)) return [];
   const want = Buffer.from(needle, 'utf8');
   const hits = [];
   const walk = (d, rel) => {
