@@ -453,6 +453,7 @@
   "faq.q6": "E se uno di noi è offline?",
   "faq.q7": "Qualcosa non funziona bene (musica, tracciamento dal vivo)?",
   "feed.autoCaught": "{area}: {name} (Lv. {lv}) catturato",
+  "feed.caughtAfterAll": "{area}: {name} è stato catturato comunque",
   "feed.badge": "Medaglia n. {n} ottenuta!",
   "feed.boss": "{boss} sconfitto!",
   "feed.caught": "{area}: {name} catturato",

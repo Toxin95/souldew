@@ -453,6 +453,7 @@
   "faq.q6": "¿Y si uno de los dos no está conectado?",
   "faq.q7": "¿Algo no funciona bien (música, seguimiento en directo)?",
   "feed.autoCaught": "{area}: {name} (Nv. {lv}) capturado",
+  "feed.caughtAfterAll": "{area}: {name} sí fue capturado al final",
   "feed.badge": "¡Medalla n.º {n} conseguida!",
   "feed.boss": "¡{boss} derrotado!",
   "feed.caught": "{area}: {name} capturado",

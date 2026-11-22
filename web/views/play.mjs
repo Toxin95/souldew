@@ -34,7 +34,7 @@ import { play as playCue } from '../lib/sound.mjs';
 import { addSample, typicalReach, offeredSteps, beyondReach, HELD } from '../lib/reach.mjs';
 import { SlowWatch, slowTips } from '../lib/slowdown.mjs';
 import { FfScaleWatch } from '../lib/ffhint.mjs';
-import { MissedTracker, openQuestions, queueQuestions, dropQuestion } from '../lib/missed.mjs';
+import { MissedTracker, openQuestions, queueQuestions, dropQuestion, missedWait } from '../lib/missed.mjs';
 import { gpuBackends } from '/shared/gpu.mjs';
 import { CTR_LAYOUTS, ctrLayoutAspect } from '/shared/ctrlayout.mjs';
 import { SharedWorld, WorldToggle, WORLD_SYSTEMS, worldEnabled, setWorldEnabled, followEnabled, setFollowEnabled } from '../lib/sharedworld.mjs';
@@ -1233,6 +1233,7 @@ export function GameSession({ session, mode }) {
               setMine(shown.party);
               setBattle(shown.battle);
               // (every poll – a stray reading must not decide whether the battle was a wild one)
+              missedTr.current.wait = missedWait(entry.gen); // (the 3DS games file a catch only after its Pokédex and nickname screens)
               const ended = isRun ? missedTr.current.see(fight, Date.now(), hereNow) : null;
               if (ended) wildEndRef.current?.(ended);
               setDemo(!!seen && !fight);
@@ -2112,7 +2113,7 @@ function MissedPrompt({ missed, here, onDone }) {
       key = `custom-${Date.now().toString(36)}`;
       doc.set(`area:${key}`, { name: name.trim(), order: Date.now() });
     }
-    markMissed(doc, manifest, key, me, { species: missed.species, by: me });
+    markMissed(doc, manifest, key, me, { species: missed.species, by: me, asked: true });
     onDone(false);
   };
   return html`<div class="screen-confirm" role="group" data-pad-layer aria-live="polite" aria-label=${t('play.missedAria', 'Missed encounter')}>

@@ -453,6 +453,7 @@
   "faq.q6": "Et si l’un de nous est hors ligne ?",
   "faq.q7": "Quelque chose ne marche pas bien (musique, suivi en direct) ?",
   "feed.autoCaught": "{area} : {name} (N. {lv}) capturé",
+  "feed.caughtAfterAll": "{area} : {name} a finalement été capturé",
   "feed.badge": "Badge n° {n} obtenu !",
   "feed.boss": "{boss} vaincu !",
   "feed.caught": "{area} : {name} capturé",

@@ -1122,6 +1122,7 @@
   "fav.show": "Show",
   "fav.star": "Favourite: {name}",
   "feed.autoCaught": "{area}: {name} (Lv. {lv}) caught",
+  "feed.caughtAfterAll": "{area}: {name} was caught after all",
   "feed.badge": "Earned badge #{n}!",
   "feed.ballsStart": "Rules start now – first Poké Balls",
   "feed.boss": "{boss} defeated!",

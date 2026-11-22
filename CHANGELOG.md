@@ -25,6 +25,10 @@
   the PC box, and souldew only read the team, so the catch was never filed for its area. souldew now also reads the
   box you have chosen in the PC: a Pokémon that lands there right after a wild battle is filed under the place you are,
   like one that joins the team.
+- **3DS: "Wild … not caught" no longer comes while you name your catch.** X/Y and the other 3DS games put a catch
+  into your team only after the Pokédex entry and the nickname screen, and souldew asked after 10 seconds. It now waits
+  a minute on the 3DS. And when you did press "Mark as spent" and that Pokémon turns up in your team within a few
+  minutes after all, souldew files it as the area's catch instead of keeping the area spent.
 
 ## 3.0.0
 

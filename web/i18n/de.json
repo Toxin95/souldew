@@ -453,6 +453,7 @@
   "faq.q6": "Was, wenn einer von uns offline ist?",
   "faq.q7": "Etwas funktioniert nicht richtig (Musik, Live-Tracking)?",
   "feed.autoCaught": "{area}: {name} (Lv. {lv}) gefangen",
+  "feed.caughtAfterAll": "{area}: {name} wurde doch gefangen",
   "feed.badge": "Orden Nr. {n} erhalten!",
   "feed.boss": "{boss} besiegt!",
   "feed.caught": "{area}: {name} gefangen",
