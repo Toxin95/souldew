@@ -42,6 +42,36 @@
   tells the team that it was used – version, system, processor, the week of first use and on how many recent days it
   ran, with a random value that's new every day. No id for you or your computer. What exactly is sent:
   [docs/PRIVACY.md](docs/PRIVACY.md#daily-usage-count).
+- **Blaze Black 2 Redux with the randomizer: no more black screen in the intro.** The Classic preset's "National
+  Pokédex from the start" works by rewriting Black 2's intro – in a ROM hack with an intro of its own that broke the
+  game: it kept running, but stayed black before you could pick your name (#43). Not "Every Pokémon can learn every
+  HM", as it first looked. The randomizer now checks every place it would change in a Gen 5 game: what a ROM hack
+  changed there isn't offered for it (greyed out, with the reason) – in Blaze Black 2 Redux "National Pokédex from
+  the start" and "Fastest text" go, and the starters stay the hack's own, since they sit in that same intro. Tested
+  with Blaze Black 2 Redux 1.4.1 and three seeds of the Classic preset, from the intro into the player's room.
+- **No "Save file unreadable" at the start of a new game.** A DS game prepares its save while the intro plays; souldew
+  read that, found no save in it yet and said "Save file unreadable – save once in the game first". A save that was
+  readable and isn't any more still says so.
+- **A ROM hack whose patch doesn't fit your copy of the game says so** in the new-run assistant, instead of failing
+  without a reason.
+- **Playing a 3DS game no longer fills up your Windows drive.** The built-in 3DS player sent its picture and sound to
+  souldew's window as one endless download. Antivirus programs that check web traffic (a "web shield") kept all of it
+  in `C:\Windows\Temp` until the game was closed – about 25 MB a second, tens of gigabytes in an evening (#38). The
+  3DS player and the fast player now send it over a connection those programs don't hold on to. Measured on the same
+  game before and after: the same pictures a second and the same smoothness.
+- **Quitting souldew keeps "where you left off".** Closing the whole app while a game runs – the window's close button,
+  ⌘Q or Alt+F4, or a restart for an update – now keeps the moment you were at and your latest save, as "Close game"
+  already did. Next time the game picks up right there.
+- **"Java crashes on this Mac" instead of "Java wasn't found".** On macOS 27 with System Integrity Protection turned
+  off, Java can't start on Apple Silicon – the Java that comes with souldew and any other (#40). souldew said Java was
+  missing, and reinstalling Java didn't help. Now it says what's going on: turn System Integrity Protection back on,
+  then try again. Checking for Java also waits longer the very first time (macOS checks a new program first) and tries
+  once more, and "Save diagnostics" lists every Java souldew tried and how it ended.
+- **Your account shows "Loading …" at the start** while souldew reads your saved sign-in, instead of "Sign in" for a
+  moment – in the sidebar, Settings › Account, Friends, your profile and souldew+.
+- **The Mac app is signed and notarized by Apple.** It opens like any other app – no more "Open Anyway" in System
+  Settings. Signed in, macOS asked for your keychain password after every update; this update may ask one last time,
+  later ones won't.
 - **Cheats in Sun/Moon and Ultra Sun/Ultra Moon no longer stop after you give an item away.** When the last one of an
   item leaves the bag (given to a Pokémon to hold, used up), these games can keep its id in the slot with a count of 0.
   souldew took that for a sign it wasn't looking at the bag and said "souldew didn't find your

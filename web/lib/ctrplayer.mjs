@@ -6,6 +6,7 @@
 import * as controls from '/lib/controls.mjs';
 import { setLang, guessLang, t } from '/lib/i18n.mjs';
 import { serverErrorText } from '/lib/errors.mjs';
+import { openHostStream } from '/lib/hoststream.mjs';
 import { findEntry, regionsFor } from '/shared/live/parse.mjs';
 import { cheatRegions } from '/shared/live/cheats.mjs';
 import { CTR_LAYOUTS, ctrLayout, ctrTouchAt, blackPicture } from '/shared/ctrlayout.mjs';
@@ -630,9 +631,9 @@ function showError(text, code = null) {
 
 // ---- the stream from the host ------------------------------------------------------------------------------------
 async function pump() {
-  const res = await fetch(`/api/ctr/stream?id=${st.id}`);
-  if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
-  const reader = res.body.getReader();
+  // a WebSocket (an endless HTTP response filled antivirus caches on Windows – #38, lib/hoststream.mjs)
+  const reader = await openHostStream(`/api/ctr/stream?id=${st.id}`);
+  st.streamKind = reader.kind;
   let buf = new Uint8Array(0);
   // the chunks of a message that isn't complete yet: joined once it is (a picture is 768 KB – up to 7 MB at 3× – in
   // many chunks; copying everything so far on each chunk cost more than the picture itself)
@@ -1042,6 +1043,7 @@ window.__emu = {
   },
   perf: () => ({
     fps: st.fps, speed: st.hostSpeed, frames: st.hostFrame, shown: st.frames, title: st.title, liveMemory: st.liveMemory, error: st.error, renderer: st.renderer, scale: st.scale, log: st.log.slice(-20),
+    stream: st.streamKind || null, // 'ws' – or 'http' when the WebSocket couldn't be opened (#38)
     picture: { lit: black.lit, blackSeconds: Math.round(black.ms / 1000) }, // (a game that only ever showed black)
     sound: audio.ctx ? { contextRate: audio.ctx.sampleRate, state: audio.ctx.state, baseLatencyMs: +(audio.ctx.baseLatency * 1000).toFixed(1), outputLatencyMs: +((audio.ctx.outputLatency || 0) * 1000).toFixed(1) } : null,
     last: audio.last,

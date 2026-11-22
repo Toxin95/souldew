@@ -186,7 +186,14 @@ function RailPlus({ thanks = false, here = false, float = false, fx = null, onOp
 function RailSignIn({ toast }) {
   const acct = useAccount();
   const [busy, setBusy] = useState(false);
-  if (!acct.loaded || acct.session?.signedIn) return null;
+  if (acct.session?.signedIn) return null;
+  // the saved sign-in is still being read (the keychain may take a moment): neither "Sign in" nor a profile yet
+  if (!acct.known) {
+    return html`<div class="rail-signin-wrap"><div class="rail-me rail-signin rail-acct-loading" role="status">
+      <span class="rail-signin-mark" aria-hidden="true"><${Icon} name="user" size=${18} /></span>
+      <span class="stack-s" style="gap:0"><b class="ellipsis">${t('common.loading', 'Loading …')}</b>
+        <span class="tiny ellipsis">${t('rail.acctLoading', 'your account')}</span></span></div></div>`;
+  }
   const pending = !!acct.session?.pending;
   const go = async () => {
     setBusy(true);
@@ -1128,6 +1135,11 @@ function App() {
   }, [fs, playFold, railHidden, setHidden]);
   const playing = !!session;
   useEffect(() => { window.sls?.setPlaying?.(playing); }, [playing]);
+  // Quitting the app (window closed, Cmd+Q, an update's restart): the running game's "where you left off" and battery
+  // save are taken and uploaded first, as "Close game" does – the shell waits for the answer (electron/main.mjs)
+  useEffect(() => window.sls?.on?.('quitting', () => {
+    lastRef.current.quit().finally(() => window.sls?.quitReady?.());
+  }), []);
   fxBusy.current = playing || fs || boot || showOnboarding;
   const native = !!window.sls?.native;
   // The rail has no "Play" item: the game belongs to the section of what it plays – a run to SoulLink or Nuzlocke,

@@ -331,15 +331,16 @@ function useSignedIn(acct, toast) {
  */
 export function AccountSection({ toast }) {
   const acct = useAccount();
-  const on = acct.loaded && acct.session.signedIn;
+  // (known: the saved sign-in has been read – before that "signed out" only means "not read yet")
+  const on = acct.known && acct.session.signedIn;
   const parts = useSignedIn(acct, toast);
   return html`
     <${Group} title=${t('acct.title', 'souldew account')}>
-      <${Item} id="account">${!acct.loaded ? html`<p class="muted small">${t('common.loading', 'Loading …')}</p>` : on ? parts.who : html`<${SignedOut} acct=${acct} toast=${toast} />`}<//>
+      <${Item} id="account">${!acct.known ? html`<p class="muted small">${t('common.loading', 'Loading …')}</p>` : on ? parts.who : html`<${SignedOut} acct=${acct} toast=${toast} />`}<//>
     <//>
     ${on && parts.privacy && html`<${Group} title=${t('acct.privacy', 'Privacy')}><${Item} id="account-privacy">${parts.privacy}<//><//>`}
     ${on && parts.plus && html`<${Group} title="souldew+"><${Item} id="plus">${parts.plus}<//><//>`}
-    ${acct.loaded && !on && html`<${Group} title="souldew+"><${Item} id="plus-show"><div class="stack">
+    ${acct.known && !on && html`<${Group} title="souldew+"><${Item} id="plus-show"><div class="stack">
       <p class="small muted">${t('acct.plusText2', 'souldew stays free. If you support it on Buy Me a Coffee, souldew+ adds banners, frames and nameplates for your profile, the colour themes and everything for your handheld. Supporter gets a badge and the 3D launch with your own handheld.')}</p>
       <${PlusShowcase} /></div><//><//>`}
     ${on && html`<${Group} title=${t('acct.devices', 'Signed-in devices')}><${Item} id="account-sessions">${parts.sessions}<//><//>`}

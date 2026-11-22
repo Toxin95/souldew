@@ -305,7 +305,7 @@ export function FriendsView() {
   useEffect(() => {
     if (!pick && data?.friends?.length) setPick((data.friends.find((f) => groupOf(f) === 'playing') || data.friends.find((f) => groupOf(f) === 'online') || data.friends[0]).user.id);
   }, [data]);
-  if (!acct.loaded) return null;
+  if (!acct.known) return html`<div class="empty-state"><p class="muted">${t('common.loading', 'Loading …')}</p></div>`;
   if (!on) return html`<div class="stack-l"><div class="topbar"><h1>${t('nav.friends', 'Friends')}</h1></div><${SignInFirst} what=${t('fr.signInTitle', 'Play with friends')} /></div>`;
   const groups = ['playing', 'online', 'offline'].map((g) => ({ g, items: friends.filter((f) => groupOf(f) === g) }));
   const label = { playing: t('fr.gPlaying', 'Playing now'), online: t('fr.gOnline', 'Online'), offline: t('fr.gOffline', 'Offline') };
