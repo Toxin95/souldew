@@ -47,6 +47,7 @@ import { pageHeaders } from './lib/csp.mjs';
 import { gpuBackends, validBackend, fallbackNotice } from '../shared/gpu.mjs';
 import { validUiScale } from '../shared/uiscale.mjs';
 import { hostAllowed, apiRequestError, privateRequestError, rendererSecretError } from './lib/guard.mjs';
+import { acceptStream, refuse } from './lib/wsstream.mjs';
 import { overlaySnapshot, TEST_SPECIES, currentRunId } from '../shared/overlay.mjs';
 import { startPokelinkBridge, pokelinkPlayers, POKELINK_PORT } from './lib/pokelink.mjs';
 import { romDataFor } from './lib/romloc.mjs';
@@ -2383,6 +2384,29 @@ export function startServer({ port = 7373, host = '127.0.0.1', background = true
   });
 
   server.on('close', () => {
+  // The players' host streams as WebSockets (#38: an endless HTTP response filled C:\Windows\Temp through antivirus
+  // HTTP scanning): the same checks as the API (this computer's Host, the app's own Origin – a browser always sends one
+  // for a WebSocket), then the session takes the socket as it took the response.
+  server.on('upgrade', (req, socket) => {
+    socket.on('error', () => {});
+    let url;
+    try {
+      url = new URL(req.url, 'http://localhost');
+    } catch {
+      return refuse(socket, 400);
+    }
+    const sessions = url.pathname === '/api/ctr/stream' ? ctr : url.pathname === '/api/native/stream' ? native : null;
+    if (!sessions) return refuse(socket, 404);
+    if (!hostAllowed(req.headers.host) || !req.headers.origin || apiRequestError(req, server.address()?.port)) return refuse(socket, 403);
+    const id = url.searchParams.get('id');
+    try {
+      sessions.get(id);
+    } catch {
+      return refuse(socket, 404);
+    }
+    const ws = acceptStream(req, socket);
+    if (ws) sessions.attachStream(id, ws);
+  });
     accounts.close();
     ctr.stop();
     azahar?.stop();

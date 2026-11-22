@@ -36,6 +36,11 @@
   readable and isn't any more still says so.
 - **A ROM hack whose patch doesn't fit your copy of the game says so** in the new-run assistant, instead of failing
   without a reason.
+- **Playing a 3DS game no longer fills up your Windows drive.** The built-in 3DS player sent its picture and sound to
+  souldew's window as one endless download. Antivirus programs that check web traffic (a "web shield") kept all of it
+  in `C:\Windows\Temp` until the game was closed – about 25 MB a second, tens of gigabytes in an evening (#38). The
+  3DS player and the fast player now send it over a connection those programs don't hold on to. Measured on the same
+  game before and after: the same pictures a second and the same smoothness.
 - **Cheats in Sun/Moon and Ultra Sun/Ultra Moon no longer stop after you give an item away.** When the last one of an
   item leaves the bag (given to a Pokémon to hold, used up), these games can keep its id in the slot with a count of 0.
   souldew took that for a sign it wasn't looking at the bag and said "souldew didn't find your

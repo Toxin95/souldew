@@ -97,7 +97,11 @@ the hardened runtime, so the JIT's executable memory (MAP_JIT) needs no entitlem
 3DS games play in souldew's own player through a small native host (`native/ctr-host/ctrhost.c`) that runs Azahar's
 libretro core with Vulkan, and `web/player3ds.html` / `web/lib/ctrplayer.mjs`, which offer the play view the same
 `window.__emu` API as the EmulatorJS player. `server/lib/ctr.mjs` starts the host and passes its messages through
-(`/api/ctr/*`). The binaries live in `tools/ctr/<platform>-<arch>/` (not in the repository) and go into the DMG:
+(`/api/ctr/*`). The host's messages (pictures, sound, memory – ~25 MB/s) reach the page over a WebSocket on
+`/api/ctr/stream` (the fast player: `/api/native/stream`; `server/lib/wsstream.mjs`, `web/lib/hoststream.mjs`), the
+page's commands go by POST. Since 3.0.1: as one endless HTTP response, antivirus with HTTP scanning kept the whole body
+in `C:\Windows\Temp` until the game closed (#38). The page says how much it has handled; the server holds the host back
+while the page is more than 2 MB behind, as TCP did for the HTTP stream. The HTTP stream stays as the fallback. The binaries live in `tools/ctr/<platform>-<arch>/` (not in the repository) and go into the DMG:
 
 ```sh
 brew install cmake ninja spirv-tools vulkan-headers   # as Azahar's own CI
