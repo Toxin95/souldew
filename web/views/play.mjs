@@ -949,6 +949,7 @@ export function GameSession({ session, mode }) {
     // Closed from the UI (lib/lastmoment.mjs): the last battery save and "where you left off" while the player is still
     // there – the fast player and the 3DS player answer getState through their frame, which the cleanup below is too
     // late for. The close waits for the state's bytes (returned); their upload goes on after the frame is gone.
+    // Quitting the app waits for the uploads too (the second function: the chain they are queued on).
     let lastTaken = false;
     const offLast = lastMoment?.set(() => {
       if (stopped || !loadedOk) return null;
@@ -958,7 +959,7 @@ export function GameSession({ session, mode }) {
       const st = grabState();
       saveAuto(st);
       return st;
-    });
+    }, () => chain);
     window.addEventListener('sl-save-now', flushNow);
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('beforeunload', onPageHide);

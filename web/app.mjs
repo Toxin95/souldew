@@ -1129,6 +1129,11 @@ function App() {
   // game fills the page, it is the one marked as here.
   const sectionOf = (id) => {
     const r = id === manifest?.id ? manifest : status?.runs?.find((x) => x.id === id);
+  // Quitting the app (window closed, Cmd+Q, an update's restart): the running game's "where you left off" and battery
+  // save are taken and uploaded first, as "Close game" does – the shell waits for the answer (electron/main.mjs)
+  useEffect(() => window.sls?.on?.('quitting', () => {
+    lastRef.current.quit().finally(() => window.sls?.quitReady?.());
+  }), []);
     return r ? runSection(r) : 'soullink';
   };
   const playingIn = session ? (session.target.runId ? sectionOf(session.target.runId) : 'library') : null;

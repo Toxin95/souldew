@@ -41,6 +41,9 @@
   in `C:\Windows\Temp` until the game was closed – about 25 MB a second, tens of gigabytes in an evening (#38). The
   3DS player and the fast player now send it over a connection those programs don't hold on to. Measured on the same
   game before and after: the same pictures a second and the same smoothness.
+- **Quitting souldew keeps "where you left off".** Closing the whole app while a game runs – the window's close button,
+  ⌘Q or Alt+F4, or a restart for an update – now keeps the moment you were at and your latest save, as "Close game"
+  already did. Next time the game picks up right there.
 - **"Java crashes on this Mac" instead of "Java wasn't found".** On macOS 27 with System Integrity Protection turned
   off, Java can't start on Apple Silicon – the Java that comes with souldew and any other (#40). souldew said Java was
   missing, and reinstalling Java didn't help. Now it says what's going on: turn System Integrity Protection back on,
