@@ -2100,7 +2100,6 @@
   "upd.dataSafeWin": "Deine Runs, Spielstände und Einstellungen bleiben erhalten: Sie liegen in deinem Benutzerordner (AppData), nicht in der App.",
   "upd.downloading": "Lade {version} herunter …",
   "upd.failed": "Update fehlgeschlagen",
-  "upd.gatekeeper": "Wenn macOS meldet, dass die App nicht auf Schadsoftware geprüft werden kann, klick sie im Ordner Programme mit rechts an › Öffnen › Öffnen. Das ist einmal nötig, weil souldew nicht von Apple notarisiert ist.",
   "upd.how": "Wie?",
   "upd.install": "Laden & installieren",
   "upd.installing": "Installiere {version} …",

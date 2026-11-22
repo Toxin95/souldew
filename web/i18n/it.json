@@ -2100,7 +2100,6 @@
   "upd.dataSafeWin": "Run, salvataggi e impostazioni vengono mantenuti: si trovano nella tua cartella utente (AppData), non dentro l’app.",
   "upd.downloading": "Download di {version} …",
   "upd.failed": "Aggiornamento non riuscito",
-  "upd.gatekeeper": "Se macOS dice che non può verificare l’assenza di software dannoso, fai clic destro sull’app in Applicazioni › Apri › Apri. Serve una sola volta, perché souldew non è autenticata da Apple.",
   "upd.how": "Come?",
   "upd.install": "Scarica e installa",
   "upd.installing": "Installazione di {version} …",

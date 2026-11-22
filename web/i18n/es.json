@@ -2100,7 +2100,6 @@
   "upd.dataSafeWin": "Tus runs, partidas guardadas y ajustes se conservan: están en tu carpeta de usuario (AppData), no dentro de la app.",
   "upd.downloading": "Descargando {version} …",
   "upd.failed": "La actualización falló",
-  "upd.gatekeeper": "Si macOS dice que no puede comprobar si la app contiene software malicioso, haz clic derecho sobre ella en Aplicaciones › Abrir › Abrir. Solo hace falta una vez, porque souldew no está notarizada por Apple.",
   "upd.how": "¿Cómo?",
   "upd.install": "Descargar e instalar",
   "upd.installing": "Instalando {version} …",

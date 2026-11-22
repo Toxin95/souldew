@@ -4411,7 +4411,6 @@
   "upd.errSignatureFeed": "The update could not be verified: its signature is missing or wrong, so it wasn’t installed.",
   "upd.errTimeout": "The update server didn’t answer in time – check the internet connection and try again.",
   "upd.failed": "Update failed",
-  "upd.gatekeeper": "If macOS says it can’t check the app for malicious software, right-click it in Applications › Open › Open. That is needed once because souldew is not notarized by Apple.",
   "upd.how": "How?",
   "upd.install": "Download & install",
   "upd.installing": "Installing {version} …",
