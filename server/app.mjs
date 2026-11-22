@@ -71,6 +71,7 @@ export function withoutDevSwitches(env) {
 import { createPlusPack, plusRoutes } from './lib/pluspack.mjs';
 import { createPlusPreviews, servePreview } from './lib/pluspreviews.mjs';
 import { presence as presenceCounter } from './lib/presence.mjs';
+import { createUsage } from './lib/usage.mjs';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
@@ -559,6 +560,10 @@ export function startServer({ port = 7373, host = '127.0.0.1', background = true
   const watchStatus = (runId, manifest) => ({ ...watcher.status(runId), readable: !!parserOfRun(manifest), graveyard: isHgssRun(manifest) });
   // the anonymous "playing now" heartbeat – it reads the setting on every call, so "off" applies at once
   const playingNow = presenceCounter({ enabled: () => loadConfig().presence !== false });
+  // the anonymous daily usage ping (server/lib/usage.mjs) – same switch; only a packaged app (or a test's mock bot) sends
+  const usagePing = createUsage({ enabled: () => loadConfig().presence !== false, allowed: packaged || !!env.SOULDEW_LIVE_URL, env,
+    file: join(dirname(CONFIG_PATH), 'usage.json'), configPath: CONFIG_PATH });
+  usagePing.start();
   const live = new LiveBridge(emit);
   // 3DS in souldew's own player (server/lib/ctr.mjs): one game at a time
   const ctr = new CtrSessions();
