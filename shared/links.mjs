@@ -2,6 +2,8 @@
 // pop-up (shared/coffee.mjs). web/lib/links.mjs re-exports them for the app.
 export const LINKS = {
   coffee: 'https://buymeacoffee.com/souldew',
+  // the souldew Discord server (invite) – where "Find a SoulLink partner" posts go
+  discord: 'https://discord.gg/kvVDCyzdpQ',
   // the memberships (Supporter, souldew+, Legend) – joining, switching and cancelling all happen there
   membership: 'https://buymeacoffee.com/souldew/membership',
   github: 'https://github.com/souldewapp/souldew',
